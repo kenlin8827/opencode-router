@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { OverviewPage } from './pages/OverviewPage';
 import { ChainsPage } from './pages/ChainsPage';
+import { RulesPage } from './pages/RulesPage';
 import { KeysPage } from './pages/KeysPage';
 import { ModelsPage } from './pages/ModelsPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
@@ -22,7 +23,8 @@ export const App: React.FC = () => {
       <Route path="/" element={<Layout />}>
         <Route index element={<OverviewPage />} />
         <Route path="chains" element={<ChainsPage />} />
-        <Route path="rules" element={<ChainsPage />} />
+        <Route path="tiers" element={<RulesPage />} />
+        <Route path="rules" element={<Navigate to="/tiers" replace />} />
         <Route path="cache" element={<ChainsPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="providers" element={<KeysPage />} />

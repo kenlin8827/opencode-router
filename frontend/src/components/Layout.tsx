@@ -53,7 +53,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     headingKey: 'nav.grpTraffic',
     items: [
       { to: '/chains', labelKey: 'nav.chains', icon: Layers },
-      { to: '/rules', labelKey: 'nav.rules', icon: Network },
+      { to: '/tiers', labelKey: 'nav.rules', icon: Network },
       { to: '/cache', labelKey: 'nav.cache', icon: Database },
     ],
   },
@@ -100,7 +100,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
 const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = {
   '/': { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' },
   '/chains': { groupKey: 'nav.grpTraffic', titleKey: 'nav.chains' },
-  '/rules': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
+  '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
   '/cache': { groupKey: 'nav.grpTraffic', titleKey: 'nav.cache' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },

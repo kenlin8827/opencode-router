@@ -81,6 +81,28 @@ export interface SessionRecord {
   lastActiveAt: string;
 }
 
+export interface TierPoolModel {
+  id: string;
+  provider: string;
+  upstreamModel?: string;
+  priority?: number;
+  isDefaultInTier: boolean;
+  inputPrice?: number;
+  outputPrice?: number;
+  healthy: boolean;
+  weight: number;
+}
+
+export interface TierPoolInfo {
+  pool: TierPoolModel[];
+  excluded: { id: string; reason: string }[];
+}
+
+export interface TierPoolsResponse {
+  status: string;
+  pools: Record<string, TierPoolInfo>;
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/ui/status');
@@ -104,6 +126,12 @@ export const api = {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.message || `HTTP ${res.status}`);
     }
+    return res.json();
+  },
+
+  async getTierPools(): Promise<TierPoolsResponse> {
+    const res = await fetch('/api/ui/tier-pools');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 

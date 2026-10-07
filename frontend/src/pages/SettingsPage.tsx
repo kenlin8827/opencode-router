@@ -153,6 +153,24 @@ export const SettingsPage: React.FC = () => {
               />
             </div>
           </div>
+          {/* Section 5: Auto Virtual Model Routing Mode */}
+          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)' }}>{t('settings.routingModeTitle')}</div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {(['smart', 'cost', 'quality'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={(config.routing?.mode ?? 'smart') === m ? 'btn btn-primary' : 'btn'}
+                  style={{ fontSize: '12px', flex: 1 }}
+                  onClick={() => setConfig({ ...config, routing: { ...(config.routing || {}), mode: m } })}
+                >
+                  {t(m === 'smart' ? 'settings.modeSmart' : m === 'cost' ? 'settings.modeCost' : 'settings.modeQuality')}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('settings.routingModeHint')}</div>
+          </div>
         </div>
       </div>
     </div>
