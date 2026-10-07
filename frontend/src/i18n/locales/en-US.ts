@@ -55,8 +55,10 @@ export const enUS: TranslationDict = {
       obsidian: '🖤 Obsidian Dark',
       indigo: '🌌 Midnight Indigo',
       cyber: '💚 Cyber Emerald',
-      sunset: '🌅 Sunset Velvet',
+      violet: '🟣 Nebula Violet',
+      sunset: '🌹 Sunset Rose',
       light: '⚪ Crisp Light',
+      amber: '🟡 Warm Amber',
     },
   },
   overview: {

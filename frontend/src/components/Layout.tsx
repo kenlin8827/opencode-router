@@ -424,15 +424,17 @@ export const Layout: React.FC = () => {
 
             {/* Theme Picker */}
             <Combobox
-              style={{ width: 'auto', padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
+              style={{ width: 168, flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
               value={theme}
               onChange={setTheme}
               options={[
                 { value: 'obsidian', label: t('header.themes.obsidian') },
                 { value: 'indigo', label: t('header.themes.indigo') },
                 { value: 'cyber', label: t('header.themes.cyber') },
+                { value: 'violet', label: t('header.themes.violet') },
                 { value: 'sunset', label: t('header.themes.sunset') },
                 { value: 'light', label: t('header.themes.light') },
+                { value: 'amber', label: t('header.themes.amber') },
               ]}
             />
 

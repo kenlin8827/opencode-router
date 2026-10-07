@@ -52,11 +52,13 @@ export const zhCN: TranslationDict = {
     switchLang: '切换系统语言',
     langBtn: 'English',
     themes: {
-      obsidian: '🖤 Obsidian Dark (黑曜石)',
-      indigo: '🌌 Midnight Indigo (午夜蓝)',
-      cyber: '💚 Cyber Emerald (赛博翡翠)',
-      sunset: '🌅 Sunset Velvet (日落紫)',
-      light: '⚪ Crisp Light (明净白)',
+      obsidian: '🖤 曜石玄黑',
+      indigo: '🌌 午夜靛蓝',
+      cyber: '💚 赛博翡翠',
+      violet: '🟣 星云幻紫',
+      sunset: '🌹 玫瑰晚霞',
+      light: '⚪ 明净皓白',
+      amber: '🟡 琥珀鎏金',
     },
   },
   overview: {

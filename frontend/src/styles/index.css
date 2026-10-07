@@ -1,14 +1,15 @@
 /* Multi-Theme CSS Variables for OpenCode Router */
 :root, [data-theme="obsidian"] {
-  --bg: #09090b;
-  --bg-gradient: radial-gradient(at 0% 0%, rgba(6, 182, 212, 0.08) 0px, transparent 50%),
-                 radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.08) 0px, transparent 50%);
-  --sidebar-bg: rgba(14, 14, 18, 0.94);
-  --header-bg: rgba(9, 9, 11, 0.65);
-  --card-bg: rgba(24, 24, 27, 0.65);
-  --card-border: rgba(255, 255, 255, 0.08);
-  --card-border-hover: rgba(255, 255, 255, 0.18);
-  --input-bg: rgba(0, 0, 0, 0.45);
+  --bg: #0a0a0c;
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(6, 182, 212, 0.06) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.06) 0px, transparent 50%);
+  --sidebar-bg: rgba(16, 16, 20, 0.92);
+  --header-bg: rgba(10, 10, 12, 0.7);
+  --card-bg: rgba(22, 22, 26, 0.72);
+  --card-border: rgba(255, 255, 255, 0.07);
+  --card-border-hover: rgba(255, 255, 255, 0.14);
+  --input-bg: rgba(0, 0, 0, 0.4);
   --accent: #06b6d4;
   --accent-glow: rgba(6, 182, 212, 0.35);
   --accent-emerald: #10b981;
@@ -18,17 +19,28 @@
   --text-main: #f4f4f5;
   --text-muted: #a1a1aa;
   --text-dim: #71717a;
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --btn-bg: rgba(255, 255, 255, 0.04);
+  --btn-bg-hover: rgba(255, 255, 255, 0.08);
+  --btn-primary-text: #001418;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --focus-ring: 0 0 0 1px rgba(6, 182, 212, 0.45), 0 0 0 4px rgba(6, 182, 212, 0.12);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="indigo"] {
   --bg: #0b0f19;
-  --bg-gradient: radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
-                 radial-gradient(at 100% 100%, rgba(168, 85, 247, 0.12) 0px, transparent 50%);
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(129, 140, 248, 0.08) 0px, transparent 50%);
   --sidebar-bg: rgba(15, 23, 42, 0.95);
-  --header-bg: rgba(15, 23, 42, 0.65);
-  --card-bg: rgba(30, 41, 59, 0.65);
-  --card-border: rgba(255, 255, 255, 0.1);
-  --card-border-hover: rgba(99, 102, 241, 0.4);
+  --header-bg: rgba(15, 23, 42, 0.7);
+  --card-bg: rgba(30, 41, 59, 0.72);
+  --card-border: rgba(255, 255, 255, 0.07);
+  --card-border-hover: rgba(99, 102, 241, 0.35);
   --input-bg: rgba(15, 23, 42, 0.6);
   --accent: #6366f1;
   --accent-glow: rgba(99, 102, 241, 0.35);
@@ -39,17 +51,28 @@
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
   --text-dim: #64748b;
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --btn-bg: rgba(255, 255, 255, 0.04);
+  --btn-bg-hover: rgba(255, 255, 255, 0.08);
+  --btn-primary-text: #0e0e2c;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --focus-ring: 0 0 0 1px rgba(99, 102, 241, 0.45), 0 0 0 4px rgba(99, 102, 241, 0.12);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="cyber"] {
   --bg: #040d08;
-  --bg-gradient: radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.15) 0px, transparent 50%),
-                 radial-gradient(at 100% 100%, rgba(5, 150, 105, 0.1) 0px, transparent 50%);
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.12) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(5, 150, 105, 0.08) 0px, transparent 50%);
   --sidebar-bg: rgba(6, 20, 13, 0.96);
-  --header-bg: rgba(6, 20, 13, 0.65);
-  --card-bg: rgba(8, 28, 18, 0.7);
-  --card-border: rgba(16, 185, 129, 0.2);
-  --card-border-hover: rgba(16, 185, 129, 0.5);
+  --header-bg: rgba(6, 20, 13, 0.7);
+  --card-bg: rgba(8, 26, 17, 0.75);
+  --card-border: rgba(16, 185, 129, 0.14);
+  --card-border-hover: rgba(16, 185, 129, 0.4);
   --input-bg: rgba(2, 10, 6, 0.7);
   --accent: #10b981;
   --accent-glow: rgba(16, 185, 129, 0.4);
@@ -58,40 +81,62 @@
   --accent-rose: #fb7185;
   --accent-violet: #818cf8;
   --text-main: #ecfdf5;
-  --text-muted: #a7f3d0;
-  --text-dim: #6ee7b7;
+  --text-muted: #a9c2b3;
+  --text-dim: #7e9a8a;
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --btn-bg: rgba(255, 255, 255, 0.04);
+  --btn-bg-hover: rgba(255, 255, 255, 0.08);
+  --btn-primary-text: #02150c;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --focus-ring: 0 0 0 1px rgba(16, 185, 129, 0.45), 0 0 0 4px rgba(16, 185, 129, 0.12);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="sunset"] {
-  --bg: #140a1c;
-  --bg-gradient: radial-gradient(at 0% 0%, rgba(244, 63, 94, 0.15) 0px, transparent 50%),
-                 radial-gradient(at 100% 100%, rgba(245, 158, 11, 0.12) 0px, transparent 50%);
-  --sidebar-bg: rgba(26, 15, 36, 0.96);
-  --header-bg: rgba(26, 15, 36, 0.65);
-  --card-bg: rgba(38, 21, 54, 0.65);
-  --card-border: rgba(244, 63, 94, 0.2);
-  --card-border-hover: rgba(244, 63, 94, 0.45);
-  --input-bg: rgba(18, 9, 26, 0.7);
+  --bg: #1a0b12;
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(244, 63, 94, 0.1) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(190, 18, 60, 0.08) 0px, transparent 50%);
+  --sidebar-bg: rgba(30, 14, 20, 0.96);
+  --header-bg: rgba(26, 11, 17, 0.7);
+  --card-bg: rgba(40, 18, 26, 0.72);
+  --card-border: rgba(244, 63, 94, 0.14);
+  --card-border-hover: rgba(244, 63, 94, 0.38);
+  --input-bg: rgba(20, 9, 14, 0.7);
   --accent: #f43f5e;
   --accent-glow: rgba(244, 63, 94, 0.4);
   --accent-emerald: #10b981;
   --accent-amber: #fbbf24;
   --accent-rose: #f43f5e;
-  --accent-violet: #d946ef;
-  --text-main: #fff1f2;
-  --text-muted: #fecdd3;
-  --text-dim: #fda4af;
+  --accent-violet: #a855f7;
+  --text-main: #f7f2f3;
+  --text-muted: #c0afb5;
+  --text-dim: #8f7f85;
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --btn-bg: rgba(255, 255, 255, 0.04);
+  --btn-bg-hover: rgba(255, 255, 255, 0.08);
+  --btn-primary-text: #2a0812;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --focus-ring: 0 0 0 1px rgba(244, 63, 94, 0.45), 0 0 0 4px rgba(244, 63, 94, 0.12);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="light"] {
   --bg: #f8fafc;
-  --bg-gradient: radial-gradient(at 0% 0%, rgba(2, 132, 199, 0.08) 0px, transparent 50%),
-                 radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.06) 0px, transparent 50%);
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(2, 132, 199, 0.06) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.05) 0px, transparent 50%);
   --sidebar-bg: rgba(255, 255, 255, 0.96);
-  --header-bg: rgba(255, 255, 255, 0.75);
-  --card-bg: rgba(255, 255, 255, 0.9);
-  --card-border: rgba(0, 0, 0, 0.08);
-  --card-border-hover: rgba(2, 132, 199, 0.4);
+  --header-bg: rgba(255, 255, 255, 0.8);
+  --card-bg: rgba(255, 255, 255, 0.95);
+  --card-border: rgba(15, 23, 42, 0.08);
+  --card-border-hover: rgba(2, 132, 199, 0.35);
   --input-bg: #ffffff;
   --accent: #0284c7;
   --accent-glow: rgba(2, 132, 199, 0.25);
@@ -102,6 +147,80 @@
   --text-main: #0f172a;
   --text-muted: #475569;
   --text-dim: #94a3b8;
+  --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --card-shadow-hover: 0 8px 24px -12px rgba(15, 23, 42, 0.18);
+  --btn-bg: rgba(15, 23, 42, 0.04);
+  --btn-bg-hover: rgba(15, 23, 42, 0.08);
+  --btn-primary-text: #ffffff;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(15, 23, 42, 0.25);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 8px rgba(15, 23, 42, 0.3);
+  --focus-ring: 0 0 0 1px rgba(2, 132, 199, 0.45), 0 0 0 4px rgba(2, 132, 199, 0.12);
+  --scrollbar-thumb: rgba(15, 23, 42, 0.15);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.3);
+}
+
+[data-theme="amber"] {
+  --bg: #faf9f6;
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(217, 119, 6, 0.05) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(245, 158, 11, 0.04) 0px, transparent 50%);
+  --sidebar-bg: rgba(255, 255, 255, 0.96);
+  --header-bg: rgba(255, 255, 255, 0.8);
+  --card-bg: rgba(255, 255, 255, 0.95);
+  --card-border: rgba(28, 25, 23, 0.08);
+  --card-border-hover: rgba(217, 119, 6, 0.35);
+  --input-bg: #ffffff;
+  --accent: #d97706;
+  --accent-glow: rgba(217, 119, 6, 0.25);
+  --accent-emerald: #059669;
+  --accent-amber: #b45309;
+  --accent-rose: #e11d48;
+  --accent-violet: #7c3aed;
+  --text-main: #292524;
+  --text-muted: #57534e;
+  --text-dim: #a8a29e;
+  --card-shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
+  --card-shadow-hover: 0 8px 24px -12px rgba(28, 25, 23, 0.18);
+  --btn-bg: rgba(28, 25, 23, 0.04);
+  --btn-bg-hover: rgba(28, 25, 23, 0.08);
+  --btn-primary-text: #451a03;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(28, 25, 23, 0.25);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 2px 8px rgba(28, 25, 23, 0.3);
+  --focus-ring: 0 0 0 1px rgba(217, 119, 6, 0.45), 0 0 0 4px rgba(217, 119, 6, 0.12);
+  --scrollbar-thumb: rgba(28, 25, 23, 0.15);
+  --scrollbar-thumb-hover: rgba(28, 25, 23, 0.3);
+}
+
+[data-theme="violet"] {
+  --bg: #120a1e;
+  --bg-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
+                 radial-gradient(at 0% 0%, rgba(139, 92, 246, 0.1) 0px, transparent 50%),
+                 radial-gradient(at 100% 100%, rgba(109, 40, 217, 0.08) 0px, transparent 50%);
+  --sidebar-bg: rgba(22, 14, 36, 0.96);
+  --header-bg: rgba(18, 10, 30, 0.7);
+  --card-bg: rgba(30, 20, 48, 0.72);
+  --card-border: rgba(139, 92, 246, 0.14);
+  --card-border-hover: rgba(139, 92, 246, 0.38);
+  --input-bg: rgba(14, 8, 24, 0.7);
+  --accent: #8b5cf6;
+  --accent-glow: rgba(139, 92, 246, 0.4);
+  --accent-emerald: #10b981;
+  --accent-amber: #fbbf24;
+  --accent-rose: #f43f5e;
+  --accent-violet: #a855f7;
+  --text-main: #f6f2fa;
+  --text-muted: #b7abc8;
+  --text-dim: #877a99;
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --btn-bg: rgba(255, 255, 255, 0.04);
+  --btn-bg-hover: rgba(255, 255, 255, 0.08);
+  --btn-primary-text: #170829;
+  --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --focus-ring: 0 0 0 1px rgba(139, 92, 246, 0.45), 0 0 0 4px rgba(139, 92, 246, 0.12);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
 }
 
 * {
@@ -141,11 +260,11 @@ td, th {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Common UI Atoms */
@@ -155,10 +274,12 @@ td, th {
   border: 1px solid var(--card-border);
   border-radius: 12px;
   padding: 20px;
+  box-shadow: var(--card-shadow);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .card:hover {
   border-color: var(--card-border-hover);
+  box-shadow: var(--card-shadow-hover);
 }
 
 .card-header {
@@ -187,15 +308,19 @@ td, th {
   font-weight: 600;
   border-radius: 8px;
   border: 1px solid var(--card-border);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--btn-bg);
   color: var(--text-main);
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
 }
 .btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--btn-bg-hover);
   border-color: var(--card-border-hover);
+}
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .btn:active {
   transform: scale(0.98);
@@ -203,14 +328,14 @@ td, th {
 
 .btn-primary {
   background: var(--accent);
-  color: #000;
+  color: var(--btn-primary-text);
   border-color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow);
+  box-shadow: var(--btn-primary-shadow);
 }
 .btn-primary:hover {
   background: var(--accent);
   filter: brightness(1.1);
-  box-shadow: 0 0 16px var(--accent-glow);
+  box-shadow: var(--btn-primary-shadow-hover);
 }
 
 .btn-danger {
@@ -252,7 +377,7 @@ td, th {
 }
 .input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 
 .badge {

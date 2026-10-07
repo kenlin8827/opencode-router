@@ -57,6 +57,8 @@ export interface TranslationDict {
       cyber: string;
       sunset: string;
       light: string;
+      amber: string;
+      violet: string;
     };
   };
   overview: {
