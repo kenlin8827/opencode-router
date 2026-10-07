@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Orbit } from 'lucide-react';
 import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -56,13 +56,16 @@ export const SettingsPage: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Section 1: Server & Network */}
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)' }}>{t('settings.netTitle')}</div>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Globe size={14} />
+              {t('settings.netTitle')}
+            </div>
             <div>
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.port')}</label>
               <input
                 type="number"
-                value={config.port || 4000}
-                onChange={e => setConfig({ ...config, port: parseInt(e.target.value) || 4000 })}
+                value={config.port || 3000}
+                onChange={e => setConfig({ ...config, port: parseInt(e.target.value) || 3000 })}
                 className="input"
               />
             </div>
@@ -70,7 +73,7 @@ export const SettingsPage: React.FC = () => {
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.host')}</label>
               <input
                 type="text"
-                value={config.host || '127.0.0.1'}
+                value={config.host || '0.0.0.0'}
                 onChange={e => setConfig({ ...config, host: e.target.value })}
                 className="input"
               />
@@ -79,7 +82,10 @@ export const SettingsPage: React.FC = () => {
 
           {/* Section 2: Semantic Cache */}
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)' }}>{t('settings.cacheTitle')}</div>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <HardDrive size={14} />
+              {t('settings.cacheTitle')}
+            </div>
             <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
               <span>{t('settings.cacheEnable')}</span>
               <input
@@ -111,7 +117,10 @@ export const SettingsPage: React.FC = () => {
 
           {/* Section 3: Data Flywheel */}
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)' }}>{t('settings.flywheelTitle')}</div>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Orbit size={14} />
+              {t('settings.flywheelTitle')}
+            </div>
             <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
               <span>{t('settings.flywheelEnable')}</span>
               <input
@@ -129,47 +138,6 @@ export const SettingsPage: React.FC = () => {
                 className="input"
               />
             </div>
-          </div>
-
-          {/* Section 4: Layer 1 Local Classifier */}
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-amber)' }}>{t('settings.classifierTitle')}</div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
-              <span>{t('settings.classifierEnable')}</span>
-              <input
-                type="checkbox"
-                checked={config.classifier?.localModel ?? false}
-                onChange={e => setConfig({ ...config, classifier: { ...config.classifier, localModel: e.target.checked } })}
-              />
-            </label>
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.classifierThresh')}</label>
-              <input
-                type="number"
-                step="0.05"
-                value={config.classifier?.confidenceThreshold || 0.85}
-                onChange={e => setConfig({ ...config, classifier: { ...config.classifier, confidenceThreshold: parseFloat(e.target.value) || 0.85 } })}
-                className="input"
-              />
-            </div>
-          </div>
-          {/* Section 5: Auto Virtual Model Routing Mode */}
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)' }}>{t('settings.routingModeTitle')}</div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {(['smart', 'cost', 'quality'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className={(config.routing?.mode ?? 'smart') === m ? 'btn btn-primary' : 'btn'}
-                  style={{ fontSize: '12px', flex: 1 }}
-                  onClick={() => setConfig({ ...config, routing: { ...(config.routing || {}), mode: m } })}
-                >
-                  {t(m === 'smart' ? 'settings.modeSmart' : m === 'cost' ? 'settings.modeCost' : 'settings.modeQuality')}
-                </button>
-              ))}
-            </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('settings.routingModeHint')}</div>
           </div>
         </div>
       </div>

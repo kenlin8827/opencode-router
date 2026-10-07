@@ -7,7 +7,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { runPool } from '../lib/runPool';
+import { useModelTest } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
 
 /** Backdrop blur is opt-in per dialog (default: dim only, no blur). */
@@ -103,7 +103,7 @@ const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string
   service: { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcService' },
 };
 
-const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video'] as const;
+const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
 const EFFORT_OPTIONS = ['', 'minimal', 'low', 'medium', 'high'] as const;
 
 const fmtContext = (n?: number): string => {
@@ -209,9 +209,7 @@ export const ProviderModelsDialog: React.FC<{
   const [preview, setPreview] = useState<PullPreview | null>(null);
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; data: ModelFormState } | null>(null);
   const [hover, setHover] = useState<{ row: ModelRow; top: number; left: number } | null>(null);
-  const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; latencyMs?: number; error?: string }>>({});
-  const [testAll, setTestAll] = useState<{ running: boolean; done: number; total: number }>({ running: false, done: 0, total: 0 });
+  const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
 
   const load = async () => {
     setLoading(true);
@@ -261,55 +259,9 @@ export const ProviderModelsDialog: React.FC<{
     })();
   };
 
-  /** Single probe without toasts — shared by the per-row button and batch test. */
-  const runTest = async (rowId: string): Promise<{ ok: boolean; latencyMs?: number; error?: string }> => {
-    setTestingIds((prev) => new Set(prev).add(rowId));
-    try {
-      const r = await opencodeApi.testProvider(providerId, { modelId: rowId });
-      setTestResults((prev) => ({ ...prev, [rowId]: r }));
-      return r;
-    } catch (err: any) {
-      const failed = { ok: false, error: err.message };
-      setTestResults((prev) => ({ ...prev, [rowId]: failed }));
-      return failed;
-    } finally {
-      setTestingIds((prev) => {
-        const n = new Set(prev);
-        n.delete(rowId);
-        return n;
-      });
-    }
-  };
-
-  /** One-shot upstream probe for a single model row (works in readOnly too). */
-  const handleTest = async (rowId: string) => {
-    const r = await runTest(rowId);
-    if (r.ok) toast.success(t('op.testOkMsg', { model: rowId, ms: r.latencyMs ?? 0 }));
-    else toast.error(r.error || t('op.testFailMsg'));
-  };
-
-  /** Batch probe every listed model — asks for confirmation above 20 real requests. */
-  const handleTestAll = async () => {
-    if (testAll.running || testingIds.size > 0 || rows.length === 0) return;
-    if (rows.length > 20) {
-      const ok = await confirmDialog({
-        title: t('op.testAllConfirmTitle', { n: rows.length }),
-        description: t('op.testAllConfirmDesc'),
-      });
-      if (!ok) return;
-    }
-    setTestAll({ running: true, done: 0, total: rows.length });
-    let okCount = 0;
-    await runPool(rows, 4, async (row) => {
-      const r = await runTest(row.id);
-      if (r.ok) okCount++;
-      setTestAll((prev) => ({ ...prev, done: prev.done + 1 }));
-    });
-    setTestAll((prev) => ({ ...prev, running: false }));
-    toast[okCount === rows.length ? 'success' : 'error'](
-      t('op.testAllDone', { ok: okCount, n: rows.length })
-    );
-  };
+  /** Batch probe every listed model — confirmation above 20 real requests lives in useModelTest. */
+  const handleTestAll = () =>
+    testAllTargets(rows.map((row) => ({ key: row.id, providerId, modelId: row.id })));
 
   const refreshAll = async () => {
     await load();
@@ -528,7 +480,8 @@ export const ProviderModelsDialog: React.FC<{
   const modLabel = (m: string): string => {
     const key = `models.mod${m.charAt(0).toUpperCase()}${m.slice(1)}`;
     try {
-      return t(key as any) || m;
+      const v = t(key as any);
+      return v && v !== key ? v : m;
     } catch {
       return m;
     }
@@ -650,7 +603,7 @@ export const ProviderModelsDialog: React.FC<{
                       style={{ padding: '3px 6px' }}
                       title={t('op.testBtn')}
                       disabled={testingIds.size > 0 || testAll.running}
-                      onClick={() => handleTest(row.id)}
+                      onClick={() => testOne({ key: row.id, providerId, modelId: row.id })}
                     >
                       {testingIds.has(row.id) ? <Loader2 size={11} style={spin} /> : <Zap size={11} />}
                     </button>

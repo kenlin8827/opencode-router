@@ -2,6 +2,7 @@
 
 ## 状态
 已接受 (Accepted) - 2026-09-29
+部分废止 (Partially Superseded by [ADR-0011](./0011-pure-direct-execution-no-daemon.md)) - 2026-10-08：第 4 条"无密钥代理委托"（执行走 OpenCode daemon）已废止，改为网关直连；第 1–3 条动态发现与自适应分层理念保留，数据源迁移至本地 catalog。
 
 ## 上下文 (Context)
 传统 LLM 网关往往要求在配置文件或代码中显式列出所有上游厂商的 API Key、BaseURL、模型名称及分级梯度。这种做法带来了以下痛点：

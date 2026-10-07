@@ -1,12 +1,30 @@
+// Mirrors backend FinOpsStats (backend/src/metrics/finops-tracker.ts getStats)
 export interface GatewayMetrics {
   totalRequests: number;
-  cacheHits: number;
-  cacheHitRatio: number;
-  totalTokens: number;
-  cachedTokens: number;
-  costSavingsUsd: number;
-  savingsPercentage: number;
-  avgLatencyMs: number;
+  fallbackCount: number;
+  tierDistribution: {
+    fast: { count: number; pct: number };
+    flagship: { count: number; pct: number };
+    reasoning: { count: number; pct: number };
+  };
+  tokens: {
+    totalPromptTokens: number;
+    totalCachedPromptTokens: number;
+    totalCompletionTokens: number;
+    totalReasoningTokens: number;
+  };
+  economics: {
+    actualCostUsd: number;
+    baselineCostUsd: number;
+    totalSavingsUsd: number;
+    savingsPct: number;
+  };
+  latency: {
+    avgMs: number;
+    fastAvgMs: number;
+    flagshipAvgMs: number;
+    reasoningAvgMs: number;
+  };
 }
 
 export interface ClientStatus {
@@ -17,68 +35,165 @@ export interface ClientStatus {
   hooked: boolean;
   targetProvider: string;
   backupExists: boolean;
+  /** Extra concrete models exposed in the client's model switcher (opencode) */
+  extraModels?: string[];
+  /** This client's model slots; value undefined = auto (intelligent routing) */
+  modelSlots: { key: string; value?: string; default?: string }[];
 }
 
+// Mirrors backend CircuitBreakerSnapshot (backend/src/resilience/types.ts)
 export interface BreakerInfo {
-  model: string;
+  modelId: string;
+  provider: string;
+  tier?: string;
   state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
-  failures: number;
-  lastFailureTime: number | null;
-  cooldownRemainingMs: number;
+  reason?: string;
+  category?: string;
+  consecutiveFailures: number;
+  totalRequests: number;
+  totalSuccesses: number;
+  totalFailures: number;
+  lastFailureTime?: number;
+  lastSuccessTime?: number;
+  trippedAt?: number;
+  cooldownUntil?: number;
+  remainingCooldownMs: number;
+  currentCooldownMs: number;
+  halfOpenProbes: number;
 }
 
+// Masked provider entry from /api/ui/status (ProviderConfig with apiKey masked)
+export interface MaskedProviderStatus {
+  name: string;
+  type: 'openai-compatible' | 'anthropic';
+  baseUrl: string;
+  apiKey: string; // "xxxx••••xxxx", empty string when unset
+  rawKeyConfigured: boolean;
+  organization?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+// Mirrors backend /api/ui/status payload exactly (backend/src/routes/console.ts handleStatus)
 export interface GatewayStatusResponse {
   status: string;
   timestamp: string;
-  uptimeSeconds: number;
-  memoryUsageMb: {
-    heapUsed: number;
-    rss: number;
-  };
   metrics: GatewayMetrics;
   circuitBreakers: {
     total: number;
-    openCount: number;
+    healthy: number;
+    tripped: number;
+    halfOpen: number;
     breakers: BreakerInfo[];
   };
   clients: ClientStatus[];
-  budget: {
-    monthlyLimitUsd: number;
-    currentSpendUsd: number;
-    usageRatio: number;
-    hardLimitEnforced: boolean;
+  providers: MaskedProviderStatus[];
+  registeredModelsCount: number;
+}
+
+// Mirrors backend ExecutionTrace (backend/src/trace/tracker.ts) returned by /v1/traces
+export interface TraceRecord {
+  traceId: string;
+  sessionId: string;
+  turnNumber: number;
+  timestamp: number;
+  request: {
+    model: string;
+    userPromptSummary: string;
+    messageCount: number;
+    hasSystemPrompt: boolean;
+    hasToolsOrSchema: boolean;
+  };
+  routing: {
+    layerUsed: 'layer0' | 'layer1' | 'layer2';
+    targetTier: 'fast' | 'flagship' | 'reasoning';
+    confidence: number;
+    reason: string;
+    sessionRatchetApplied: boolean;
+  };
+  execution: {
+    modelUsed: string;
+    provider: string;
+    tierUsed: 'fast' | 'flagship' | 'reasoning';
+    latencyMs: number;
+    fallbackOccurred: boolean;
+    fallbackReason?: string;
+    failoverOccurred?: boolean;
+    failoverAttempts?: number;
+    failoverPath?: string[];
+    inplaceRetries?: number;
+  };
+  finops: {
+    promptTokens: number;
+    completionTokens: number;
+    cachedPromptTokens: number;
+    costUsd: number;
+    savedCostUsd: number;
   };
 }
 
-export interface TraceRecord {
+// Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
+export interface SessionRecord {
   id: string;
-  timestamp: string;
-  sessionId?: string;
+  maxTier: 'fast' | 'flagship' | 'reasoning';
+  pinnedModel: string;
+  pinnedProvider: string;
+  createdAt: number;
+  lastActiveAt: number;
+  turnCount: number;
+  historyTiers: string[];
+  traceCount: number;
+}
+
+// Mirrors backend CacheStatsSummary (backend/src/trace/tracker.ts getCacheStats)
+export interface CacheStatsModelRow {
   model: string;
   provider: string;
-  status: 'success' | 'fallback' | 'error';
-  latencyMs: number;
-  tokens?: {
-    prompt: number;
-    completion: number;
-    total: number;
-  };
-  costUsd?: {
-    actual: number;
-    baseline: number;
-    savings: number;
-  };
-  cacheHit?: boolean;
+  requests: number;
+  cachedRequests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  costUsd: number;
+  savedCostUsd: number;
 }
 
-export interface SessionRecord {
-  sessionId: string;
-  pinnedModel: string;
-  currentTier: number;
-  traceCount: number;
-  totalTokens: number;
-  createdAt: string;
-  lastActiveAt: string;
+export interface CacheStatsHourBucket {
+  hourTs: number;
+  requests: number;
+  cachedRequests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+}
+
+export interface CacheStatsSummary {
+  windowTraces: number;
+  totalRequests: number;
+  cachedRequests: number;
+  requestHitRatio: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  tokenHitRatio: number;
+  costUsd: number;
+  savedCostUsd: number;
+  models: CacheStatsModelRow[];
+  hourly: CacheStatsHourBucket[];
+}
+
+// Mirrors backend RoutingCacheStats (backend/src/router/decision-cache.ts)
+export interface RoutingCacheStats {
+  enabled: boolean;
+  entries: number;
+  maxEntries: number;
+  ttlSeconds: number;
+  hits: number;
+  misses: number;
+  hitRatio: number;
+}
+
+export interface CacheStatsResponse {
+  status: string;
+  stats: CacheStatsSummary;
+  routingCache: RoutingCacheStats;
 }
 
 export interface TierPoolModel {
@@ -113,7 +228,10 @@ export const api = {
   async getConfig(): Promise<any> {
     const res = await fetch('/api/ui/config');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+    const body = await res.json();
+    // Unwrap the { status, config } envelope — consumers want the RouterConfig
+    // object itself (SettingsPage/AutoPage save it back via saveConfig).
+    return body?.config ?? body;
   },
 
   async saveConfig(config: any): Promise<{ status: string; message: string }> {
@@ -131,6 +249,12 @@ export const api = {
 
   async getTierPools(): Promise<TierPoolsResponse> {
     const res = await fetch('/api/ui/tier-pools');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getCacheStats(): Promise<CacheStatsResponse> {
+    const res = await fetch('/api/ui/cache-stats');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -154,14 +278,58 @@ export const api = {
     return res.json();
   },
 
-  async toggleClient(client: string, action: 'setup' | 'teardown'): Promise<{ status: string; message: string }> {
-    const res = await fetch(`/api/ui/client/${client}/${action}`, { method: 'POST' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  async toggleClient(
+    client: string,
+    action: 'setup' | 'teardown',
+    payload?: {
+      models?: Record<string, string>;
+      apiKey?: string;
+      contextWindow?: number;
+      extraModels?: string[];
+    }
+  ): Promise<{ status: string; message: string }> {
+    const res = await fetch(`/api/ui/client/${client}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
     return res.json();
   },
 
-  async resetBreakers(): Promise<{ status: string; message?: string }> {
-    const res = await fetch('/v1/health/circuit-breakers/reset', { method: 'POST' });
+  /** All models the gateway can route to: virtual (auto/auto-fast/…) + registered. */
+  async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string }[]> {
+    const res = await fetch('/v1/models');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return (json?.data || []).map((m: any) => ({
+      id: m.id,
+      owned_by: m.owned_by || '',
+      tier: m.metadata?.tier,
+    }));
+  },
+
+  async resetBreakers(model?: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch('/v1/health/circuit-breakers/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(model ? { model } : {}),
+    });
+    return res.json();
+  },
+
+  async tripBreaker(
+    model: string,
+    options?: { reason?: string; cooldownMs?: number }
+  ): Promise<{ status: string; message?: string }> {
+    const res = await fetch('/v1/health/circuit-breakers/trip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, ...options }),
+    });
     return res.json();
   },
 
@@ -294,7 +462,7 @@ export interface CustomProviderPayload {
 export interface TestProviderResult {
   status: string;
   ok: boolean;
-  kind?: 'openai' | 'anthropic' | 'google';
+  kind?: 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
   model?: string;
   latencyMs?: number;
   error?: string;

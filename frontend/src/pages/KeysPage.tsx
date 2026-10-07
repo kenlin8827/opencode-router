@@ -8,7 +8,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
-import { runPool } from '../lib/runPool';
+import { useModelTest } from '../lib/useModelTest';
 
 const cardStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.02)',
@@ -110,9 +110,7 @@ export const KeysPage: React.FC = () => {
   const [keyEditId, setKeyEditId] = useState<string | null>(null);
   const [keyEditValue, setKeyEditValue] = useState('');
   const [modelsPanelId, setModelsPanelId] = useState<string | null>(null);
-  const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; model?: string; latencyMs?: number; error?: string }>>({});
-  const [testAll, setTestAll] = useState<{ running: boolean; done: number; total: number }>({ running: false, done: 0, total: 0 });
+  const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
   const [notice, setNotice] = useState('');
   const [ocError, setOcError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -253,49 +251,9 @@ export const KeysPage: React.FC = () => {
     }
   };
 
-  /** Single probe without toasts — shared by the per-provider button and batch test. */
-  const runTest = async (id: string): Promise<{ ok: boolean; model?: string; latencyMs?: number; error?: string }> => {
-    setTestingIds((prev) => new Set(prev).add(id));
-    try {
-      const r = await opencodeApi.testProvider(id);
-      setTestResults((prev) => ({ ...prev, [id]: r }));
-      return r;
-    } catch (err: any) {
-      const failed = { ok: false, error: err.message };
-      setTestResults((prev) => ({ ...prev, [id]: failed }));
-      return failed;
-    } finally {
-      setTestingIds((prev) => {
-        const n = new Set(prev);
-        n.delete(id);
-        return n;
-      });
-    }
-  };
-
-  const handleTestProvider = async (id: string) => {
-    const r = await runTest(id);
-    if (r.ok) toast.success(t('op.testOkMsg', { model: r.model || id, ms: r.latencyMs ?? 0 }));
-    else toast.error(r.error || t('op.testFailMsg'));
-  };
-
   /** Batch test: bounded concurrency over the currently visible connected providers. */
-  const handleTestAllProviders = async () => {
-    if (testAll.running || testingIds.size > 0) return;
-    const targets = connectedResults;
-    if (targets.length === 0) return;
-    setTestAll({ running: true, done: 0, total: targets.length });
-    let okCount = 0;
-    await runPool(targets, 4, async (p) => {
-      const r = await runTest(p.id);
-      if (r.ok) okCount++;
-      setTestAll((prev) => ({ ...prev, done: prev.done + 1 }));
-    });
-    setTestAll((prev) => ({ ...prev, running: false }));
-    toast[okCount === targets.length ? 'success' : 'error'](
-      t('op.testAllDone', { ok: okCount, n: targets.length })
-    );
-  };
+  const handleTestAllProviders = () =>
+    testAllTargets(connectedResults.map((p) => ({ key: p.id, providerId: p.id })));
 
   const handleDelete = async (p: OpenCodeProviderView) => {
     const ok = await confirmDialog({
@@ -429,6 +387,17 @@ export const KeysPage: React.FC = () => {
                     <span style={badgeStyle('var(--text-dim)', 'rgba(255,255,255,0.06)')}>{t('op.badgeAuth')}</span>
                   )}
                 </div>
+                {keyEditId !== p.id && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ color: 'var(--accent-rose)', flexShrink: 0 }}
+                    disabled={busy || testingIds.size > 0 || testAll.running}
+                    title={t('op.deleteBtn')}
+                    onClick={() => handleDelete(p)}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
               </div>
 
               {p.baseURL && (
@@ -502,7 +471,7 @@ export const KeysPage: React.FC = () => {
                       className="btn btn-sm"
                       disabled={testingIds.size > 0 || testAll.running}
                       title={testingIds.has(p.id) ? t('op.testing') : t('op.testBtn')}
-                      onClick={() => handleTestProvider(p.id)}
+                      onClick={() => testOne({ key: p.id, providerId: p.id })}
                     >
                       {testingIds.has(p.id) ? <RefreshCw size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={12} />}
                       {!testingIds.has(p.id) && <span>{t('op.testBtn')}</span>}
@@ -516,9 +485,6 @@ export const KeysPage: React.FC = () => {
                     >
                       <Cpu size={12} />
                       <span>{t('op.pmManage')}</span>
-                    </button>
-                    <button className="btn btn-sm" style={{ color: 'var(--accent-rose)' }} disabled={busy || testingIds.size > 0 || testAll.running} onClick={() => handleDelete(p)}>
-                      <Trash2 size={12} />
                     </button>
                   </>
                 )}

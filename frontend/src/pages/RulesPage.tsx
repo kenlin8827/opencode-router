@@ -195,7 +195,7 @@ export const RulesPage: React.FC = () => {
     (async () => {
       try {
         const cfg = await api.getConfig();
-        const tiers = cfg?.config?.tiers || {};
+        const tiers = cfg?.tiers || {};
         setForms({
           fast: formFromPolicy('fast', tiers.fast),
           flagship: formFromPolicy('flagship', tiers.flagship),

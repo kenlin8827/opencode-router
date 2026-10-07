@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutGrid,
-  Layers,
   Network,
   Database,
   KeyRound,
-  Terminal,
+  MonitorSmartphone,
   ShieldAlert,
   BarChart3,
+  Users,
   Sliders,
   FileCode2,
   RefreshCw,
@@ -18,6 +18,16 @@ import {
   Globe,
   Plug,
   Cpu,
+  ArrowLeftRight,
+  Zap,
+  Activity,
+  Shuffle,
+  BrainCircuit,
+  Server,
+  LogIn,
+  ShieldCheck,
+  Waves,
+  Settings,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -37,6 +47,7 @@ interface NavItemDef {
 interface NavGroupDef {
   id: string;
   headingKey: string;
+  icon: LucideIcon;
   items: NavItemDef[];
 }
 
@@ -44,52 +55,61 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   {
     id: 'grp-overview',
     headingKey: 'nav.grpOverview',
+    icon: Activity,
     items: [
       { to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true, badge: 'Live' },
     ],
   },
   {
+    id: 'grp-access',
+    headingKey: 'nav.grpAccess',
+    icon: LogIn,
+    items: [
+      { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
+      { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
+    ],
+  },
+  {
     id: 'grp-traffic',
     headingKey: 'nav.grpTraffic',
+    icon: Shuffle,
     items: [
-      { to: '/chains', labelKey: 'nav.chains', icon: Layers },
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-      { to: '/cache', labelKey: 'nav.cache', icon: Database },
+      { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     ],
   },
   {
     id: 'grp-upstream',
     headingKey: 'nav.grpUpstream',
+    icon: Server,
     items: [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
-    ],
-  },
-  {
-    id: 'grp-access',
-    headingKey: 'nav.grpAccess',
-    items: [
-      { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
-      { to: '/clients', labelKey: 'nav.clients', icon: Terminal, badge: '3' },
-    ],
-  },
-  {
-    id: 'grp-safety',
-    headingKey: 'nav.grpSafety',
-    items: [
-      { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
+      { to: '/proxy', labelKey: 'nav.proxy', icon: ArrowLeftRight },
     ],
   },
   {
     id: 'grp-observability',
     headingKey: 'nav.grpObservability',
+    icon: Waves,
     items: [
-      { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
+      { to: '/traces', labelKey: 'nav.traces', icon: BarChart3 },
+      { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
+      { to: '/cache', labelKey: 'nav.cache', icon: Database },
+    ],
+  },
+  {
+    id: 'grp-safety',
+    headingKey: 'nav.grpSafety',
+    icon: ShieldCheck,
+    items: [
+      { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
     ],
   },
   {
     id: 'grp-system',
     headingKey: 'nav.grpSystem',
+    icon: Settings,
     items: [
       { to: '/settings', labelKey: 'nav.settings', icon: Sliders },
       { to: '/yaml', labelKey: 'nav.yaml', icon: FileCode2 },
@@ -99,15 +119,17 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
 
 const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = {
   '/': { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' },
-  '/chains': { groupKey: 'nav.grpTraffic', titleKey: 'nav.chains' },
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
-  '/cache': { groupKey: 'nav.grpTraffic', titleKey: 'nav.cache' },
+  '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
+  '/proxy': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
-  '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
+  '/traces': { groupKey: 'nav.grpObservability', titleKey: 'nav.traces' },
+  '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
+  '/cache': { groupKey: 'nav.grpObservability', titleKey: 'nav.cache' },
   '/settings': { groupKey: 'nav.grpSystem', titleKey: 'nav.settings' },
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };
@@ -118,6 +140,7 @@ export const Layout: React.FC = () => {
   const confirmDialog = useConfirm();
   const toast = useToast();
   const [status, setStatus] = useState<GatewayStatusResponse | null>(null);
+  const [statusError, setStatusError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [theme, setTheme] = useState(() => localStorage.getItem('ocr_theme') || 'obsidian');
@@ -133,8 +156,10 @@ export const Layout: React.FC = () => {
       try {
         const data = await api.getStatus();
         setStatus(data);
+        setStatusError(false);
       } catch (err) {
         console.warn('Failed to poll gateway status:', err);
+        setStatusError(true);
       }
     };
     fetchStatus();
@@ -215,13 +240,12 @@ export const Layout: React.FC = () => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: '18px',
               color: '#000',
               fontWeight: 800,
               boxShadow: '0 0 16px var(--accent-glow)',
             }}
           >
-            ⚡
+            <Zap size={18} strokeWidth={2.5} fill="currentColor" />
           </div>
           <div>
             <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em' }}>OpenCode Router</div>
@@ -280,7 +304,10 @@ export const Layout: React.FC = () => {
                     borderRadius: '6px',
                   }}
                 >
-                  <span>{t(group.headingKey)}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <group.icon size={12} strokeWidth={2.5} />
+                    {t(group.headingKey)}
+                  </span>
                   <ChevronDown
                     size={13}
                     style={{
@@ -452,7 +479,7 @@ export const Layout: React.FC = () => {
 
         {/* Page Content Container */}
         <main style={{ padding: '28px', flex: 1, minWidth: 0 }}>
-          <Outlet context={{ status }} />
+          <Outlet context={{ status, statusError }} />
         </main>
       </div>
     </div>

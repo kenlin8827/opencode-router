@@ -2,6 +2,7 @@
 
 ## Status
 Accepted - 2026-09-29
+Partially superseded by [ADR-0011](./zh-CN/0011-pure-direct-execution-no-daemon.md) - 2026-10-08 (Section 4 "Keyless Proxy Delegation" to the OpenCode daemon is retired; direct execution replaces proxying. Dynamic-discovery and tiering ideas in Sections 1-3 remain in force, with the data source moved to the local catalog).
 
 ## Context
 Traditional LLM routing gateways require hardcoding upstream providers, API keys, endpoints, model identifiers, and manual tiering maps directly into configuration files or codebase. This presents significant operational drawbacks:

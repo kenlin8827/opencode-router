@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, AudioLines, Video, Thermometer, Pencil } from 'lucide-react';
+import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, AudioLines, Video, Thermometer, Pencil, Zap, Loader2 } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
+import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
 import { ModelEditDialog } from '../components/ModelEditDialog';
 import { Combobox } from '../components/Combobox';
@@ -82,10 +83,12 @@ export const ModelsPage: React.FC = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [editTarget, setEditTarget] = useState<{ providerId: string; modelId: string } | null>(null);
+  const { testingIds, testResults, testOne, isBusy } = useModelTest();
 
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState(searchParams.get('provider') || '');
-  const [onlyConnected, setOnlyConnected] = useState(false);
+  // Connected-only is a stable personal preference — remember it (first visit: unchecked).
+  const [onlyConnected, setOnlyConnected] = useState(() => localStorage.getItem('ocr_models_only_connected') === '1');
   const [sort, setSort] = useState<SortKey>('default');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(PAGE_SIZE);
@@ -221,7 +224,7 @@ export const ModelsPage: React.FC = () => {
             <input
               type="checkbox"
               checked={onlyConnected}
-              onChange={(e) => { setOnlyConnected(e.target.checked); setPage(1); }}
+              onChange={(e) => { setOnlyConnected(e.target.checked); localStorage.setItem('ocr_models_only_connected', e.target.checked ? '1' : '0'); setPage(1); }}
             />
             {t('models.onlyConnected')}
           </label>
@@ -246,11 +249,36 @@ export const ModelsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {pagedModels.map((m) => (
-                <tr key={`${m.providerId}/${m.id}`}>
+              {pagedModels.map((m) => {
+                const rowKey = `${m.providerId}/${m.id}`;
+                const res = testResults[rowKey];
+                return (
+                <tr key={rowKey}>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, wordBreak: 'break-all' }}>{m.id}</span>
+                      {res && (
+                        <span
+                          style={{
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fontSize: 10,
+                            whiteSpace: 'nowrap',
+                            color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                          }}
+                          title={res.ok ? `${res.latencyMs} ms` : res.error}
+                        >
+                          {res.ok ? `✓${res.latencyMs}ms` : '✗'}
+                        </span>
+                      )}
+                      <button
+                        className="btn btn-sm"
+                        style={{ padding: '2px 5px', display: 'inline-flex', flexShrink: 0 }}
+                        title={testingIds.has(rowKey) ? t('op.testing') : t('op.testBtn')}
+                        disabled={isBusy}
+                        onClick={() => testOne({ key: rowKey, providerId: m.providerId, modelId: m.id })}
+                      >
+                        {testingIds.has(rowKey) ? <Loader2 size={10} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={10} />}
+                      </button>
                       {m.custom && (
                         <button
                           title={t('op.pmEdit')}
@@ -293,11 +321,13 @@ export const ModelsPage: React.FC = () => {
                     </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {filtered.length === 0 && !loading && (
                 <tr>
                   <td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>
                     {t('models.empty')}
+                    {models.length > 0 && <div style={{ marginTop: 6, fontSize: 11 }}>{t('models.emptyFiltered')}</div>}
                   </td>
                 </tr>
               )}

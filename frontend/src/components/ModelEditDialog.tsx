@@ -60,7 +60,7 @@ const fieldLabelStyle: React.CSSProperties = {
   marginBottom: 4,
 };
 
-const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video'] as const;
+const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
 const EFFORT_OPTIONS = ['', 'minimal', 'low', 'medium', 'high'] as const;
 
 interface ModelFormState {
@@ -283,7 +283,8 @@ export const ModelEditDialog: React.FC<{
   const modLabel = (m: string): string => {
     const key = `models.mod${m.charAt(0).toUpperCase()}${m.slice(1)}`;
     try {
-      return t(key as any) || m;
+      const v = t(key as any);
+      return v && v !== key ? v : m;
     } catch {
       return m;
     }

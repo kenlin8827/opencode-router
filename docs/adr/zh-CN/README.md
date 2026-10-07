@@ -9,7 +9,7 @@
 | 编号 | 标题 | 状态 | 日期 | 核心摘要 |
 | :--- | :--- | :--- | :--- | :--- |
 | [ADR-0001](./0001-purge-fuzzy-semantic-cache.md) | 彻底物理移除本地模糊语义缓存 | **已接受 (Accepted)** | 2026-09-29 | 根除 System Prompt 主导导致的余弦相似度虚高与回答串味问题，确保穿透透明与零残留 |
-| [ADR-0002](./0002-dynamic-model-discovery-via-opencode.md) | 基于 OpenCode 的 100% 动态模型发现与自适应分层 | **已接受 (Accepted)** | 2026-09-29 | 彻底废除静态 providers/models 硬编码，完全由本地 OpenCode 运行时接管模型发现、分层与鉴权代理 |
+| [ADR-0002](./0002-dynamic-model-discovery-via-opencode.md) | 基于 OpenCode 的 100% 动态模型发现与自适应分层 | **部分废止 (Superseded in part by [ADR-0011](./0011-pure-direct-execution-no-daemon.md))** | 2026-09-29 | 彻底废除静态 providers/models 硬编码，完全由本地 OpenCode 运行时接管模型发现、分层与鉴权代理（执行委托部分已被 ADR-0011 废止，动态发现理念保留） |
 | [ADR-0003](./0003-language-neutral-routing-engine.md) | 语言中立的多维复杂度与结构化路由引擎 | **已接受 (Accepted)** | 2026-09-29 | 摒弃中英文自然语言词表硬编码，改用语法标点密度、LaTeX 形式数学、跨语言技术缩写与动态规则 |
 | [ADR-0004](./0004-hierarchical-classification-and-data-flywheel.md) | 多层分类架构与数据飞轮演进体系 | **已实现 (Accepted)** | 2026-09-29 | 落地 Layer 0 结构规则 -> Layer 1 本地 CPU 经验小模型 -> Layer 2 专职裁决模型 (TypeSafe Jev) -> 级联降级真值闭环 |
 | [ADR-0005](./0005-auto-initializing-base-model-scaffold.md) | 本地空白底座模型自动初始化与确定性穿透 | **已实现 (Accepted)** | 2026-09-29 | 自动落盘未训练微张量底座 (W=0, b=0)，数学严格保证置信度 0.33 < 0.85，100% 确定性穿透至 Layer 2 并支持飞轮原地自演进 |
@@ -17,5 +17,7 @@
 | [ADR-0007](./0007-symmetrical-pipeline-naming-classifier-and-judge.md) | 层级对称性流水线命名演进：Layer 1 分类器冲锋与 Layer 2 裁决者断后 | **已实现 (Accepted)** | 2026-09-29 | 消除突兀空间命名，确立 layer1-classifier（极速冲锋）与 layer2-judge（专职语义裁决）对称体系并彻底清理旧存根 |
 | [ADR-0008](./0008-industrial-grade-circuit-breaker-and-health-management.md) | 顶级工业级模型熔断、多级容灾与健康管理系统 | **已实现 (Accepted)** | 2026-09-30 | 故障精准解构（402额度硬熔断/5xx阶梯退避5h/429瞬时退避）、同Tier毫秒级透明故障转移、会话单调棘轮自愈与全维可观测接口 |
 | [ADR-0009](./0009-cost-aware-resilience-and-hierarchical-retry.md) | 经济性感知的高弹性两层重试与跨层级故障转移架构 | **已实现 (Accepted)** | 2026-09-30 | 两层重试拓扑（瞬时5xx原地重试挽救10x KV Cache成本、402立即穿透Failover）、同级优先遍历、向上升档保活与严格反向防降级（Anti-Downgrade） |
+| [ADR-0010](./0010-routing-decision-cache.md) | 路由决策缓存（Layer 2 Judge 结果复用） | **已接受 (Accepted)** | 2026-10-07 | LRU+TTL 缓存 Layer 2 语义裁决结果（非响应缓存），跨会话复用零网络零 token，命中带 [Decision Cache] 标记可观测 |
+| [ADR-0011](./0011-pure-direct-execution-no-daemon.md) | 纯直连执行——OpenCode daemon 完全退出推理链路 | **已接受 (Accepted)** | 2026-10-08 | 废止执行委托：网关直连 provider（npm 数据驱动线型派发 + Responses 线 + /proxy 全链出网），daemon 降级为目录辅助源；不可路由供给显式排除而非静默降级；P1 直连派发 / P2 OAuth 生命周期 / P3 tools·流式透传 |
 
 

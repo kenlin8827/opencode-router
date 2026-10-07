@@ -45,8 +45,10 @@ export const ApiKeysPage: React.FC = () => {
   const [newKeyCopied, setNewKeyCopied] = useState(false);
   useBodyScrollLock(showCreateModal || !!createdKey);
 
-  // Active tab for quick connect code examples
-  const [connectTab, setConnectTab] = useState<'cursor' | 'python' | 'curl'>('cursor');
+  // Active tab for quick connect code examples (dual protocol: OpenAI + Anthropic)
+  const [connectTab, setConnectTab] = useState<
+    'cursor' | 'claude' | 'python' | 'anthropic' | 'curl' | 'anthropic-curl'
+  >('cursor');
 
   const [page, setPage] = useState(1);
   const [keyPageSize, setKeyPageSize] = useState(KEY_PAGE_SIZE);
@@ -467,15 +469,23 @@ export const ApiKeysPage: React.FC = () => {
             </h2>
           </div>
 
-          <div style={{ display: 'flex', gap: '6px' }}>
-            {(['cursor', 'python', 'curl'] as const).map((tab) => (
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {(
+              [
+                ['cursor', 'Cursor / IDE'],
+                ['python', 'Python · OpenAI'],
+                ['curl', 'cURL · OpenAI'],
+                ['claude', 'Claude Code'],
+                ['anthropic', 'Python · Anthropic'],
+                ['anthropic-curl', 'cURL · Anthropic'],
+              ] as const
+            ).map(([tab, label]) => (
               <button
                 key={tab}
                 onClick={() => setConnectTab(tab)}
                 className={`btn btn-sm ${connectTab === tab ? 'btn-primary' : ''}`}
-                style={{ textTransform: 'capitalize' }}
               >
-                {tab === 'cursor' ? 'Cursor / IDE' : tab === 'python' ? 'Python (OpenAI)' : 'cURL'}
+                {label}
               </button>
             ))}
           </div>
@@ -506,7 +516,9 @@ http://127.0.0.1:3000/v1
 # 3. 在 API Key 中填入上方配发的客户端 API Key：
 ${sampleKey}
 
-# 4. 模型名称选择或添加：ocr-auto, deepseek-chat, gpt-4o, claude-3-5-sonnet`
+# 4. 模型名称选择或添加：
+#    虚拟分流模型：auto / auto-fast / auto-flagship / auto-reasoning
+#    或具体模型（完整 ID）：opencode/claude-sonnet-5-5、opencode/gpt-6-sol、opencode/glm-5.3`
           )}
 
           {connectTab === 'python' && (
@@ -518,7 +530,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="ocr-auto", # 智能分流
+    model="auto", # 智能分流：auto / auto-fast / auto-flagship / auto-reasoning
     messages=[{"role": "user", "content": "Hello OCR Gateway!"}]
 )
 
@@ -530,7 +542,49 @@ print(response.choices[0].message.content)`
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${sampleKey}" \\
   -d '{
-    "model": "ocr-auto",
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Ping!"}]
+  }'`
+          )}
+
+          {connectTab === 'claude' && (
+`# 1. 设置环境变量（或写入 ~/.claude/settings.json 的 "env" 字段）：
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
+export ANTHROPIC_AUTH_TOKEN=${sampleKey}
+
+# 2. 可选：默认模型（auto = 智能分流，也可 auto-fast / auto-flagship / auto-reasoning）
+export ANTHROPIC_MODEL=auto
+
+# 3. 正常启动 claude 即可。Claude Code 的请求将自动走网关的
+#    Anthropic 协议端点：POST {ANTHROPIC_BASE_URL}/v1/messages
+#    （鉴权兼容 x-api-key 与 Authorization: Bearer 两种头）`
+          )}
+
+          {connectTab === 'anthropic' && (
+`from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://127.0.0.1:3000",  # SDK 自动拼接 /v1/messages
+    api_key="${sampleKey}"
+)
+
+message = client.messages.create(
+    model="auto", # 智能分流：auto / auto-fast / auto-flagship / auto-reasoning
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello OCR Gateway!"}]
+)
+
+print(message.content[0].text)`
+          )}
+
+          {connectTab === 'anthropic-curl' && (
+`curl http://127.0.0.1:3000/v1/messages \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: ${sampleKey}" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -d '{
+    "model": "auto",
+    "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Ping!"}]
   }'`
           )}

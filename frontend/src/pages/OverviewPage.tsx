@@ -8,30 +8,47 @@ import {
   ShieldCheck,
   Terminal,
   ArrowRight,
-  Wallet,
 } from 'lucide-react';
 import type { GatewayStatusResponse } from '../lib/api';
+import { BrandIcon } from '../components/BrandIcons';
 import { useI18n } from '../i18n/I18nContext';
 
 export const OverviewPage: React.FC = () => {
-  const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
+  const { status, statusError } = useOutletContext<{ status: GatewayStatusResponse | null; statusError: boolean }>();
   const { t } = useI18n();
   const metrics = status?.metrics;
-  const budget = status?.budget;
 
-  const costSaved = metrics?.costSavingsUsd || 0;
-  const savingsPct = metrics?.savingsPercentage || 0;
-  const cacheHitPct = ((metrics?.cacheHitRatio || 0) * 100).toFixed(1);
-  const totalTokens = (metrics?.totalTokens || 0).toLocaleString();
-  const savedTokens = (metrics?.cachedTokens || 0).toLocaleString();
-  const latency = Math.round(metrics?.avgLatencyMs || 0);
-
-  const budgetMonthlyLimit = budget?.monthlyLimitUsd || 50;
-  const budgetCurrentSpend = budget?.currentSpendUsd || 0;
-  const budgetRatio = Math.min(100, Math.round((budgetCurrentSpend / (budgetMonthlyLimit || 1)) * 100));
+  const costSaved = metrics?.economics.totalSavingsUsd || 0;
+  const savingsPct = metrics?.economics.savingsPct || 0;
+  const totalPromptTokens = metrics?.tokens.totalPromptTokens || 0;
+  const cachedPromptTokens = metrics?.tokens.totalCachedPromptTokens || 0;
+  const cacheHitPct = totalPromptTokens > 0 ? ((cachedPromptTokens / totalPromptTokens) * 100).toFixed(1) : '0.0';
+  const totalTokens = (
+    totalPromptTokens +
+    (metrics?.tokens.totalCompletionTokens || 0) +
+    (metrics?.tokens.totalReasoningTokens || 0)
+  ).toLocaleString();
+  const savedTokens = cachedPromptTokens.toLocaleString();
+  const latency = Math.round(metrics?.latency.avgMs || 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {/* Gateway unreachable banner */}
+      {statusError && !status && (
+        <div
+          style={{
+            padding: '10px 16px',
+            borderRadius: '8px',
+            border: '1px solid var(--accent-rose)',
+            background: 'rgba(244, 63, 94, 0.08)',
+            color: 'var(--accent-rose)',
+            fontSize: '13px',
+          }}
+        >
+          {t('overview.statusOffline')}
+        </div>
+      )}
+
       {/* 4 Core FinOps Metrics */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
         <div className="card">
@@ -56,7 +73,7 @@ export const OverviewPage: React.FC = () => {
             {cacheHitPct}%
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-            {t('overview.cacheHitSub', { hits: metrics?.cacheHits || 0, total: metrics?.totalRequests || 0 })}
+            {t('overview.cacheHitSub', { cached: cachedPromptTokens.toLocaleString(), total: totalPromptTokens.toLocaleString() })}
           </div>
         </div>
 
@@ -87,37 +104,14 @@ export const OverviewPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Budget & Hard Limit Progress Card */}
-      <div className="card">
-        <div className="card-header" style={{ marginBottom: '10px' }}>
-          <div className="card-title">
-            <Wallet size={16} color="var(--accent-emerald)" />
-            <span>{t('overview.budgetCardTitle')}</span>
-          </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
-            {t('overview.budgetSpend', { spend: budgetCurrentSpend.toFixed(2), limit: budgetMonthlyLimit.toFixed(2), ratio: budgetRatio })}
-          </div>
-        </div>
-        <div style={{ width: '100%', height: '8px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '999px', overflow: 'hidden' }}>
-          <div
-            style={{
-              height: '100%',
-              width: `${budgetRatio}%`,
-              background: budgetRatio > 90 ? 'var(--accent-rose)' : budgetRatio > 70 ? 'var(--accent-amber)' : 'linear-gradient(90deg, var(--accent), var(--accent-emerald))',
-              borderRadius: '999px',
-              transition: 'width 0.4s ease',
-            }}
-          />
-        </div>
-      </div>
-
       {/* 4-Tier Pipeline Topology Architecture */}
       <div className="card">
         <div className="card-header">
           <div className="card-title">
+            <Zap size={16} />
             <span>{t('overview.pipelineTitle')}</span>
           </div>
-          <Link to="/chains" className="btn btn-sm">
+          <Link to="/tiers" className="btn btn-sm">
             <span>{t('overview.pipelineBtn')}</span>
             <ArrowRight size={12} />
           </Link>
@@ -171,10 +165,13 @@ export const OverviewPage: React.FC = () => {
                   border: '1px solid var(--card-border)',
                 }}
               >
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.displayName}</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {c.configPath}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                  <BrandIcon name={c.name} size={18} />
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.displayName}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                      {c.configPath}
+                    </div>
                   </div>
                 </div>
                 <div>
@@ -203,12 +200,12 @@ export const OverviewPage: React.FC = () => {
           <div style={{ display: 'flex', gap: '16px', marginBottom: '14px' }}>
             <div style={{ flex: 1, padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
               <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.totalBreakers')}</div>
-              <div style={{ fontSize: '20px', fontWeight: 700 }}>{status?.circuitBreakers?.total || 95}</div>
+              <div style={{ fontSize: '20px', fontWeight: 700 }}>{status?.circuitBreakers?.total || 0}</div>
             </div>
             <div style={{ flex: 1, padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
               <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.openBreakers')}</div>
-              <div style={{ fontSize: '20px', fontWeight: 700, color: status?.circuitBreakers?.openCount ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
-                {status?.circuitBreakers?.openCount || 0}
+              <div style={{ fontSize: '20px', fontWeight: 700, color: status?.circuitBreakers?.tripped ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+                {status?.circuitBreakers?.tripped || 0}
               </div>
             </div>
           </div>
