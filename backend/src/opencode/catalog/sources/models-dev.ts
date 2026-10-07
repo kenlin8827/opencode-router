@@ -27,6 +27,8 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
         models.push({
           id: mid,
           name: m.name || undefined,
+          // model-level SDK/protocol override (see CatalogModel.npm doc)
+          npm: m.provider && typeof m.provider === 'object' ? m.provider.npm || undefined : undefined,
           attachment: m.attachment === true || undefined,
           reasoning: m.reasoning === true || undefined,
           tool_call: m.tool_call === true || undefined,

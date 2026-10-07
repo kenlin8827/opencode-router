@@ -178,9 +178,9 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(resUi.statusCode).toBe(200);
     expect(resUi.body).toContain('OpenCode Router');
 
-    const resChains = await app.inject({ method: 'GET', url: '/chains' });
-    expect(resChains.statusCode).toBe(200);
-    expect(resChains.headers['content-type']).toContain('text/html');
+    const resTiers = await app.inject({ method: 'GET', url: '/tiers' });
+    expect(resTiers.statusCode).toBe(200);
+    expect(resTiers.headers['content-type']).toContain('text/html');
 
     const resKeys = await app.inject({ method: 'GET', url: '/providers' });
     expect(resKeys.statusCode).toBe(200);

@@ -17,6 +17,26 @@ opencode:
   # url: "http://127.0.0.1:49374"
   # password: "your-service-password"
 
+# Outbound proxy policy (Optional) — applies to upstream model calls, Layer2
+# judge, and catalog/logo sync. Loopback targets (localhost / 127.0.0.1 / ::1)
+# are NEVER proxied. Resolution: blacklist (force direct) -> whitelist (non-empty:
+# only matches proxied) -> url -> direct. With nothing configured,
+# HTTP_PROXY/HTTPS_PROXY env vars still apply (Bun fetch behavior).
+# Patterns match `provider/model` and the bare model id:
+#   "anthropic/*"  -> provider level (all models of a provider)
+#   "*/claude-*"   -> model level within any provider
+#   "claude-*"     -> bare model-id match (no wildcard = substring)
+# proxy:
+#   enabled: false                   # master switch (default false; set true to activate)
+#   url: "http://127.0.0.1:7890"     # global default proxy (empty = direct)
+#     # ^ authenticated proxy: "http://user:pass@127.0.0.1:7890"
+#     #   (sent as Proxy-Authorization, CONNECT included; URL-encode special chars)
+#   whitelist:                        # non-empty: ONLY matches go through proxy
+#     - "anthropic/*"
+#     - "*/gpt-*"
+#   blacklist:                        # matches force direct (checked before whitelist)
+#     - "deepseek/*"
+
 # Dynamic domain rules extension (Optional)
 # The gateway has built-in language-agnostic structural, syntax, and statistical features.
 # You can extend custom routing regex rules for specific domain terms:
@@ -30,18 +50,16 @@ rules:
     tier: "flagship"                  # Options: 'fast' | 'flagship' | 'reasoning'
     reason: "System architecture or distributed software engineering query"
 
+# Routing mode (Optional)
+routing:
+  mode: "smart"                     # smart = classifier cascade (default) | cost = always fast | quality = always reasoning
+
 # Cascading fallback and static schema assertion
 fallback:
   enabled: true
   maxRetries: 1                     # Fast tier model attempts first; silent escalation if assertion fails
   escalateTier: "flagship"          # Target tier upon validation failure ('flagship' or 'reasoning')
   injectErrorContext: true          # Injects parsing error context to guide flagship model to fix in one shot
-
-# FinOps budget and reasoning effort control
-budget:
-  defaultReasoningEffort: "low"     # Constrains reasoning_effort to low/medium on medium tasks
-  enforceReasoningEffortOnMediumTasks: true
-  maxCompletionTokensLimit: 16384   # Prevents runaway loops or excessive token consumption
 
 # ==============================================================================
 # Multi-Layer Classification & Data Flywheel (ADR-0004 & ADR-0005)

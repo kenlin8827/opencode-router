@@ -7,7 +7,7 @@ import {
   restoreBackup,
   safeReadJson,
   safeWriteJson,
-  OCR_DEFAULT_PORT,
+  defaultGatewayPort,
   OCR_WATERMARK,
 } from './base.js';
 import { ClientHookStatus } from '../types.js';
@@ -32,23 +32,25 @@ export class ClaudeClientAdapter implements ClientAdapter {
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);
     let hooked = false;
     let details = 'Official Anthropic direct connection';
+    const data = exists ? safeReadJson(configPath) : null;
 
-    if (exists) {
-      const data = safeReadJson(configPath);
-      if (data) {
-        if (
-          data[OCR_WATERMARK] ||
-          data.env?.ANTHROPIC_BASE_URL?.includes('4000') ||
-          data.anthropicBaseUrl?.includes('4000') ||
-          data.baseUrl?.includes('4000')
-        ) {
-          hooked = true;
-          details = 'Routed to OpenCode Router gateway (:4000)';
-        }
+    if (data) {
+      const gwPort = defaultGatewayPort();
+      if (
+        data[OCR_WATERMARK] ||
+        data.env?.ANTHROPIC_BASE_URL?.includes(`127.0.0.1:${gwPort}`) ||
+        data.anthropicBaseUrl?.includes(`127.0.0.1:${gwPort}`) ||
+        data.baseUrl?.includes(`127.0.0.1:${gwPort}`)
+      ) {
+        hooked = true;
+        details = `Routed to OpenCode Router gateway (:${gwPort})`;
       }
     } else {
       details = 'No Claude configuration file detected';
     }
+
+    const envVal = (key: string): string | undefined =>
+      hooked && data?.env?.[key] ? String(data.env[key]) : undefined;
 
     return {
       name: this.name,
@@ -58,12 +60,19 @@ export class ClaudeClientAdapter implements ClientAdapter {
       hooked,
       backupExists,
       details,
+      modelSlots: [
+        { key: 'main', value: envVal('ANTHROPIC_MODEL'), default: 'auto' },
+        { key: 'opus', value: envVal('ANTHROPIC_DEFAULT_OPUS_MODEL'), default: 'auto-flagship' },
+        { key: 'sonnet', value: envVal('ANTHROPIC_DEFAULT_SONNET_MODEL'), default: 'auto-flagship' },
+        { key: 'haiku', value: envVal('ANTHROPIC_DEFAULT_HAIKU_MODEL'), default: 'auto-fast' },
+        { key: 'fable', value: envVal('ANTHROPIC_DEFAULT_FABLE_MODEL'), default: 'auto-reasoning' },
+      ],
     };
   }
 
-  async setup(options?: { port?: number }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
-    const port = options?.port || OCR_DEFAULT_PORT;
+    const port = options?.port || defaultGatewayPort();
     const targetUrl = `http://127.0.0.1:${port}`;
 
     let data = safeReadJson(configPath) || {};
@@ -81,15 +90,65 @@ export class ClaudeClientAdapter implements ClientAdapter {
       data._ocr_previous_base_url = data.env.ANTHROPIC_BASE_URL;
     }
 
+    // Auth: write a gateway-issued API key, otherwise the client keeps its
+    // previous direct-provider token (e.g. Kimi/Anthropic) and gets 401 from
+    // the gateway preHandler. Previous value is remembered for teardown restore.
+    const apiKey = options?.apiKey?.trim();
+    if (apiKey) {
+      if (data.env.ANTHROPIC_AUTH_TOKEN && !data._ocr_previous_auth_token) {
+        data._ocr_previous_auth_token = data.env.ANTHROPIC_AUTH_TOKEN;
+      }
+      data.env.ANTHROPIC_AUTH_TOKEN = apiKey;
+    }
+
     data.env.ANTHROPIC_BASE_URL = targetUrl;
     data.anthropicBaseUrl = targetUrl;
+
+    // Model slots — Claude Code's real role mapping mechanism:
+    // main → ANTHROPIC_MODEL (startup default); opus/sonnet/haiku/fable →
+    // ANTHROPIC_DEFAULT_<ROLE>_MODEL (what /model switching sends).
+    // The companion *_NAME vars keep the /model menu showing the stock role
+    // label ("Opus") instead of the raw pinned model id.
+    // Concrete id → pin via env; 'auto' → clear (classifier decides).
+    // Slots absent from the record are left untouched (plain `ocr setup` passes none).
+    const pinned: string[] = [];
+    const slotEnv: Record<string, { model: string; name?: string; label: string }> = {
+      main: { model: 'ANTHROPIC_MODEL', label: 'main' },
+      opus: { model: 'ANTHROPIC_DEFAULT_OPUS_MODEL', name: 'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME', label: 'Opus' },
+      sonnet: { model: 'ANTHROPIC_DEFAULT_SONNET_MODEL', name: 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME', label: 'Sonnet' },
+      haiku: { model: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', name: 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME', label: 'Haiku' },
+      fable: { model: 'ANTHROPIC_DEFAULT_FABLE_MODEL', name: 'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME', label: 'Fable' },
+    };
+    for (const [slot, { model, name, label }] of Object.entries(slotEnv)) {
+      const v = options?.models?.[slot]?.trim();
+      if (v === undefined) continue;
+      if (v && v !== 'auto') {
+        data.env[model] = v;
+        if (name) data.env[name] = label;
+        pinned.push(`${slot}=${v}`);
+      } else {
+        if (data.env[model]) delete data.env[model];
+        if (name && data.env[name]) delete data.env[name];
+      }
+    }
+
     data[OCR_WATERMARK] = true;
+
+    // Context window hint: the hooked client can't know the real context of
+    // dynamically routed models (it would assume Anthropic's native 200K).
+    // Write the user-selected window so compaction math matches the fleet.
+    const contextWindow = options?.contextWindow;
+    if (contextWindow && contextWindow > 0) {
+      const cw = String(Math.floor(contextWindow));
+      data.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = cw;
+      data.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = cw;
+    }
 
     safeWriteJson(configPath, data);
 
     return {
       success: true,
-      message: `Claude configured to route via OCR (${targetUrl}). Backup saved to ${configPath}.bak.ocr`,
+      message: `Claude configured to route via OCR (${targetUrl}${apiKey ? ', auth token updated' : ''}${contextWindow && contextWindow > 0 ? `, ctx=${contextWindow}` : ''}${pinned.length ? `, ${pinned.join(', ')}` : ', slots untouched'}). Backup saved to ${configPath}.bak.ocr`,
     };
   }
 
@@ -121,15 +180,39 @@ export class ClaudeClientAdapter implements ClientAdapter {
       if (data.anthropicBaseUrl) delete data.anthropicBaseUrl;
     }
 
+    if (data._ocr_previous_auth_token) {
+      if (data.env) data.env.ANTHROPIC_AUTH_TOKEN = data._ocr_previous_auth_token;
+      delete data._ocr_previous_auth_token;
+    }
+
     if (data[OCR_WATERMARK]) {
       delete data[OCR_WATERMARK];
+    }
+    // Surgical path (backup missing): clear the slot envs we may have written.
+    // The primary teardown path is backup restore above, which brings back the
+    // user's original file verbatim (including their own model envs).
+    for (const envKey of [
+      'ANTHROPIC_MODEL',
+      'ANTHROPIC_SMALL_FAST_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME',
+      'ANTHROPIC_DEFAULT_FABLE_MODEL',
+      'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME',
+      'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+      'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+    ]) {
+      if (data.env?.[envKey]) delete data.env[envKey];
     }
 
     safeWriteJson(configPath, data);
 
     return {
       success: true,
-      message: `Claude configuration decoupled from OCR. Direct Anthropic routing restored.`,
+      message: 'Claude configuration decoupled from OCR. Direct Anthropic routing restored.',
     };
   }
 }

@@ -8,6 +8,7 @@ export type ErrorCategory =
   | 'RATE_LIMITED'         // 频控限流、TPM/RPM 超限 (HTTP 429)
   | 'SERVICE_UNAVAILABLE'  // 上游服务宕机、网关超时、连接拒绝 (HTTP 500/502/503/504, ETIMEDOUT, ECONNREFUSED)
   | 'CLIENT_ERROR'         // 客户端输入错误、上下文超限 (HTTP 400, context length exceeded)
+  | 'MANUAL'               // 控制台手动熔断（管理员主动下线，非故障自动判定）
   | 'UNKNOWN';
 
 export type NetworkFailureCause =

@@ -1,43 +1,12 @@
-import { ChatCompletionRequest, Usage } from '../types/openai.js';
-import { ModelPricing, RoutingDecision } from '../types/router.js';
-import { BudgetConfig, ModelRegistration } from '../config/types.js';
+import { Usage } from '../types/openai.js';
+import { ModelPricing } from '../types/router.js';
 
+/**
+ * FinOps cost accounting only — the budget/limit enforcement mechanism
+ * (reasoning-effort clamping + max_completion_tokens cap) was removed;
+ * cost math is kept because savings/trace stats still depend on it.
+ */
 export class BudgetManager {
-  /**
-   * Applies reasoning token ceilings and reasoning_effort clamp to prevent runaway token bills
-   */
-  public static applyBudget(
-    request: ChatCompletionRequest,
-    modelConfig: ModelRegistration,
-    decision: RoutingDecision,
-    config: BudgetConfig
-  ): ChatCompletionRequest {
-    const modified: ChatCompletionRequest = { ...request };
-
-    // 1. Enforce Reasoning Effort
-    if (modelConfig.supportsReasoningEffort) {
-      if (!modified.reasoning_effort) {
-        if (config.enforceReasoningEffortOnMediumTasks && decision.features.complexityScore < 7.5) {
-          // Moderate task: constrain reasoning effort to low or medium
-          modified.reasoning_effort = config.defaultReasoningEffort || 'low';
-        } else {
-          modified.reasoning_effort = 'medium';
-        }
-      }
-    }
-
-    // 2. Cap max completion tokens if exceeding budget limit
-    if (config.maxCompletionTokensLimit) {
-      if (!modified.max_completion_tokens && !modified.max_tokens) {
-        modified.max_completion_tokens = config.maxCompletionTokensLimit;
-      } else if (modified.max_completion_tokens && modified.max_completion_tokens > config.maxCompletionTokensLimit) {
-        modified.max_completion_tokens = config.maxCompletionTokensLimit;
-      }
-    }
-
-    return modified;
-  }
-
   /**
    * Calculate exact cost in USD for a given usage and model pricing
    */

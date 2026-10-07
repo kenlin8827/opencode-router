@@ -4,7 +4,9 @@ import path from 'node:path';
 import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
+import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig } from '../config/index.js';
+import { initProxyConfig } from '../utils/proxy.js';
 import { RouterConfig } from '../config/types.js';
 import {
   listApiKeys,
@@ -15,6 +17,34 @@ import {
 } from '../auth/api-keys.js';
 
 export { validateApiKey };
+
+/**
+ * All frontend SPA page paths served by handleHtml below. Single source of
+ * truth — the auth preHandler hook in server.ts whitelists these exact
+ * paths so that refreshing a console page never hits API-key auth.
+ * Adding a new console page = add it HERE (nothing else to update).
+ */
+export const SPA_ROUTES = [
+  '/',
+  '/ui',
+  '/dashboard',
+  '/tiers',
+  '/auto',
+  '/rules',
+  '/cache',
+  '/providers',
+  '/keys', // legacy alias for /providers
+  '/api-keys',
+  '/models',
+  '/proxy',
+  '/clients',
+  '/guardrails',
+  '/usage',
+  '/traces',
+  '/sessions',
+  '/settings',
+  '/yaml',
+];
 
 /**
  * Catalog-style model payload → opencode v2 model definition shape
@@ -130,7 +160,14 @@ function catalogModelToDef(m: Record<string, any>): Record<string, any> {
   const def: Record<string, any> = {};
   for (const [k, v] of Object.entries(m)) {
     if (k === 'id' || k === 'source') continue;
-    if (v !== undefined) def[k] = v;
+    if (v === undefined) continue;
+    // Flat catalog npm → opencode's model-level `provider: { npm }` override
+    // (models.dev schema), so added models keep their exact wire shape.
+    if (k === 'npm') {
+      def.provider = { ...(def.provider || {}), npm: v };
+      continue;
+    }
+    def[k] = v;
   }
   return def;
 }
@@ -272,25 +309,6 @@ export function registerConsoleRoutes(
     `);
   };
 
-  const SPA_ROUTES = [
-    '/',
-    '/ui',
-    '/dashboard',
-    '/chains',
-    '/tiers',
-    '/rules',
-    '/cache',
-    '/providers',
-    '/keys', // legacy alias for /providers
-    '/api-keys',
-    '/models',
-    '/clients',
-    '/guardrails',
-    '/usage',
-    '/settings',
-    '/yaml',
-  ];
-
   for (const route of SPA_ROUTES) {
     app.get(route, handleHtml);
   }
@@ -322,10 +340,35 @@ export function registerConsoleRoutes(
   app.get('/api/ui/status', handleStatus);
   app.get('/api/console/status', handleStatus);
 
+  // 3B. Prompt-cache observability (provider-native caching, aggregated from traces)
+  app.get('/api/ui/cache-stats', async () => ({
+    status: 'ok',
+    stats: orchestrator.getTraceTracker().getCacheStats(),
+    routingCache: Layer2Judge.getDecisionCacheStats(),
+  }));
+
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const result = await setupClient(client);
+    const { models, apiKey, contextWindow, extraModels } = (req.body || {}) as {
+      models?: Record<string, string>;
+      apiKey?: string;
+      contextWindow?: number;
+      extraModels?: string[];
+    };
+    const cleaned = models && typeof models === 'object'
+      ? Object.fromEntries(Object.entries(models).map(([k, v]) => [k, String(v ?? 'auto').trim() || 'auto']))
+      : undefined;
+    const cleanedExtra = Array.isArray(extraModels)
+      ? extraModels.map(s => String(s || '').trim()).filter(Boolean)
+      : undefined;
+    const cw = Number(contextWindow);
+    const result = await setupClient(client, {
+      ...(cleaned ? { models: cleaned } : {}),
+      ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
+      ...(Number.isFinite(cw) && cw > 0 ? { contextWindow: Math.floor(cw) } : {}),
+      ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
+    });
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
@@ -353,6 +396,10 @@ export function registerConsoleRoutes(
     }
     const result = saveConfig(body);
     if (!result.success) return reply.status(400).send(result);
+    // Proxy policy is the ONE hot-applied config section: the resolver reads a
+    // module singleton per call, so re-snapshot it right after a successful save
+    // (everything else still requires a gateway restart — no hot reload).
+    initProxyConfig(loadConfig().proxy);
     return result;
   };
   app.post('/api/ui/config', handleSaveConfig);
@@ -369,6 +416,7 @@ export function registerConsoleRoutes(
     }
     const result = saveRawConfig(body.yaml);
     if (!result.success) return reply.status(400).send(result);
+    initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
     return result;
   };
   app.post('/api/ui/config/raw', handleSaveRawYaml);
@@ -577,22 +625,8 @@ export function registerConsoleRoutes(
       );
       const def = getProviderNodeById(id);
       const authEntry = readAuthEntries()[id];
-      const apiKey = body.apiKey || expandEnvTemplate(def?.options?.apiKey) || authEntry?.key || authEntry?.access;
-      if (!apiKey) {
-        return reply.status(400).send({
-          success: false,
-          oauthHint: true,
-          error: `No API key for '${id}' (auth.json or inline). For OAuth-based providers run: opencode auth login ${id}`,
-        });
-      }
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       const cat = (await catalogRepository.list()).find((p) => p.id === id);
-      const baseURL = body.baseURL || def?.options?.baseURL || cat?.baseURL;
-      if (!baseURL) {
-        return reply
-          .status(400)
-          .send({ success: false, error: `无法确定 '${id}' 的 baseURL —— 请先配置带 baseURL 的自定义 provider` });
-      }
       // model: explicit override (config key or upstream id) → first enabled
       // config def → first catalog model (auth-only providers)
       const defs = getProviderModelDefs(id);
@@ -609,12 +643,38 @@ export function registerConsoleRoutes(
       if (!modelId) {
         return reply.status(400).send({ success: false, error: `'${id}' 没有可用于测试的模型 —— 请先添加模型` });
       }
+
+      // ADR-0011: probes run DIRECT against the provider on the same wire the
+      // executor resolved for this model (shared wireFor()). The opencode
+      // daemon is not in any request path — no test-vs-inference divergence.
+      const apiKey = body.apiKey || expandEnvTemplate(def?.options?.apiKey) || authEntry?.key || authEntry?.access;
+      if (!apiKey) {
+        return reply.status(400).send({
+          success: false,
+          oauthHint: true,
+          error: `No API key for '${id}' (auth.json or inline). For OAuth-based providers run: opencode auth login ${id}`,
+        });
+      }
+      // Same precedence as boot-direct pool construction (models.dev `api`
+      // before the daemon runtime hint) — test must hit what inference hits.
+      const baseURL = body.baseURL || def?.options?.baseURL || cat?.api || cat?.baseURL;
+      if (!baseURL) {
+        return reply
+          .status(400)
+          .send({ success: false, error: `无法确定 '${id}' 的 baseURL —— 请先配置带 baseURL 的自定义 provider` });
+      }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
+      const { baseForWire } = await import('../providers/wire.js');
+      // Model-level npm override (e.g. Zen gpt-6-luna → @ai-sdk/openai =
+      // Responses API) beats provider-level npm when picking the wire shape.
+      const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
+      const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
       const result = await probeProvider({
-        baseURL,
+        baseURL: baseForWire(kind, baseURL),
         apiKey,
         model: modelId,
-        kind: probeKindFor(cat?.api, def?.npm),
+        provider: id,
+        kind,
         headers: def?.options?.headers,
         // explicit body.apiKey override is a plain API key, never OAuth
         oauth: !body.apiKey && authEntry?.type === 'oauth',

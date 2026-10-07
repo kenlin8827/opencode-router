@@ -92,6 +92,68 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.ok(res.body.includes('data: [DONE]'));
   });
 
+  it('POST /v1/messages (Anthropic protocol) should auto-route and return a message envelope', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'auto',
+        max_tokens: 1024,
+        system: 'You are a helpful router test assistant.',
+        messages: [{ role: 'user', content: 'What is the speed of light?' }],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(['fast', 'flagship'].includes(res.headers['x-ocr-tier'] as string));
+    assert.ok(res.headers['x-ocr-session-id']);
+
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.type, 'message');
+    assert.strictEqual(body.role, 'assistant');
+    assert.ok(Array.isArray(body.content) && body.content[0].type === 'text');
+    assert.ok(body.content[0].text.length > 0);
+    assert.ok(['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(body.stop_reason));
+    assert.strictEqual(typeof body.usage.input_tokens, 'number');
+    assert.strictEqual(typeof body.usage.output_tokens, 'number');
+  });
+
+  it('POST /v1/messages with stream=true should emit Anthropic SSE event sequence', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'auto',
+        stream: true,
+        max_tokens: 512,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Say hello in streaming mode' }] }],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(res.headers['content-type']?.includes('text/event-stream'));
+    assert.ok(res.body.includes('event: message_start'));
+    assert.ok(res.body.includes('event: content_block_start'));
+    assert.ok(res.body.includes('event: content_block_delta'));
+    assert.ok(res.body.includes('"type":"text_delta"'));
+    assert.ok(res.body.includes('event: content_block_stop'));
+    assert.ok(res.body.includes('event: message_delta'));
+    assert.ok(res.body.includes('event: message_stop'));
+  });
+
+  it('POST /v1/messages without messages should return an Anthropic-style 400 error', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: { model: 'auto', max_tokens: 64 },
+    });
+
+    assert.strictEqual(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.type, 'error');
+    assert.strictEqual(body.error.type, 'invalid_request_error');
+  });
+
   it('GET /v1/metrics should expose FinOps economics summary', async () => {
     const res = await app.inject({
       method: 'GET',

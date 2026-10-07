@@ -1,6 +1,8 @@
 import { LLMProvider } from './base.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
+import { ResponsesProvider } from './responses.js';
+import { GoogleProvider } from './google.js';
 import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig } from '../config/types.js';
 import { TierLevel } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
@@ -25,6 +27,10 @@ export class ProviderRegistry {
     for (const pConfig of config.providers || []) {
       if (pConfig.type === 'anthropic') {
         this.providers.set(pConfig.name, new AnthropicProvider(pConfig));
+      } else if (pConfig.type === 'responses') {
+        this.providers.set(pConfig.name, new ResponsesProvider(pConfig));
+      } else if (pConfig.type === 'google') {
+        this.providers.set(pConfig.name, new GoogleProvider(pConfig));
       } else {
         this.providers.set(pConfig.name, new OpenAICompatibleProvider(pConfig));
       }

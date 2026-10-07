@@ -2,6 +2,7 @@ import { LLMProvider } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
+import { proxiedFetch } from '../utils/proxy.js';
 
 export class OpenAICompatibleProvider implements LLMProvider {
   public name: string;
@@ -39,12 +40,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
 
     try {
-      const res = await fetch(url, {
+      const res = await proxiedFetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
-      });
+      }, { provider: this.config.name, model: model.id });
 
       if (!res.ok) {
         const errorText = await res.text();
@@ -86,11 +87,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     };
     delete payload.router_options;
 
-    const res = await fetch(url, {
+    const res = await proxiedFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
-    });
+    }, { provider: this.config.name, model: model.id });
 
     if (!res.ok || !res.body) {
       const err = await res.text();

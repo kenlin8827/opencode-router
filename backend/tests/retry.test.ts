@@ -18,10 +18,6 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
       escalateTier: 'flagship',
       injectErrorContext: true,
     },
-    budget: {
-      defaultReasoningEffort: 'low',
-      enforceReasoningEffortOnMediumTasks: false,
-    },
     circuitBreaker: {
       enabled: true,
       failureThreshold: 2,
@@ -204,10 +200,6 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)'
       escalateTier: 'flagship',
       injectErrorContext: false,
     },
-    budget: {
-      defaultReasoningEffort: 'low',
-      enforceReasoningEffortOnMediumTasks: false,
-    },
     circuitBreaker: {
       enabled: true,
       failureThreshold: 1,
@@ -343,10 +335,6 @@ describe('Resilience: End-to-End HTTP Headers & Observability', () => {
       escalateTier: 'flagship',
       injectErrorContext: false,
     },
-    budget: {
-      defaultReasoningEffort: 'low',
-      enforceReasoningEffortOnMediumTasks: false,
-    },
     circuitBreaker: {
       enabled: true,
       failureThreshold: 2,
@@ -463,7 +451,6 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering (AD
       host: '127.0.0.1',
       baselineModel: 'model-a',
       fallback: { enabled: false, maxRetries: 1, escalateTier: 'flagship', injectErrorContext: false },
-      budget: { defaultReasoningEffort: 'low', enforceReasoningEffortOnMediumTasks: false },
       circuitBreaker: { enabled: true, failureThreshold: 2 },
       retry: {
         enabled: true,

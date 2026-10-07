@@ -94,7 +94,7 @@ export class PipelineOrchestrator {
    * 3. Multi-Layer hierarchical routing (Layer 0 -> Layer 1 -> Layer 2)
    * 4. Monotonic Ratchet session state enforcement + Session Self-Healing
    * 5. Execution with Circuit Breaker, Transparent Failover & Schema Assertion
-   * 6. Budget enforcement & FinOps accounting
+   * 6. FinOps accounting
    * 7. Active learning data flywheel logging
    * 8. Post-turn prefix fingerprint registration
    */
@@ -111,6 +111,7 @@ export class PipelineOrchestrator {
       messages: normalizedMessages,
     };
 
+    let explicitModel: ModelRegistration | undefined;
     if (request.model === 'auto-fast') {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'fast' };
     } else if (request.model === 'auto-flagship') {
@@ -120,8 +121,17 @@ export class PipelineOrchestrator {
     } else if (request.model && request.model !== 'auto') {
       const specific = this.registry.getModel(request.model);
       if (specific) {
+        // Exact-model pass-through: the client named a REGISTERED model id
+        // (e.g. pinned via the Client Hub model slots). Route to exactly
+        // this model — not merely its tier. Resilience is preserved: if its
+        // breaker is tripped, executeCandidatePool drops it and fails over
+        // within the tier.
+        explicitModel = specific;
         normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: specific.tier };
       }
+      // Unregistered names (e.g. native `claude-opus-*` after a /model switch
+      // inside Claude Code) are left untouched — the classifier decides,
+      // which IS the intelligent-routing product behavior.
     }
 
     // 1B. Global routing mode (config.routing.mode) — cost/quality force the tier
@@ -184,7 +194,9 @@ export class PipelineOrchestrator {
     let inplaceRetries = 0;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
-    if (decision.needsSchemaValidation && this.config.fallback.enabled && !request.router_options?.disable_fallback) {
+    // (fast-lead cascade is skipped for explicit model choices — the client
+    // named a specific model and must not be silently rerouted to fast tier)
+    if (decision.needsSchemaValidation && this.config.fallback.enabled && !request.router_options?.disable_fallback && !explicitModel) {
       // 5A: Fast Tier lead - Deploy Fast Tier first with resilience
       const fastResult = await this.executeCandidatePool(
         normalizedRequest,
@@ -256,7 +268,7 @@ export class PipelineOrchestrator {
         normalizedRequest,
         actualTier,
         decision,
-        preferredModel
+        explicitModel ?? preferredModel
       );
 
       if (!execResult.success || !execResult.response) {
@@ -501,20 +513,13 @@ export class PipelineOrchestrator {
       failoverAttempts++;
       failoverPath.push(candidate.id);
 
-      const preparedReq = BudgetManager.applyBudget(
-        request,
-        candidate,
-        decision,
-        this.config.budget
-      );
-
       // In-place retry loop on the SAME candidate model
       let candidateSucceeded = false;
       let candidateResponse: ChatCompletionResponse | undefined = undefined;
 
       for (let attempt = 0; attempt <= maxInplaceAttempts; attempt++) {
         try {
-          candidateResponse = await this.registry.execute(preparedReq, candidate);
+          candidateResponse = await this.registry.execute(request, candidate);
           cbManager.recordSuccess(candidate.id);
           candidateSucceeded = true;
           break; // successfully executed on this candidate!

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop } from './daemon.js';
 import { setupClient, teardownClient, getAllClientStatuses } from './clients/index.js';
+import { defaultGatewayPort } from './clients/base.js';
 import { registerGlobalShims } from './shim.js';
 import { CliAction, SupportedClient } from './types.js';
 import { APP_VERSION } from '../version.js';
@@ -31,7 +32,7 @@ function printHelp(): void {
   opencode-router <command> [options]
 
 ${C.bold}LIFECYCLE COMMANDS:${C.reset}
-  ${C.green}ocr start${C.reset}               Start OCR background gateway daemon (default port: 4000)
+  ${C.green}ocr start${C.reset}               Start OCR background gateway daemon (port: config.yaml port, fallback 4000)
   ${C.green}ocr stop${C.reset}                Stop running OCR background gateway
   ${C.green}ocr restart${C.reset}             Restart OCR gateway daemon
   ${C.green}ocr status${C.reset}              Inspect daemon status, memory, health & client hooks
@@ -73,7 +74,7 @@ async function handleStatus(): Promise<void> {
     }
   } else {
     console.log(`  ○ Gateway Status : ${C.red}${C.bold}STOPPED${C.reset} (Run ${C.cyan}'ocr start'${C.reset} to activate)`);
-    console.log(`  ○ Target Port    : 4000`);
+    console.log(`  ○ Target Port    : ${defaultGatewayPort()} (config.yaml)`);
   }
 
   console.log(`\n${C.bold}Client Integration Status:${C.reset}`);

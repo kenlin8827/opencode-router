@@ -1,4 +1,5 @@
-import { registerConsoleRoutes, validateApiKey } from './routes/console.js';
+import { registerConsoleRoutes, validateApiKey, SPA_ROUTES } from './routes/console.js';
+import { registerAnthropicRoutes } from './routes/anthropic.js';
 import fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { RouterConfig } from './config/types.js';
@@ -37,6 +38,9 @@ export function createServer(
   // Register console dashboard and management routes
   registerConsoleRoutes(app, registry, orchestrator);
 
+  // Register Anthropic-protocol compatibility endpoint (POST /v1/messages)
+  registerAnthropicRoutes(app, orchestrator);
+
   // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
   app.addHook('preHandler', async (req, reply) => {
     const diskConfig = loadConfig();
@@ -56,28 +60,24 @@ export function createServer(
     };
     const rawUrl = req.url.split('?')[0];
 
-    // Whitelist routes: health probes, frontend assets and UI pages
+    // Whitelist routes: health probes, frontend assets, UI pages and the
+    // read-only observability endpoints the console pages fetch from the
+    // browser (/v1/sessions, /v1/traces). Inference endpoints
+    // (/v1/chat/completions, /v1/messages) stay auth-protected.
+    // SPA page paths come from SPA_ROUTES (console.ts) — single source of truth,
+    // so a new console page can never 401 on browser refresh again.
     if (
-      rawUrl === '/' ||
-      rawUrl === '/ui' ||
-      rawUrl === '/dashboard' ||
+      SPA_ROUTES.includes(rawUrl) ||
       rawUrl.startsWith('/assets/') ||
       rawUrl.startsWith('/api/ui/') ||
       rawUrl.startsWith('/api/console/') ||
       rawUrl === '/health' ||
       rawUrl.startsWith('/v1/health') ||
       rawUrl === '/v1/models' ||
-      rawUrl === '/chains' ||
-      rawUrl === '/rules' ||
-      rawUrl === '/cache' ||
-      rawUrl === '/providers' ||
-      rawUrl === '/keys' ||
-      rawUrl === '/api-keys' ||
-      rawUrl === '/clients' ||
-      rawUrl === '/guardrails' ||
-      rawUrl === '/usage' ||
-      rawUrl === '/settings' ||
-      rawUrl === '/yaml'
+      rawUrl === '/v1/sessions' ||
+      rawUrl.startsWith('/v1/sessions/') ||
+      rawUrl === '/v1/traces' ||
+      rawUrl.startsWith('/v1/traces/')
     ) {
       return;
     }
@@ -146,6 +146,21 @@ export function createServer(
       status: 'ok',
       ...result,
     };
+  });
+
+  // 1D. Manually trip a model's circuit breaker (admin takes a model out of rotation from the console)
+  app.post('/v1/health/circuit-breakers/trip', async (req, reply) => {
+    const query = req.query as { model?: string };
+    const body = (req.body || {}) as { model?: string; reason?: string; cooldownMs?: number };
+    const targetModel = query?.model || body?.model;
+    if (!targetModel) {
+      return reply.status(400).send({ status: 'error', message: 'Model id is required (?model= or body.model)' });
+    }
+    const result = registry.getCircuitBreakerManager().trip(targetModel, {
+      reason: body.reason,
+      cooldownMs: typeof body.cooldownMs === 'number' ? body.cooldownMs : undefined,
+    });
+    return { status: 'ok', model: targetModel, ...result };
   });
 
   // 2. OpenAI-compatible Models list

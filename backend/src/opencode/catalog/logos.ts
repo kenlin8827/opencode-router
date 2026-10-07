@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { proxiedFetch } from '../../utils/proxy.js';
 
 /**
  * Local disk cache + HTTP proxy for remote catalog logos (models.dev, OpenRouter).
@@ -80,7 +81,7 @@ const inflight = new Map<string, Promise<LogoCacheState | null>>();
 
 async function fetchLogo(url: string): Promise<LogoCacheState | null> {
   try {
-    const res = await fetch(url, {
+    const res = await proxiedFetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { 'User-Agent': 'OpenCode-Router/1.0' },
     });

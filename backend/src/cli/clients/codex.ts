@@ -7,8 +7,7 @@ import {
   restoreBackup,
   safeReadJson,
   safeWriteJson,
-  OCR_DEFAULT_PORT,
-  OCR_DEFAULT_V1_URL,
+  defaultGatewayPort,
   OCR_WATERMARK,
 } from './base.js';
 import { ClientHookStatus } from '../types.js';
@@ -33,18 +32,17 @@ export class CodexClientAdapter implements ClientAdapter {
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);
     let hooked = false;
     let details = 'Direct OpenAI API connection';
+    const data = exists ? safeReadJson(configPath) : null;
 
-    if (exists) {
-      const data = safeReadJson(configPath);
-      if (data) {
-        if (
-          data[OCR_WATERMARK] ||
-          data.baseUrl?.includes('4000') ||
-          data.api_base?.includes('4000')
-        ) {
-          hooked = true;
-          details = 'Routed to OpenCode Router gateway (:4000/v1)';
-        }
+    if (data) {
+      const gwPort = defaultGatewayPort();
+      if (
+        data[OCR_WATERMARK] ||
+        data.baseUrl?.includes(`127.0.0.1:${gwPort}`) ||
+        data.api_base?.includes(`127.0.0.1:${gwPort}`)
+      ) {
+        hooked = true;
+        details = `Routed to OpenCode Router gateway (:${gwPort}/v1)`;
       }
     } else {
       details = 'No Codex/OpenAI config file detected';
@@ -58,12 +56,13 @@ export class CodexClientAdapter implements ClientAdapter {
       hooked,
       backupExists,
       details,
+      modelSlots: [{ key: 'main', value: hooked && data?.model ? String(data.model) : undefined, default: 'auto' }],
     };
   }
 
-  async setup(options?: { port?: number }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
-    const port = options?.port || OCR_DEFAULT_PORT;
+    const port = options?.port || defaultGatewayPort();
     const targetUrl = `http://127.0.0.1:${port}/v1`;
 
     let data = safeReadJson(configPath) || {};
@@ -78,14 +77,19 @@ export class CodexClientAdapter implements ClientAdapter {
 
     data.baseUrl = targetUrl;
     data.api_base = targetUrl;
-    data.model = data.model || 'auto';
+    const main = options?.models?.main?.trim();
+    data.model = main || data.model || 'auto';
+    // Auth for the gateway preHandler (schema field unverified against the
+    // real Codex CLI — the adapter's config.json is already non-standard).
+    const apiKey = options?.apiKey?.trim();
+    if (apiKey) data.apiKey = apiKey;
     data[OCR_WATERMARK] = true;
 
     safeWriteJson(configPath, data);
 
     return {
       success: true,
-      message: `Codex configured to route via OCR (${targetUrl}). Backup saved to ${configPath}.bak.ocr`,
+      message: `Codex configured to route via OCR (${targetUrl}, model: ${data.model}). Backup saved to ${configPath}.bak.ocr`,
     };
   }
 

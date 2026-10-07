@@ -1,16 +1,18 @@
 import { loadConfig } from './config/index.js';
 import { createServer } from './server.js';
-import { OpenCodeConnector } from './opencode/sync.js';
-import { OpenCodeProxyProvider } from './providers/opencode-proxy.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { DispatchingProvider } from './providers/dispatch.js';
+import { buildDirectPool } from './providers/boot-direct.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
 import { Layer1Classifier } from './router/layer1-classifier.js';
 import { catalogRepository } from './opencode/catalog/repository.js';
+import { initProxyConfig } from './utils/proxy.js';
 
 async function main() {
   const config = loadConfig();
+  initProxyConfig(config.proxy);
 
   // -1. Provider/model catalog sync (config-driven sources; defaults when unset)
   try {
@@ -24,48 +26,38 @@ async function main() {
   // 0. Auto-initialize Layer 1 model base scaffold
   await Layer1Classifier.init(config.classifier?.localModel);
   console.log(`[OCR] Layer 1 classifier ready: ${Layer1Classifier.getModelStatus()}`);
-  
-  // 1. Check OpenCode v2 connection
-  const openCodeConnector = new OpenCodeConnector(config.opencode?.url, config.opencode?.password);
-  const openCodeAvailable = openCodeConnector.isAvailable();
+
+  // 1. ADR-0011: pure direct execution. The opencode daemon is NOT in the
+  //    request path; truth sources are opencode.jsonc + auth.json + models.dev
+  //    catalog (all files, resolved at boot). Wire per model comes from the
+  //    shared wireFor() the console probe uses — test ≡ inference by structure.
+  const tracker = new FinOpsTracker();
 
   let registry: ProviderRegistry;
-  let tracker = new FinOpsTracker();
-  let orchestrator: PipelineOrchestrator;
+  try {
+    const boot = await buildDirectPool();
+    config.models = boot.models;
+    const defaultFlagship = boot.models.find((m) => m.tier === 'flagship' && m.isDefaultInTier) || boot.models[0];
+    config.baselineModel = defaultFlagship?.id || 'auto';
 
-  if (openCodeAvailable) {
-    const serviceCfg = openCodeConnector.getServiceConfig()!;
-    console.log(`[OCR] Connected to local OpenCode v2 service: ${serviceCfg.baseUrl}`);
-    
-    try {
-      const syncedModels = await openCodeConnector.syncToTierModels();
-      console.log(`[OCR] Dynamically synchronized ${syncedModels.length} models from OpenCode!`);
-
-      config.models = syncedModels;
-      const defaultFlagship = syncedModels.find(m => m.tier === 'flagship' && m.isDefaultInTier) || syncedModels[0];
-      config.baselineModel = defaultFlagship?.id || 'auto';
-
-      registry = new ProviderRegistry(config, false);
-      const openCodeProxy = new OpenCodeProxyProvider(serviceCfg);
-
-      // Register all OpenCode-managed providers in proxy mode
-      const providers = await openCodeConnector.getProviders();
-      for (const p of providers) {
-        registry.registerProvider(p.id, openCodeProxy);
-      }
-      registry.registerProvider('opencode', openCodeProxy);
-
-      console.log(`[OCR] Connected to ${providers.length} upstream providers via OpenCode (Keyless proxy pass-through)`);
-    } catch (err: any) {
-      console.warn(`[OCR] OpenCode model sync failed, falling back to standalone config: ${err.message}`);
-      registry = new ProviderRegistry(config, true);
+    registry = new ProviderRegistry(config, boot.models.length === 0);
+    for (const inst of boot.instances) {
+      registry.registerProvider(inst.name, new DispatchingProvider(inst.config, inst.wireBases));
     }
-  } else {
-    console.log('[OCR] No OpenCode v2 local service detected, using config.yaml static setup');
-    registry = new ProviderRegistry(config, false);
+    console.log(
+      `[OCR] Direct pool: ${boot.instances.length} providers / ${boot.models.length} models (ADR-0011, no daemon)`
+    );
+    const providerLevel = boot.excluded.filter((e) => !e.model);
+    const modelLevel = boot.excluded.filter((e) => e.model);
+    for (const ex of providerLevel) console.log(`[OCR]   excluded ${ex.provider}: ${ex.reason}`);
+    if (modelLevel.length > 0)
+      console.log(`[OCR]   ${modelLevel.length} models excluded (non-text wire/modality), e.g. ${modelLevel.slice(0, 3).map((e) => e.model).join(', ')}`);
+  } catch (err: any) {
+    console.warn(`[OCR] Direct pool build failed, falling back to standalone config: ${err.message}`);
+    registry = new ProviderRegistry(config, true);
   }
 
-  orchestrator = new PipelineOrchestrator(config, registry, tracker);
+  const orchestrator = new PipelineOrchestrator(config, registry, tracker);
   const { app } = createServer(config, false, registry, orchestrator);
 
   try {
@@ -75,6 +67,7 @@ async function main() {
     console.log(`👉 API Base URL     : http://127.0.0.1:${config.port}/v1`);
     console.log(`👉 Default Model    : auto (Virtual models: auto, auto-fast, auto-flagship, auto-reasoning)`);
     console.log(`👉 Chat Completions : http://127.0.0.1:${config.port}/v1/chat/completions`);
+    console.log(`👉 Anthropic Msgs   : http://127.0.0.1:${config.port}/v1/messages`);
     console.log(`👉 Models List      : http://127.0.0.1:${config.port}/v1/models`);
     console.log(`👉 FinOps Metrics   : http://127.0.0.1:${config.port}/v1/metrics`);
     console.log(`👉 Sessions Inspect : http://127.0.0.1:${config.port}/v1/sessions`);

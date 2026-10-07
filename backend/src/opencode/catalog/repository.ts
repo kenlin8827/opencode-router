@@ -4,6 +4,7 @@ import type { CatalogConfig } from '../../config/types.js';
 import { resolveSources, parseByType, type RemoteSourceDef, type ParsedSource } from './sources/registry.js';
 import { modelsDevLogoUrl } from './sources/models-dev.js';
 import { readCacheFile, writeCacheFile } from './cache.js';
+import { proxiedFetch } from '../../utils/proxy.js';
 import { localLogoApiPath } from './logos.js';
 import type { CatalogModel, CatalogProviderRecord, CatalogSourceId } from './types.js';
 
@@ -172,7 +173,7 @@ export class CatalogRepository {
     }
 
     try {
-      const res = await fetch(def.url, {
+      const res = await proxiedFetch(def.url, {
         signal: AbortSignal.timeout(15000),
         headers: { 'User-Agent': 'OpenCode-Router/1.0' },
       });

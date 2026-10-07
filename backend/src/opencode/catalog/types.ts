@@ -31,6 +31,14 @@ export interface CatalogModalities {
 export interface CatalogModel {
   id: string;
   name?: string;
+  /**
+   * Model-level AI-SDK package override (models.dev `model.provider.npm`).
+   * Beats the provider-level npm when present — e.g. opencode(Zen) is
+   * `@ai-sdk/openai-compatible` overall, but `gpt-6-luna` carries
+   * `@ai-sdk/openai`, i.e. Responses-API-only, and Zen rejects it on the
+   * chat/completions wire with `ModelProtocolUnsupported`.
+   */
+  npm?: string;
   attachment?: boolean;
   reasoning?: boolean;
   tool_call?: boolean;

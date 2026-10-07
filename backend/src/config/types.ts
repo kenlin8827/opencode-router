@@ -4,7 +4,7 @@ import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
 export interface ProviderConfig {
   name: string;
-  type: 'openai-compatible' | 'anthropic';
+  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch';
   baseUrl: string;
   apiKey: string;
   organization?: string;
@@ -18,6 +18,8 @@ export interface ModelRegistration {
   upstreamModel: string; // actual model name sent to upstream
   tier: TierLevel;
   pricing: ModelPricing;
+  /** ADR-0011: resolved wire for direct execution (model-level npm beats provider npm). */
+  wire?: 'openai' | 'anthropic' | 'google' | 'responses';
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
   supportsReasoningEffort?: boolean;
@@ -29,12 +31,6 @@ export interface FallbackConfig {
   maxRetries: number;
   escalateTier: 'flagship' | 'reasoning';
   injectErrorContext: boolean;
-}
-
-export interface BudgetConfig {
-  defaultReasoningEffort: 'low' | 'medium' | 'high';
-  enforceReasoningEffortOnMediumTasks: boolean;
-  maxCompletionTokensLimit?: number;
 }
 
 /**
@@ -81,6 +77,27 @@ export interface OpenCodeConfig {
   password?: string;
 }
 
+/**
+ * Outbound proxy for upstream calls (model providers, Layer2 judge, catalog sync).
+ * Resolution order: loopback targets are NEVER proxied → blacklist (force direct)
+ * → whitelist (non-empty: ONLY matches go through proxy) → proxy.url → direct.
+ *
+ * Patterns are wildcard globs matched against the composite `provider/modelId`
+ * AND the bare model id, so both levels work:
+ *   - `anthropic/*`       → provider level (all models of a provider)
+ *   - `x/claude-*` (x=* ) → model level within any provider (leading star-slash)
+ *   - `claude-*` / `claude` → bare model-id match (wildcard / substring)
+ * If both lists are set, blacklist is evaluated first (matched = force direct),
+ * then the whitelist gates what remains.
+ * With no explicit proxy resolved, Bun still honors HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
+ */
+export interface ProxyConfig {
+  enabled?: boolean; // master switch; default false (opt-in) — proxying only when explicitly true
+  url?: string; // global proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun, incl. CONNECT); empty = direct
+  whitelist?: string[]; // non-empty: ONLY matching models/providers go through proxy
+  blacklist?: string[]; // matching models/providers force direct (evaluated before whitelist)
+}
+
 export interface Layer1ClassifierConfig {
   enabled: boolean;
   modelPath?: string;
@@ -95,6 +112,11 @@ export interface Layer2JudgeConfig {
   apiKey?: string;
   model?: string; // e.g. 'typesafe/jev'
   timeoutMs?: number;
+  decisionCache?: { // ADR-0010: reuse prior judge decisions for identical contexts
+    enabled?: boolean; // default true
+    ttlSeconds?: number; // default 1800
+    maxEntries?: number; // default 500
+  };
 }
 export type Layer2DecisionConfig = Layer2JudgeConfig;
 
@@ -163,11 +185,11 @@ export interface RouterConfig {
   adminApiKey?: string;
   apiKeys?: ApiKeyConfig[];
   opencode?: OpenCodeConfig;
+  proxy?: ProxyConfig;
   catalog?: CatalogConfig;
   tiers?: TiersConfig;
   routing?: RoutingConfig;
   fallback: FallbackConfig;
-  budget: BudgetConfig;
   classifier?: ClassifierConfig;
   flywheel?: FlywheelConfig;
   session?: SessionConfig;

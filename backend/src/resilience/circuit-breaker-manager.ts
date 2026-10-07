@@ -16,6 +16,10 @@ export interface CircuitBreakerSummary {
   breakers: CircuitBreakerSnapshot[];
 }
 
+// Manual trip defaults: 1h unless a duration is provided; hard-clamped to 7d
+export const MANUAL_TRIP_DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
+export const MANUAL_TRIP_MAX_COOLDOWN_MS = 7 * 24 * 3600 * 1000;
+
 export class CircuitBreakerManager {
   private breakers = new Map<string, CircuitBreaker>();
   private config: CircuitBreakerConfig;
@@ -104,6 +108,28 @@ export class CircuitBreakerManager {
       count++;
     }
     return { resetCount: count, message: `All ${count} circuit breakers successfully reset to CLOSED.` };
+  }
+
+  /**
+   * Manually trip a model into OPEN state (admin takes it out of rotation from the console).
+   * In-memory only: cleared on gateway restart; use tier blacklist (config.tiers) for a persistent exclusion.
+   */
+  public trip(
+    modelId: string,
+    options?: { reason?: string; cooldownMs?: number },
+    provider = 'unknown'
+  ): { tripped: boolean; message: string } {
+    const breaker = this.getOrCreateBreaker(modelId, provider);
+    const cooldownMs = Math.max(
+      1000,
+      Math.min(options?.cooldownMs ?? MANUAL_TRIP_DEFAULT_COOLDOWN_MS, MANUAL_TRIP_MAX_COOLDOWN_MS)
+    );
+    const reason = options?.reason?.trim() || 'Manual trip via console';
+    breaker.trip(`Manual trip: ${reason}`, 'MANUAL', cooldownMs);
+    return {
+      tripped: true,
+      message: `Circuit breaker for model '${modelId}' manually tripped (OPEN) for ~${Math.round(cooldownMs / 60000)} min.`,
+    };
   }
 
   public getSnapshot(modelId: string): CircuitBreakerSnapshot | undefined {

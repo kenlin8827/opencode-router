@@ -220,10 +220,6 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
       escalateTier: 'flagship',
       injectErrorContext: true,
     },
-    budget: {
-      defaultReasoningEffort: 'low',
-      enforceReasoningEffortOnMediumTasks: false,
-    },
     circuitBreaker: {
       enabled: true,
       failureThreshold: 2,
@@ -351,10 +347,6 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
       maxRetries: 1,
       escalateTier: 'flagship',
       injectErrorContext: true,
-    },
-    budget: {
-      defaultReasoningEffort: 'low',
-      enforceReasoningEffortOnMediumTasks: false,
     },
     circuitBreaker: {
       enabled: true,

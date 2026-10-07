@@ -1,6 +1,8 @@
 import { ChatCompletionRequest } from '../types/openai.js';
 import { TierLevel } from '../types/router.js';
 import { Layer2JudgeConfig } from '../config/types.js';
+import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
+import { proxiedFetch } from '../utils/proxy.js';
 
 export interface Layer2JudgeResult {
   targetTier: TierLevel;
@@ -26,6 +28,26 @@ export class Layer2Judge {
     'reasoning (deep mathematical proof, formal symbolic logic, NP-hard algorithmic complexity, quantum physics).';
 
   private static readonly CHOICES = ['fast', 'flagship', 'reasoning'];
+
+  // ADR-0010: routing decision cache (LRU+TTL over judge results)
+  private static decisionCache: RoutingDecisionCache | null = null;
+
+  private static getDecisionCache(config?: Layer2JudgeConfig): RoutingDecisionCache {
+    // Orchestrator snapshots config at construction, so runtime config is stable;
+    // lazily initialize once with the first-seen config.
+    if (!this.decisionCache) {
+      this.decisionCache = new RoutingDecisionCache(config?.decisionCache);
+    }
+    return this.decisionCache;
+  }
+
+  public static getDecisionCacheStats(): RoutingCacheStats {
+    return (this.decisionCache || new RoutingDecisionCache({ enabled: false })).getStats();
+  }
+
+  public static clearDecisionCache(): void {
+    this.decisionCache?.clear();
+  }
 
   /**
    * Evaluate request using Layer 2 specialized decision judge model
@@ -55,6 +77,20 @@ export class Layer2Judge {
       })
       .join('\n');
 
+    // ADR-0010: reuse a prior identical-context decision before calling out
+    const decisionCache = this.getDecisionCache(config);
+    const cacheKey = RoutingDecisionCache.buildCacheKey(provider, model, userText);
+    const cached = decisionCache.get(cacheKey);
+    if (cached) {
+      return {
+        targetTier: cached.targetTier as TierLevel,
+        confidence: cached.confidence,
+        reason: `[Decision Cache] ${cached.reason}`,
+        provider,
+        model,
+      };
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -64,7 +100,7 @@ export class Layer2Judge {
         const baseUrl = config.baseUrl || 'https://api.typesafe.ai/v1';
         const apiKey = config.apiKey || process.env.TYPESAFE_API_KEY || '';
 
-        const res = await fetch(`${baseUrl}/decision/choice`, {
+        const res = await proxiedFetch(`${baseUrl}/decision/choice`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -77,7 +113,7 @@ export class Layer2Judge {
             choices: this.CHOICES,
           }),
           signal: controller.signal,
-        });
+        }, { provider, model });
 
         clearTimeout(timeout);
 
@@ -87,11 +123,14 @@ export class Layer2Judge {
         const choice = (data.choice || data.decision || 'flagship').toLowerCase();
         const tier: TierLevel = (choice === 'fast' || choice === 'reasoning') ? choice : 'flagship';
         const confidence = typeof data.confidence === 'number' ? data.confidence : 0.92;
+        const reason = `TypeSafe Jev specialized decision model classified as ${tier} (confidence: ${(confidence * 100).toFixed(1)}%)`;
+
+        decisionCache.set(cacheKey, { targetTier: tier, confidence, reason });
 
         return {
           targetTier: tier,
           confidence,
-          reason: `TypeSafe Jev specialized decision model classified as ${tier} (confidence: ${(confidence * 100).toFixed(1)}%)`,
+          reason,
           provider: 'typesafe',
           model,
           rawResponse: data,
@@ -101,7 +140,7 @@ export class Layer2Judge {
         const baseUrl = config.baseUrl || (provider === 'opencode' ? 'http://127.0.0.1:49374/v1' : 'https://openrouter.ai/api/v1');
         const apiKey = config.apiKey || (provider === 'opencode' ? 'opencode' : (process.env.OPENROUTER_API_KEY || ''));
 
-        const res = await fetch(`${baseUrl}/chat/completions`, {
+        const res = await proxiedFetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -126,7 +165,7 @@ export class Layer2Judge {
             max_tokens: 50,
           }),
           signal: controller.signal,
-        });
+        }, { provider, model });
 
         clearTimeout(timeout);
 
@@ -135,11 +174,14 @@ export class Layer2Judge {
         const content = data.choices?.[0]?.message?.content || '{}';
         const parsed = JSON.parse(content);
         const tier: TierLevel = (parsed.tier === 'fast' || parsed.tier === 'reasoning') ? parsed.tier : 'flagship';
+        const reason = `Specialized Layer 2 (${provider}) classified as ${tier}`;
+
+        decisionCache.set(cacheKey, { targetTier: tier, confidence: parsed.confidence || 0.90, reason });
 
         return {
           targetTier: tier,
           confidence: parsed.confidence || 0.90,
-          reason: `Specialized Layer 2 (${provider}) classified as ${tier}`,
+          reason,
           provider,
           model,
           rawResponse: parsed,

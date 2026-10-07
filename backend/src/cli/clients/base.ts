@@ -1,11 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ClientHookStatus, SupportedClient } from '../types.js';
+import { loadConfig } from '../../config/index.js';
 
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
 export const OCR_DEFAULT_V1_URL = `${OCR_DEFAULT_URL}/v1`;
 export const OCR_WATERMARK = 'opencode-router-managed';
+
+/**
+ * Port the gateway actually listens on — config.yaml `port` is the single
+ * source of truth (backend/src/index.ts listens on loadConfig().port). Client
+ * hooks and daemon tooling MUST derive base URLs from here so what they write
+ * always matches the running gateway. OCR_DEFAULT_PORT stays only as a
+ * last-resort fallback for when config is unreadable (bare CLI outside a repo).
+ */
+export function defaultGatewayPort(): number {
+  try {
+    const port = loadConfig().port;
+    return Number.isFinite(port) && port > 0 ? port : OCR_DEFAULT_PORT;
+  } catch {
+    return OCR_DEFAULT_PORT;
+  }
+}
 
 /** Strip json comments (line and block) without external dependency */
 export function stripJsonComments(jsonStr: string): string {
@@ -64,6 +81,12 @@ export interface ClientAdapter {
   displayName: string;
   getConfigPath(): string;
   getStatus(): ClientHookStatus;
-  setup(options?: { port?: number }): Promise<{ success: boolean; message: string }>;
+  /**
+   * Model slots: slotKey → model id | 'auto' (intelligent routing default).
+   * Only slots present in the record are written; absent slots stay untouched
+   * (the plain `ocr setup` CLI command passes no models). apiKey (optional):
+   * gateway-issued key to write into the client's auth field.
+   */
+  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: MAX_CONTEXT_TOKENS + AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (opencode provider models list) */ extraModels?: string[] }): Promise<{ success: boolean; message: string }>;
   teardown(): Promise<{ success: boolean; message: string }>;
 }

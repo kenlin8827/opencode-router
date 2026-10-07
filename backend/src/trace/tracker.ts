@@ -40,6 +40,39 @@ export interface ExecutionTrace {
   };
 }
 
+export interface CacheStatsModelRow {
+  model: string;
+  provider: string;
+  requests: number;
+  cachedRequests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  costUsd: number;
+  savedCostUsd: number;
+}
+
+export interface CacheStatsHourBucket {
+  hourTs: number; // epoch ms, hour-aligned
+  requests: number;
+  cachedRequests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+}
+
+export interface CacheStatsSummary {
+  windowTraces: number;
+  totalRequests: number;
+  cachedRequests: number;
+  requestHitRatio: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  tokenHitRatio: number;
+  costUsd: number;
+  savedCostUsd: number;
+  models: CacheStatsModelRow[];
+  hourly: CacheStatsHourBucket[];
+}
+
 export class TraceTracker {
   private traces = new Map<string, ExecutionTrace>(); // traceId -> trace
   private sessionTraceIndex = new Map<string, string[]>(); // sessionId -> traceId[]
@@ -123,6 +156,83 @@ export class TraceTracker {
       .filter((t): t is ExecutionTrace => Boolean(t));
 
     return { total, data };
+  }
+
+  /**
+   * Aggregate provider-native prompt-cache observability over the in-memory
+   * trace ring buffer: totals, per-model rows and a 24h hourly series.
+   * A request counts as "cached" when finops.cachedPromptTokens > 0.
+   */
+  public getCacheStats(): CacheStatsSummary {
+    const HOUR = 3_600_000;
+    const currentHour = Math.floor(Date.now() / HOUR);
+    const buckets = new Map<number, CacheStatsHourBucket>();
+    for (let h = currentHour - 23; h <= currentHour; h++) {
+      buckets.set(h, { hourTs: h * HOUR, requests: 0, cachedRequests: 0, promptTokens: 0, cachedPromptTokens: 0 });
+    }
+
+    const models = new Map<string, CacheStatsModelRow>();
+    let totalRequests = 0;
+    let cachedRequests = 0;
+    let promptTokens = 0;
+    let cachedPromptTokens = 0;
+    let costUsd = 0;
+    let savedCostUsd = 0;
+
+    for (const t of this.traces.values()) {
+      const f = t.finops;
+      const cached = f.cachedPromptTokens > 0;
+      totalRequests++;
+      promptTokens += f.promptTokens;
+      cachedPromptTokens += f.cachedPromptTokens;
+      costUsd += f.costUsd;
+      savedCostUsd += f.savedCostUsd;
+      if (cached) cachedRequests++;
+
+      const b = buckets.get(Math.floor(t.timestamp / HOUR));
+      if (b) {
+        b.requests++;
+        b.promptTokens += f.promptTokens;
+        b.cachedPromptTokens += f.cachedPromptTokens;
+        if (cached) b.cachedRequests++;
+      }
+
+      const key = `${t.execution.provider}::${t.execution.modelUsed}`;
+      let row = models.get(key);
+      if (!row) {
+        row = {
+          model: t.execution.modelUsed,
+          provider: t.execution.provider,
+          requests: 0,
+          cachedRequests: 0,
+          promptTokens: 0,
+          cachedPromptTokens: 0,
+          costUsd: 0,
+          savedCostUsd: 0,
+        };
+        models.set(key, row);
+      }
+      row.requests++;
+      row.promptTokens += f.promptTokens;
+      row.cachedPromptTokens += f.cachedPromptTokens;
+      row.costUsd += f.costUsd;
+      row.savedCostUsd += f.savedCostUsd;
+      if (cached) row.cachedRequests++;
+    }
+
+    return {
+      windowTraces: this.traces.size,
+      totalRequests,
+      cachedRequests,
+      requestHitRatio: totalRequests > 0 ? cachedRequests / totalRequests : 0,
+      promptTokens,
+      cachedPromptTokens,
+      tokenHitRatio: promptTokens > 0 ? cachedPromptTokens / promptTokens : 0,
+      costUsd,
+      savedCostUsd,
+      models: [...models.values()].sort((a, b) => b.cachedPromptTokens - a.cachedPromptTokens),
+      hourly: [...buckets.values()].sort((a, b) => a.hourTs - b.hourTs),
+    };
   }
 
   /**

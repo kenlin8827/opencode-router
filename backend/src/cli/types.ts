@@ -41,4 +41,17 @@ export interface ClientHookStatus {
   hooked: boolean;
   backupExists: boolean;
   details: string;
+  /** This client's model slots as declared by the adapter (value undefined/'auto' = intelligent routing) */
+  modelSlots: ClientModelSlot[];
+  /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
+  extraModels?: string[];
+}
+
+export interface ClientModelSlot {
+  /** Slot key: 'main' | 'opus' | 'sonnet' | 'haiku' | 'fable' | 'subagent' (frontend labels via i18n clients.slot*) */
+  key: string;
+  /** Currently pinned model id read from the client config; undefined = auto */
+  value?: string;
+  /** Recommended default for this role (e.g. haiku → 'auto-fast', opus → 'auto-flagship'); used for UI seeding and reset */
+  default?: string;
 }

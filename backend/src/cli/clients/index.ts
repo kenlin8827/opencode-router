@@ -23,7 +23,10 @@ export function getAllClientStatuses(): ClientHookStatus[] {
   return getAllClientAdapters().map(adapter => adapter.getStatus());
 }
 
-export async function setupClient(name: string, options?: { port?: number }): Promise<{ success: boolean; message: string }> {
+export async function setupClient(
+  name: string,
+  options?: { port?: number; models?: Record<string, string> }
+): Promise<{ success: boolean; message: string }> {
   const adapter = getClientAdapter(name);
   if (!adapter) {
     return {

@@ -4,7 +4,7 @@ import {
   createBackup,
   restoreBackup,
   safeReadJson,
-  OCR_DEFAULT_PORT,
+  defaultGatewayPort,
 } from './base.js';
 import { ClientHookStatus } from '../types.js';
 import {
@@ -49,22 +49,34 @@ function writeMeta(configPath: string, meta: { previousModel?: string }): void {
   }
 }
 
-function buildRouterProviderNode(port: number): any {
+function buildRouterProviderNode(port: number, model?: string, extraModels?: string[], apiKey?: string): any {
   const targetUrl = `http://127.0.0.1:${port}/v1`;
   const modelEntry = (label: string) => ({ name: label });
+  const models: Record<string, { name: string }> = {
+    auto: modelEntry('Auto (intelligent multi-tier routing)'),
+    'auto-fast': modelEntry('Force Fast tier'),
+    'auto-flagship': modelEntry('Force Flagship tier'),
+    'auto-reasoning': modelEntry('Force Reasoning tier'),
+  };
+  // Pin a concrete registered model: expose it in the client's model picker.
+  if (model && model !== 'auto' && !model.startsWith('auto-')) {
+    models[model] = modelEntry(`Pinned: ${model}`);
+  }
+  // Additional concrete models so the user can switch freely inside OpenCode.
+  for (const m of extraModels || []) {
+    const id = (m || '').trim();
+    if (id && !models[id]) models[id] = modelEntry(id);
+  }
   return {
     npm: '@ai-sdk/openai-compatible',
     name: 'OpenCode Router',
     options: {
       baseURL: targetUrl,
-      apiKey: 'ocr-local-token',
+      // Gateway-issued key when the user picks one; legacy fallback keeps the
+      // historical placeholder (works only if config.apiKeys contains it).
+      apiKey: apiKey || 'ocr-local-token',
     },
-    models: {
-      auto: modelEntry('Auto (intelligent multi-tier routing)'),
-      'auto-fast': modelEntry('Force Fast tier'),
-      'auto-flagship': modelEntry('Force Flagship tier'),
-      'auto-reasoning': modelEntry('Force Reasoning tier'),
-    },
+    models,
   };
 }
 
@@ -105,6 +117,22 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       details = 'No OpenCode configuration detected';
     }
 
+    // Current slot values: strip the `opencode-router/` namespace prefix
+    const hookedData = hooked ? ((readJsonc(configPath) as any) || {}) : null;
+    const stripPrefix = (v: any): string | undefined =>
+      typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
+        ? v.slice(ROUTER_PROVIDER_ID.length + 1)
+        : undefined;
+
+    // Extra concrete models exposed in the provider's switcher (non-virtual entries)
+    const mainId = stripPrefix(hookedData?.model);
+    const AUTO_MODEL_KEYS = new Set(['auto', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
+    const providerModels = hookedData?.provider?.[ROUTER_PROVIDER_ID]?.models;
+    const extraModels =
+      providerModels && typeof providerModels === 'object'
+        ? Object.keys(providerModels).filter(k => !AUTO_MODEL_KEYS.has(k) && k !== mainId)
+        : undefined;
+
     return {
       name: this.name,
       displayName: this.displayName,
@@ -113,12 +141,20 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       hooked,
       backupExists,
       details,
+      modelSlots: [
+        { key: 'main', value: mainId, default: 'auto' },
+        { key: 'subagent', value: stripPrefix(hookedData?.agent?.general?.model), default: 'auto-fast' },
+      ],
+      extraModels,
     };
   }
 
-  async setup(options?: { port?: number }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; extraModels?: string[]; apiKey?: string }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
-    const port = options?.port || OCR_DEFAULT_PORT;
+    const port = options?.port || defaultGatewayPort();
+    const main = options?.models?.main?.trim() || 'auto';
+    const extraModels = (options?.extraModels || []).map(s => (s || '').trim()).filter(Boolean);
+    const apiKey = options?.apiKey?.trim() || undefined;
 
     // 1. Safety backup (single rolling .bak.ocr, restorable via teardown)
     if (fs.existsSync(configPath)) {
@@ -127,19 +163,31 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     // 2. Inject the router provider under the correct singular `provider` node
     //    using a comment-preserving JSONC edit.
-    patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], buildRouterProviderNode(port));
+    patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], buildRouterProviderNode(port, main, extraModels, apiKey));
 
     // 3. Point the default model at the router (record previous for teardown)
     const current = readJsonc(configPath) || {};
     const previousModel = current?.model;
-    if (previousModel && previousModel !== `${ROUTER_PROVIDER_ID}/auto`) {
+    const targetModel = `${ROUTER_PROVIDER_ID}/${main}`;
+    if (previousModel && previousModel !== targetModel) {
       writeMeta(configPath, { previousModel });
     }
-    patchJsonc(configPath, ['model'], `${ROUTER_PROVIDER_ID}/auto`);
+    patchJsonc(configPath, ['model'], targetModel);
+
+    // 4. Subagent slot (OpenCode's default subagent is "general"); 'auto' removes the override
+    const subagent = options?.models?.subagent?.trim();
+    if (subagent !== undefined) {
+      const agentModel = (readJsonc(configPath) as any)?.agent?.general?.model;
+      if (subagent && subagent !== 'auto') {
+        patchJsonc(configPath, ['agent', 'general', 'model'], `${ROUTER_PROVIDER_ID}/${subagent}`);
+      } else if (agentModel) {
+        patchJsonc(configPath, ['agent', 'general', 'model'], undefined);
+      }
+    }
 
     return {
       success: true,
-      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1). Backup at ${configPath}.bak.ocr`,
+      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${subagent && subagent !== 'auto' ? `, subagent: ${subagent}` : ''}). Backup at ${configPath}.bak.ocr`,
     };
   }
 
@@ -175,6 +223,12 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       } else {
         patchJsonc(configPath, ['model'], undefined);
       }
+    }
+
+    // Remove subagent model override if it points at the router
+    const subagentModel = (data as any)?.agent?.general?.model;
+    if (typeof subagentModel === 'string' && subagentModel.startsWith(`${ROUTER_PROVIDER_ID}/`)) {
+      patchJsonc(configPath, ['agent', 'general', 'model'], undefined);
     }
 
     // Clean legacy invalid-schema leftovers (providers.ocr etc.)

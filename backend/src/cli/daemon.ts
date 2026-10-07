@@ -5,6 +5,7 @@ import { getOcrHomeDir, getInfoFilePath, getLogFilePath, getPidFilePath, getRepo
 import { DaemonInfo } from './types.js';
 import { APP_VERSION } from '../version.js';
 import { getAllClientStatuses } from './clients/index.js';
+import { defaultGatewayPort } from './clients/base.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const IS_MACOS = process.platform === 'darwin';
@@ -50,7 +51,7 @@ export function getDaemonInfo(): DaemonInfo | null {
   }
 }
 
-export async function checkServerHealth(port = 4000, host = '127.0.0.1'): Promise<{ ok: boolean; data?: any }> {
+export async function checkServerHealth(port = defaultGatewayPort(), host = '127.0.0.1'): Promise<{ ok: boolean; data?: any }> {
   try {
     const res = await fetch(`http://${host}:${port}/health`, { signal: AbortSignal.timeout(1500) });
     if (res.ok) {
@@ -97,7 +98,7 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
   message: string;
 }> {
   const existingPid = getRunningPid();
-  const port = options.port || 4000;
+  const port = options.port || defaultGatewayPort();
   const host = options.host || '127.0.0.1';
 
   if (existingPid) {
@@ -268,7 +269,7 @@ export async function getStatusOutput(): Promise<{
 }> {
   const pid = getRunningPid();
   const info = getDaemonInfo();
-  const port = info?.port || 4000;
+  const port = info?.port || defaultGatewayPort();
   const host = info?.host || '127.0.0.1';
 
   let health: any = null;
@@ -312,7 +313,7 @@ export async function openBrowserUrl(url: string): Promise<void> {
 
 export async function launchWeb(options: { port?: number } = {}): Promise<void> {
   const status = await getStatusOutput();
-  const port = options.port || status.port || 4000;
+  const port = options.port || status.port || defaultGatewayPort();
 
   if (!status.running) {
     console.log('[OCR] Gateway is not running. Starting background service first...');
@@ -327,7 +328,7 @@ export async function launchWeb(options: { port?: number } = {}): Promise<void> 
 
 export async function launchDesktop(options: { port?: number } = {}): Promise<void> {
   const status = await getStatusOutput();
-  const port = options.port || status.port || 4000;
+  const port = options.port || status.port || defaultGatewayPort();
 
   if (!status.running) {
     console.log('[OCR] Gateway is not running. Starting background service first...');

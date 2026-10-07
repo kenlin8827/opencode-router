@@ -2,6 +2,8 @@ import { LLMProvider } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
+import { proxiedFetch } from '../utils/proxy.js';
+import { anthropicMessagesUrl } from './wire.js';
 
 export class AnthropicProvider implements LLMProvider {
   public name: string;
@@ -16,7 +18,7 @@ export class AnthropicProvider implements LLMProvider {
     request: ChatCompletionRequest,
     model: ModelRegistration
   ): Promise<ChatCompletionResponse> {
-    const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/messages`;
+    const url = anthropicMessagesUrl(this.config.baseUrl);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-api-key': this.config.apiKey,
@@ -59,12 +61,12 @@ export class AnthropicProvider implements LLMProvider {
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
 
     try {
-      const res = await fetch(url, {
+      const res = await proxiedFetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
-      });
+      }, { provider: this.config.name, model: model.id });
 
       if (!res.ok) {
         const errorText = await res.text();
