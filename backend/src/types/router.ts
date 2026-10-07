@@ -35,7 +35,6 @@ export interface RoutingDecision {
   targetTier: TierLevel;
   confidence: number;
   reason: string;
-  ruleMatched?: string;
   layerUsed?: 'layer0' | 'layer1' | 'layer2';
   needsSchemaValidation: boolean;
   sessionId?: string;

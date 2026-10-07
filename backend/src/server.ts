@@ -466,10 +466,11 @@ export function createServer(
       return reply.send(result.response);
     } catch (err: any) {
       req.log.error(err, 'Chat completion execution failed');
-      return reply.status(500).send({
+      const status = Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
+      return reply.status(status).send({
         error: {
           message: err.message || 'Internal Router Error',
-          type: 'api_error',
+          type: status >= 500 ? 'api_error' : 'invalid_request_error',
         },
       });
     }

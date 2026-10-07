@@ -12,7 +12,8 @@ const DEFAULT_CONFIG: RouterConfig = {
   host: process.env.HOST || '0.0.0.0',
   adminApiKey: process.env.ROUTER_API_KEY || undefined,
   baselineModel: 'auto',
-  rules: [],
+  tiers: {},
+  routing: { mode: 'smart' },
   fallback: {
     enabled: true,
     maxRetries: 1,
@@ -102,11 +103,15 @@ export function loadConfig(configPath?: string): RouterConfig {
     try {
       const raw = fs.readFileSync(resolvedPath, 'utf8');
       const parsed = parse(raw);
+      // Legacy `rules:` (removed prompt-override system) is stripped so stale
+      // keys don't get re-persisted on the next config save.
+      const { rules: _legacyRules, ...parsedRest } = parsed || {};
       return {
         ...DEFAULT_CONFIG,
-        ...parsed,
+        ...parsedRest,
         apiKeys: parsed?.apiKeys || DEFAULT_CONFIG.apiKeys,
-        rules: parsed?.rules || DEFAULT_CONFIG.rules,
+        tiers: parsed?.tiers || {},
+        routing: { ...DEFAULT_CONFIG.routing, ...parsed?.routing },
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },
         budget: { ...DEFAULT_CONFIG.budget, ...parsed?.budget },
         classifier: {

@@ -3,7 +3,7 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.j
 import { ExecutionResult, ModelPricing, RoutingDecision, TierLevel } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
-import { RouterEngine } from '../router/index.js';
+import { RouterEngine, routingModeForceTier } from '../router/index.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
 import { BudgetManager } from '../budget/budget-manager.js';
@@ -124,6 +124,17 @@ export class PipelineOrchestrator {
       }
     }
 
+    // 1B. Global routing mode (config.routing.mode) — cost/quality force the tier
+    // for auto/default requests; explicit client choices always win.
+    const modeTier = routingModeForceTier(
+      normalizedRequest.model,
+      normalizedRequest.router_options,
+      this.config.routing?.mode
+    );
+    if (modeTier) {
+      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: modeTier };
+    }
+
     // 2. Identify / track conversation session (zero-header prefix chain + root anchor)
     const sessionResolve = this.sessionManager.resolveSessionId(
       normalizedRequest,
@@ -132,12 +143,8 @@ export class PipelineOrchestrator {
     );
     const sessionId = sessionResolve.sessionId;
 
-    // 3. Multi-Layer Hierarchical Router (Layer 0 FastRules -> Layer 1 Local CPU -> Layer 2 Jev)
-    const initialDecision = await RouterEngine.routeAsync(
-      normalizedRequest,
-      this.config.rules,
-      this.config.classifier
-    );
+    // 3. Multi-Layer Hierarchical Router (Layer 1 Local CPU -> Layer 2 Jev)
+    const initialDecision = await RouterEngine.routeAsync(normalizedRequest, this.config.classifier);
 
     // 4. Apply Monotonic Session Ratchet
     const ratchetResult = this.sessionManager.applyRatchet(

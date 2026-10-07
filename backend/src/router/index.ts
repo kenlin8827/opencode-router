@@ -2,7 +2,23 @@ import { ChatCompletionRequest } from '../types/openai.js';
 import { RoutingDecision, TierLevel } from '../types/router.js';
 import { Layer1Classifier } from './layer1-classifier.js';
 import { Layer2Judge } from './layer2-judge.js';
-import { ClassifierConfig, CustomRule } from '../config/types.js';
+import { ClassifierConfig, RoutingMode } from '../config/types.js';
+
+/**
+ * Global routing mode → forced tier for auto/default requests. Returns undefined
+ * when the mode is 'smart' (normal cascade), when the client already forced a
+ * tier, or when a concrete model was requested — explicit choice always wins.
+ */
+export function routingModeForceTier(
+  model: string | undefined,
+  routerOptions: { force_tier?: TierLevel } | undefined,
+  mode: RoutingMode | undefined
+): TierLevel | undefined {
+  if (!mode || mode === 'smart') return undefined;
+  if (routerOptions?.force_tier) return undefined;
+  if (model && model !== 'auto' && model !== 'default') return undefined;
+  return mode === 'cost' ? 'fast' : 'reasoning';
+}
 
 export class RouterEngine {
   /**
@@ -11,26 +27,12 @@ export class RouterEngine {
    */
   public static route(
     request: ChatCompletionRequest,
-    customRules?: CustomRule[],
     classifierConfig?: ClassifierConfig
   ): RoutingDecision {
     const messages = request.messages || [];
     const extracted = Layer1Classifier.extractFeatures(request);
     const metrics = extracted.metrics;
     const needsSchemaValidation = metrics.hasToolsOrSchema;
-
-    const userParts: string[] = [];
-    for (const msg of messages) {
-      if (msg.role === 'user') {
-        const content = typeof msg.content === 'string'
-          ? msg.content
-          : Array.isArray(msg.content)
-            ? msg.content.map(p => p.text || '').join(' ')
-            : '';
-        userParts.push(content);
-      }
-    }
-    const userText = userParts.join('\n');
 
     // 1. Force Tier Override (for testing or explicit client choice)
     if (request.router_options?.force_tier) {
@@ -52,36 +54,7 @@ export class RouterEngine {
       };
     }
 
-    // 2. User-Configured Dynamic Domain Rules from config.yaml (if explicitly defined)
-    if (customRules && customRules.length > 0) {
-      for (const rule of customRules) {
-        try {
-          const reg = new RegExp(rule.pattern, 'i');
-          if (reg.test(userText)) {
-            return {
-              targetTier: rule.tier,
-              confidence: 0.98,
-              layerUsed: 'layer0',
-              ruleMatched: rule.name,
-              reason: rule.reason || `Matched user custom rule [${rule.name}]`,
-              needsSchemaValidation,
-              features: {
-                tokenCountEstimate: metrics.tokenCount,
-                hasCode: metrics.hasCode,
-                hasMathOrProof: metrics.symbolEntropy > 0.7,
-                hasMultiTurn: metrics.turnCount > 3,
-                hasToolsOrSchema: needsSchemaValidation,
-                complexityScore: 5.0,
-              },
-            };
-          }
-        } catch {
-          // ignore invalid regex
-        }
-      }
-    }
-
-    // 3. Layer 1: CPU Micro-Tensor Classifier (Base Scaffold or Trained Micro-Model)
+    // 2. Layer 1: CPU Micro-Tensor Classifier (Base Scaffold or Trained Micro-Model)
     const prediction = Layer1Classifier.predict(request, classifierConfig?.localModel);
     return {
       targetTier: prediction.targetTier,
@@ -106,7 +79,6 @@ export class RouterEngine {
    */
   public static async routeAsync(
     request: ChatCompletionRequest,
-    customRules?: CustomRule[],
     classifierConfig?: ClassifierConfig
   ): Promise<RoutingDecision> {
     const messages = request.messages || [];
@@ -114,54 +86,12 @@ export class RouterEngine {
     const metrics = extracted.metrics;
     const needsSchemaValidation = metrics.hasToolsOrSchema;
 
-    const userParts: string[] = [];
-    for (const msg of messages) {
-      if (msg.role === 'user') {
-        const content = typeof msg.content === 'string'
-          ? msg.content
-          : Array.isArray(msg.content)
-            ? msg.content.map(p => p.text || '').join(' ')
-            : '';
-        userParts.push(content);
-      }
-    }
-    const userText = userParts.join('\n');
-
     // 1. Force Tier Override
     if (request.router_options?.force_tier) {
-      return this.route(request, customRules, classifierConfig);
+      return this.route(request, classifierConfig);
     }
 
-    // 2. User-Configured Dynamic Domain Rules from config.yaml
-    if (customRules && customRules.length > 0) {
-      for (const rule of customRules) {
-        try {
-          const reg = new RegExp(rule.pattern, 'i');
-          if (reg.test(userText)) {
-            return {
-              targetTier: rule.tier,
-              confidence: 0.98,
-              layerUsed: 'layer0',
-              ruleMatched: rule.name,
-              reason: rule.reason || `Matched user custom rule [${rule.name}]`,
-              needsSchemaValidation,
-              features: {
-                tokenCountEstimate: metrics.tokenCount,
-                hasCode: metrics.hasCode,
-                hasMathOrProof: metrics.symbolEntropy > 0.7,
-                hasMultiTurn: metrics.turnCount > 3,
-                hasToolsOrSchema: needsSchemaValidation,
-                complexityScore: 5.0,
-              },
-            };
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    // 3. Layer 1: CPU Classifier (with confidence gating)
+    // 2. Layer 1: CPU Classifier (with confidence gating)
     // When using untrained base model, confidence is ~0.33 < 0.85, so isConfident is false,
     // guaranteed to cascade to Layer 2 without short-circuiting!
     const prediction = Layer1Classifier.predict(request, classifierConfig?.localModel);

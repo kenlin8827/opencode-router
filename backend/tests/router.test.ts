@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RouterEngine } from '../src/router/index.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
-import { CustomRule } from '../src/config/types.js';
 
 describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
   it('should respect client force_tier override', () => {
@@ -14,26 +13,6 @@ describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
     const decision = RouterEngine.route(req);
     assert.strictEqual(decision.targetTier, 'reasoning');
     assert.strictEqual(decision.confidence, 1.0);
-  });
-
-  it('should evaluate user-configured dynamic domain rules from config.yaml without code hardcoding', () => {
-    const customRules: CustomRule[] = [
-      {
-        name: 'custom_billing_rule',
-        pattern: '(billing|invoice|payment|subscription)',
-        tier: 'flagship',
-        reason: 'User domain-specific rule',
-      },
-    ];
-
-    const req: ChatCompletionRequest = {
-      model: 'auto',
-      messages: [{ role: 'user', content: 'Generate monthly subscription billing report' }],
-    };
-
-    const decision = RouterEngine.route(req, customRules);
-    assert.strictEqual(decision.targetTier, 'flagship');
-    assert.strictEqual(decision.ruleMatched, 'custom_billing_rule');
   });
 
   it('should detect structured JSON output protocol and enable schema validation for fast tier with fallback', () => {

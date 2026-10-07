@@ -37,11 +37,43 @@ export interface BudgetConfig {
   maxCompletionTokensLimit?: number;
 }
 
-export interface CustomRule {
-  name: string;
-  pattern: string; // regex pattern
-  tier: TierLevel;
-  reason?: string;
+/**
+ * Per-tier composition policy — resolved at runtime whenever a tier's candidate
+ * pool is needed (primary pick, failover chain, session self-healing).
+ * Matching order: blacklist → whitelist → priceRange; patterns are wildcards
+ * (`*` any chars, `?` single char, case-insensitive; no wildcard = substring).
+ * Blacklist and whitelist are mutually exclusive in the console UI; if both
+ * are set in hand-written YAML, blacklist wins.
+ */
+export interface TierPriceRange {
+  minInputPerM?: number; // $/M input price floor (0 = free/local models)
+  maxInputPerM?: number; // $/M input price ceiling
+  maxOutputPerM?: number; // $/M output price ceiling
+}
+
+export interface TierWeightRule {
+  pattern: string; // wildcard pattern over model id
+  weight: number; // >= 1, default 1; first matching rule wins
+}
+
+export interface TierPolicy {
+  priceRange?: TierPriceRange;
+  blacklist?: string[]; // matched models are removed from the tier entirely
+  whitelist?: string[]; // non-empty: ONLY matching models are kept
+  selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
+  weights?: TierWeightRule[]; // multi-role: selection probability (weighted) / rotation share (round_robin) / same-priority order tie-break (priority)
+}
+
+export interface TiersConfig {
+  fast?: TierPolicy;
+  flagship?: TierPolicy;
+  reasoning?: TierPolicy;
+}
+
+export type RoutingMode = 'smart' | 'cost' | 'quality';
+
+export interface RoutingConfig {
+  mode: RoutingMode; // smart = Layer1/Layer2 cascade (default); cost = always fast; quality = always reasoning
 }
 
 export interface OpenCodeConfig {
@@ -132,7 +164,8 @@ export interface RouterConfig {
   apiKeys?: ApiKeyConfig[];
   opencode?: OpenCodeConfig;
   catalog?: CatalogConfig;
-  rules?: CustomRule[];
+  tiers?: TiersConfig;
+  routing?: RoutingConfig;
   fallback: FallbackConfig;
   budget: BudgetConfig;
   classifier?: ClassifierConfig;

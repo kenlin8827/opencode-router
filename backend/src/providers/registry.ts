@@ -1,20 +1,24 @@
 import { LLMProvider } from './base.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
-import { ModelRegistration, ProviderConfig, RouterConfig } from '../config/types.js';
+import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig } from '../config/types.js';
 import { TierLevel } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { CircuitBreakerManager, UpstreamError } from '../resilience/index.js';
+import { globMatch, globMatchAny } from '../utils/glob.js';
 
 export class ProviderRegistry {
   private providers = new Map<string, LLMProvider>();
   private models = new Map<string, ModelRegistration>();
   private tierDefaults = new Map<TierLevel, ModelRegistration>();
   private circuitBreakerManager: CircuitBreakerManager;
+  private tierPolicies: TiersConfig;
+  private rrCursor = new Map<TierLevel, number>();
   private mockMode = false;
 
   constructor(config: RouterConfig, mockMode = false) {
     this.mockMode = mockMode;
+    this.tierPolicies = config.tiers || {};
     this.circuitBreakerManager = new CircuitBreakerManager(config.circuitBreaker);
 
     // Initialize providers
@@ -90,16 +94,110 @@ export class ProviderRegistry {
   }
 
   /**
+   * Why a model is rejected from a tier ('' = allowed). Single source of truth
+   * shared by the hot-path filter and the pool introspection endpoint.
+   * Matching order: blacklist → whitelist → priceRange.
+   */
+  private policyRejectionReason(policies: TiersConfig | undefined, tier: TierLevel, m: ModelRegistration): string {
+    const policy = policies?.[tier];
+    if (!policy) return '';
+    if (globMatchAny(policy.blacklist, m.id)) return 'blacklist';
+    if (policy.whitelist?.length && !globMatchAny(policy.whitelist, m.id)) return 'whitelist';
+    const range = policy.priceRange;
+    if (range) {
+      const input = m.pricing?.input;
+      const output = m.pricing?.output;
+      if (range.minInputPerM != null && input != null && input < range.minInputPerM) return 'price-min';
+      if (range.maxInputPerM != null && input != null && input > range.maxInputPerM) return 'price-max';
+      if (range.maxOutputPerM != null && output != null && output > range.maxOutputPerM) return 'price-output';
+    }
+    return '';
+  }
+
+  /** Hot-path candidate filter — see policyRejectionReason. */
+  private applyTierPolicy(policies: TiersConfig | undefined, tier: TierLevel, models: ModelRegistration[]): ModelRegistration[] {
+    const policy = policies?.[tier];
+    if (!policy) return models;
+    return models.filter((m) => !this.policyRejectionReason(policies, tier, m));
+  }
+
+  /** Weight of a model inside a tier: first matching weights rule wins, default 1. */
+  private weightFor(policies: TiersConfig | undefined, tier: TierLevel, modelId: string): number {
+    const rules = policies?.[tier]?.weights;
+    for (const rule of rules || []) {
+      if (globMatch(rule.pattern, modelId)) return Math.max(1, Number(rule.weight) || 1);
+    }
+    return 1;
+  }
+
+  /** Effective selection strategy: explicit config wins; legacy default keeps weights→weighted. */
+  private selectionStrategy(tier: TierLevel): 'priority' | 'weighted' | 'round_robin' {
+    const policy = this.tierPolicies?.[tier];
+    return policy?.selection ?? (policy?.weights?.length ? 'weighted' : 'priority');
+  }
+
+  /** Weighted round-robin: each model occupies `weight` consecutive slots per cycle. */
+  private pickRoundRobin(models: ModelRegistration[], tier: TierLevel): ModelRegistration {
+    const slots: ModelRegistration[] = [];
+    for (const m of models) {
+      const w = this.weightFor(this.tierPolicies, tier, m.id);
+      for (let i = 0; i < w; i++) slots.push(m);
+    }
+    if (slots.length === 0) return models[0];
+    const prev = this.rrCursor.get(tier) ?? 0;
+    this.rrCursor.set(tier, prev + 1);
+    return slots[prev % slots.length];
+  }
+
+  /**
+   * Primary pick inside a tier, driven by the tier's selection strategy:
+   * - priority (default): first healthy candidate in chain order; weights break
+   *   same-priority ties (see sortForChain)
+   * - weighted: weighted random draw over the healthy pool
+   * - round_robin: rotating weighted slots for even distribution over time
+   * The failover chain order is strategy-independent (sortForChain); when no
+   * selection is configured the legacy default (weights → weighted) applies.
+   */
+  private pickPrimary(models: ModelRegistration[], tier: TierLevel): ModelRegistration {
+    if (models.length <= 1) return models[0];
+    const strategy = this.selectionStrategy(tier);
+    if (strategy === 'round_robin') return this.pickRoundRobin(models, tier);
+    if (strategy === 'weighted') {
+      const weights = models.map((m) => this.weightFor(this.tierPolicies, tier, m.id));
+      const total = weights.reduce((a, b) => a + b, 0);
+      let r = Math.random() * total;
+      for (let i = 0; i < models.length; i++) {
+        r -= weights[i];
+        if (r < 0) return models[i];
+      }
+      return models[models.length - 1];
+    }
+    return models[0];
+  }
+
+  /**
+   * Chain order: when the tier has weights configured, weight descending IS the
+   * primary order (ties → priority asc → insertion); without weights the order
+   * stays priority ascending (isDefault 0 / default 10) — fully backward compatible.
+   */
+  private sortForChain(models: ModelRegistration[], tier: TierLevel, policies: TiersConfig | undefined): ModelRegistration[] {
+    const hasWeights = (policies?.[tier]?.weights?.length || 0) > 0;
+    const prio = (m: ModelRegistration) => (m.isDefaultInTier ? 0 : m.priority ?? 10);
+    return [...models].sort((a, b) =>
+      hasWeights
+        ? this.weightFor(policies, tier, b.id) - this.weightFor(policies, tier, a.id) || prio(a) - prio(b)
+        : prio(a) - prio(b)
+    );
+  }
+
+  /**
    * Returns all candidate models registered for a given tier, sorted by priority.
    * If healthyOnly is true, only returns models where circuit breaker allows execution.
+   * The tier composition policy (blacklist/whitelist/priceRange) is applied first.
    */
   public getCandidateModelsForTier(tier: TierLevel, healthyOnly = true): ModelRegistration[] {
-    const list = Array.from(this.models.values()).filter(m => m.tier === tier);
-    list.sort((a, b) => {
-      const prioA = a.isDefaultInTier ? 0 : (a.priority ?? 10);
-      const prioB = b.isDefaultInTier ? 0 : (b.priority ?? 10);
-      return prioA - prioB;
-    });
+    let list = this.applyTierPolicy(this.tierPolicies, tier, Array.from(this.models.values()).filter(m => m.tier === tier));
+    list = this.sortForChain(list, tier, this.tierPolicies);
 
     if (healthyOnly) {
       return list.filter(m => this.circuitBreakerManager.isAvailable(m.id));
@@ -110,13 +208,13 @@ export class ProviderRegistry {
   public getModelForTier(tier: TierLevel, healthyOnly = true): ModelRegistration {
     const candidates = this.getCandidateModelsForTier(tier, healthyOnly);
     if (candidates.length > 0) {
-      return candidates[0];
+      return this.pickPrimary(candidates, tier);
     }
     // If healthyOnly was true and no healthy models found, fallback to any model in tier
     if (healthyOnly) {
       const anyCandidate = this.getCandidateModelsForTier(tier, false);
       if (anyCandidate.length > 0) {
-        return anyCandidate[0];
+        return this.pickPrimary(anyCandidate, tier);
       }
     }
     const fallback =
@@ -132,6 +230,40 @@ export class ProviderRegistry {
 
   public getAllModels(): ModelRegistration[] {
     return Array.from(this.models.values());
+  }
+
+  /**
+   * Introspection for the console: resolve a tier's effective candidate pool
+   * (after the composition policy) plus every excluded model with the reason.
+   * Pool order follows the runtime chain order; each entry carries its
+   * effective selection weight (default 1). `policiesOverride` lets the
+   * console preview freshly-saved policies without a gateway restart — runtime
+   * callers omit it and get the construction-time snapshot.
+   */
+  public resolveTierPool(
+    tier: TierLevel,
+    policiesOverride?: TiersConfig
+  ): {
+    pool: { model: ModelRegistration; weight: number }[];
+    excluded: { id: string; reason: string }[];
+  } {
+    const policies = policiesOverride ?? this.tierPolicies;
+    const pool: { model: ModelRegistration; weight: number }[] = [];
+    const excluded: { id: string; reason: string }[] = [];
+    for (const m of Array.from(this.models.values()).filter((m) => m.tier === tier)) {
+      const reason = this.policyRejectionReason(policies, tier, m);
+      if (reason) excluded.push({ id: m.id, reason });
+      else pool.push({ model: m, weight: this.weightFor(policies, tier, m.id) });
+    }
+    const sortedModels = this.sortForChain(
+      pool.map((p) => p.model),
+      tier,
+      policies
+    );
+    return {
+      pool: sortedModels.map((m) => ({ model: m, weight: this.weightFor(policies, tier, m.id) })),
+      excluded,
+    };
   }
 
   public async execute(

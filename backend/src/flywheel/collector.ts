@@ -20,7 +20,6 @@ export interface FlywheelRecord {
     targetTier: TierLevel;
     confidence: number;
     layerUsed: 'layer0' | 'layer1' | 'layer2';
-    ruleMatched?: string;
   };
   execution: {
     tierUsed: TierLevel;
@@ -138,7 +137,6 @@ export class FlywheelCollector {
         targetTier: params.decision.targetTier,
         confidence: params.decision.confidence,
         layerUsed: params.decision.layerUsed || 'layer0',
-        ruleMatched: params.decision.ruleMatched,
       },
       execution: {
         tierUsed: params.tierUsed,

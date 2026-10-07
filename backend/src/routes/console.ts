@@ -277,6 +277,7 @@ export function registerConsoleRoutes(
     '/ui',
     '/dashboard',
     '/chains',
+    '/tiers',
     '/rules',
     '/cache',
     '/providers',
@@ -372,6 +373,37 @@ export function registerConsoleRoutes(
   };
   app.post('/api/ui/config/raw', handleSaveRawYaml);
   app.post('/api/console/config/raw', handleSaveRawYaml);
+
+  // 6b. Tier composition policies — effective candidate pools (for console preview)
+  const handleTierPools = async () => {
+    const tiers = ['fast', 'flagship', 'reasoning'] as const;
+    // Preview freshly-saved policies (loadConfig reads config.yaml live) so the
+    // console reflects the last save without a gateway restart; runtime routing
+    // still uses the registry's construction-time snapshot until restart.
+    const freshTiers = loadConfig().tiers;
+    const pools: Record<string, unknown> = {};
+    for (const tier of tiers) {
+      const { pool, excluded } = registry.resolveTierPool(tier, freshTiers);
+      const cb = registry.getCircuitBreakerManager();
+      pools[tier] = {
+        pool: pool.map(({ model, weight }) => ({
+          id: model.id,
+          provider: model.provider,
+          upstreamModel: model.upstreamModel,
+          priority: model.priority,
+          isDefaultInTier: Boolean(model.isDefaultInTier),
+          inputPrice: model.pricing?.input,
+          outputPrice: model.pricing?.output,
+          healthy: cb.isAvailable(model.id),
+          weight,
+        })),
+        excluded,
+      };
+    }
+    return { status: 'ok', pools };
+  };
+  app.get('/api/ui/tier-pools', handleTierPools);
+  app.get('/api/console/tier-pools', handleTierPools);
 
   // 7. OpenCode-native Provider Management (opencode.jsonc `provider` node + auth.json)
   //     - Definitions live in ~/.config/opencode/opencode.jsonc (JSONC, comment-preserving edits)
