@@ -229,12 +229,25 @@ export function registerConsoleRoutes(
   // 1. Static Asset Serving from frontend/dist/assets
   app.get('/assets/:file', async (req: any, reply: any) => {
     const file = req.params.file;
+    // Path traversal guard: the router percent-decodes :file, so "..%2f" arrives
+    // as "../". Reject separators/dot-segments outright (asset names are flat
+    // hashed filenames like "index-CeY-Ig7t.js").
+    if (!file || file.includes('/') || file.includes('\\') || file.includes('..') || file.includes('\0')) {
+      return reply.status(400).send('Bad Request');
+    }
     const filePath = path.join(FRONTEND_DIST, 'assets', file);
+    // Defense in depth: the resolved path must stay inside the assets dir.
+    if (!path.resolve(filePath).startsWith(path.join(FRONTEND_DIST, 'assets') + path.sep)) {
+      return reply.status(400).send('Bad Request');
+    }
     if (fs.existsSync(filePath)) {
       if (file.endsWith('.js')) reply.type('application/javascript');
       else if (file.endsWith('.css')) reply.type('text/css');
       else if (file.endsWith('.svg')) reply.type('image/svg+xml');
       else if (file.endsWith('.json')) reply.type('application/json');
+      else if (file.endsWith('.woff2')) reply.type('font/woff2');
+      else if (file.endsWith('.woff')) reply.type('font/woff');
+      else if (file.endsWith('.ttf')) reply.type('font/ttf');
       return reply.send(fs.readFileSync(filePath));
     }
     return reply.status(404).send('Not Found');
