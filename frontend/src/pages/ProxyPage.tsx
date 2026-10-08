@@ -3,6 +3,7 @@ import { ArrowLeftRight, Save, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { Switch } from '../components/Switch';
 
 interface ProxyShape {
   enabled?: boolean;
@@ -106,10 +107,9 @@ export const ProxyPage: React.FC = () => {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '640px' }}>
         <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
           <span>{t('proxy.enable')}</span>
-          <input
-            type="checkbox"
+          <Switch
             checked={proxy.enabled ?? false}
-            onChange={e => setProxy({ ...proxy, enabled: e.target.checked })}
+            onChange={v => setProxy({ ...proxy, enabled: v })}
           />
         </label>
 

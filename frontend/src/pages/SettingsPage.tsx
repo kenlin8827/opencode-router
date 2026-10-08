@@ -3,6 +3,7 @@ import { Sliders, Save, Check, Globe, HardDrive, Orbit } from 'lucide-react';
 import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { Switch } from '../components/Switch';
 
 export const SettingsPage: React.FC = () => {
   const { t } = useI18n();
@@ -88,10 +89,9 @@ export const SettingsPage: React.FC = () => {
             </div>
             <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
               <span>{t('settings.cacheEnable')}</span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={config.cache?.enabled ?? true}
-                onChange={e => setConfig({ ...config, cache: { ...config.cache, enabled: e.target.checked } })}
+                onChange={v => setConfig({ ...config, cache: { ...config.cache, enabled: v } })}
               />
             </label>
             <div>
@@ -123,10 +123,9 @@ export const SettingsPage: React.FC = () => {
             </div>
             <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
               <span>{t('settings.flywheelEnable')}</span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={config.flywheel?.enabled ?? true}
-                onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, enabled: e.target.checked } })}
+                onChange={v => setConfig({ ...config, flywheel: { ...config.flywheel, enabled: v } })}
               />
             </label>
             <div>

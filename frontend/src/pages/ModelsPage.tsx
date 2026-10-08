@@ -7,6 +7,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { ModelEditDialog } from '../components/ModelEditDialog';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { Switch } from '../components/Switch';
 
 type SortKey = 'default' | 'priceAsc' | 'priceDesc' | 'contextDesc' | 'name';
 
@@ -221,10 +222,10 @@ export const ModelsPage: React.FC = () => {
             ]}
           />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            <input
-              type="checkbox"
+            <Switch
+              size="sm"
               checked={onlyConnected}
-              onChange={(e) => { setOnlyConnected(e.target.checked); localStorage.setItem('ocr_models_only_connected', e.target.checked ? '1' : '0'); setPage(1); }}
+              onChange={(v) => { setOnlyConnected(v); localStorage.setItem('ocr_models_only_connected', v ? '1' : '0'); setPage(1); }}
             />
             {t('models.onlyConnected')}
           </label>

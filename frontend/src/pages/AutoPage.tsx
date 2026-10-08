@@ -4,6 +4,7 @@ import { BrainCircuit, Save, Check, Cpu, Scale, Network, Database, ArrowRight, Z
 import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { Switch } from '../components/Switch';
 
 /**
  * /auto — Auto virtual-model routing (decision layer).
@@ -124,10 +125,9 @@ export const AutoPage: React.FC = () => {
             </div>
             <label style={rowStyle}>
               <span>{t('auto.layer1Enable')}</span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={config.classifier?.localModel?.enabled ?? false}
-                onChange={e => setConfig({ ...config, classifier: { ...config.classifier, localModel: { ...(config.classifier?.localModel || {}), enabled: e.target.checked } } })}
+                onChange={v => setConfig({ ...config, classifier: { ...config.classifier, localModel: { ...(config.classifier?.localModel || {}), enabled: v } } })}
               />
             </label>
             <div>
@@ -152,19 +152,17 @@ export const AutoPage: React.FC = () => {
             </div>
             <label style={rowStyle}>
               <span>{t('auto.layer2Enable')}</span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={layer2.enabled ?? false}
-                onChange={e => setLayer2({ enabled: e.target.checked })}
+                onChange={v => setLayer2({ enabled: v })}
               />
             </label>
             <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <label style={rowStyle}>
                 <span>{t('auto.cacheEnable')}</span>
-                <input
-                  type="checkbox"
+                <Switch
                   checked={decisionCache.enabled ?? true}
-                  onChange={e => setDecisionCache({ enabled: e.target.checked })}
+                  onChange={v => setDecisionCache({ enabled: v })}
                 />
               </label>
               <div style={{ display: 'flex', gap: '12px' }}>

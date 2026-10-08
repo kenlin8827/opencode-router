@@ -9,6 +9,7 @@ import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { useModelTest } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
+import { Switch } from './Switch';
 
 /** Backdrop blur is opt-in per dialog (default: dim only, no blur). */
 const overlayStyle = (blur: boolean): React.CSSProperties => ({
@@ -808,11 +809,11 @@ export const ProviderModelsDialog: React.FC<{
             {/* capabilities */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <input type="checkbox" checked={form.data.tools} onChange={(e) => setForm({ ...form, data: { ...form.data, tools: e.target.checked } })} />
+                <Switch size="sm" checked={form.data.tools} onChange={(v) => setForm({ ...form, data: { ...form.data, tools: v } })} />
                 {t('models.badgeToolCall')}
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <input type="checkbox" checked={form.data.disabled} onChange={(e) => setForm({ ...form, data: { ...form.data, disabled: e.target.checked } })} />
+                <Switch size="sm" checked={form.data.disabled} onChange={(v) => setForm({ ...form, data: { ...form.data, disabled: v } })} />
                 {t('op.pmDisabled')}
               </label>
             </div>

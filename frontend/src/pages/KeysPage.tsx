@@ -8,6 +8,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { Switch } from '../components/Switch';
 import { useModelTest } from '../lib/useModelTest';
 
 const cardStyle: React.CSSProperties = {
@@ -527,7 +528,7 @@ export const KeysPage: React.FC = () => {
             <span>{t('op.refreshCatalog')}</span>
           </button>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={hideConnected} onChange={e => { setHideConnected(e.target.checked); setCatalogPage(1); }} />
+            <Switch size="sm" checked={hideConnected} onChange={v => { setHideConnected(v); setCatalogPage(1); }} />
             {t('op.hideConnected')}
           </label>
         </div>
@@ -628,7 +629,7 @@ export const KeysPage: React.FC = () => {
           <input className="input" style={{ fontSize: 12 }} placeholder={t('op.fKey')} value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} />
         </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', margin: '10px 0' }}>
-          <input type="checkbox" checked={form.inline} onChange={e => setForm({ ...form, inline: e.target.checked })} />
+          <Switch size="sm" checked={form.inline} onChange={v => setForm({ ...form, inline: v })} />
           {t('op.fKeyInline')}
         </label>
         <div>

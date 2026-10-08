@@ -6,6 +6,7 @@ import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../l
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
+import { Switch } from './Switch';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 
 /** Backdrop blur is opt-in per dialog (default: dim only, no blur). */
@@ -349,11 +350,11 @@ export const ModelEditDialog: React.FC<{
 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={form.tools} onChange={(e) => setForm({ ...form, tools: e.target.checked })} />
+                  <Switch size="sm" checked={form.tools} onChange={(v) => setForm({ ...form, tools: v })} />
                   {t('models.badgeToolCall')}
                 </label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={form.disabled} onChange={(e) => setForm({ ...form, disabled: e.target.checked })} />
+                  <Switch size="sm" checked={form.disabled} onChange={(v) => setForm({ ...form, disabled: v })} />
                   {t('op.pmDisabled')}
                 </label>
               </div>
