@@ -61,24 +61,30 @@ export interface FallbackConfig {
 /**
  * Per-tier composition policy — resolved at runtime whenever a tier's candidate
  * pool is needed (primary pick, failover chain, session self-healing).
- * Matching order: blacklist → whitelist → priceRange; patterns are wildcards
+ * Filtering order: blacklist → whitelist; patterns are wildcards
  * (`*` any chars, `?` single char, case-insensitive; no wildcard = substring).
  * Blacklist and whitelist are mutually exclusive in the console UI; if both
  * are set in hand-written YAML, blacklist wins.
+ * Tier MEMBERSHIP itself is decided at boot by `match` + the catalog tier
+ * field (see providers/tier-match.ts); the legacy priceRange filter was
+ * removed — a `priceRange` key in old configs is ignored.
  */
-export interface TierPriceRange {
-  minInputPerM?: number; // $/M input price floor (0 = free/local models)
-  maxInputPerM?: number; // $/M input price ceiling
-  maxOutputPerM?: number; // $/M output price ceiling
-}
-
 export interface TierWeightRule {
   pattern: string; // wildcard pattern over model id
   weight: number; // >= 1, default 1; first matching rule wins
 }
 
 export interface TierPolicy {
-  priceRange?: TierPriceRange;
+  /**
+   * Smart-match rules that classify models into this tier at boot (vs. the
+   * filters below which only narrow an already-classified pool). Blank
+   * fields fall back to the built-in baseline (providers/tier-match.ts).
+   */
+  match?: {
+    patterns?: string[]; // wildcard patterns over model id
+    minInputPerM?: number;
+    maxInputPerM?: number;
+  };
   blacklist?: string[]; // matched models are removed from the tier entirely
   whitelist?: string[]; // non-empty: ONLY matching models are kept
   selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)

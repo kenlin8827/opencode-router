@@ -287,6 +287,8 @@ export interface TierPoolInfo {
 export interface TierPoolsResponse {
   status: string;
   pools: Record<string, TierPoolInfo>;
+  /** effective boot-time smart-match config (per tier), for suggestion previews */
+  match?: Partial<Record<'fast' | 'flagship' | 'reasoning', { patterns?: string[]; minInputPerM?: number; maxInputPerM?: number }>>;
 }
 
 export interface ComboMemberView {
@@ -670,6 +672,8 @@ export interface CatalogSourceDataModelRecord {
   limit?: { context?: number; output?: number };
   /** ocr view only: creating source of this model entry */
   source?: string;
+  /** OCR tier assignment (set only via aggregate overrides) */
+  tier?: string;
 }
 
 /** Full aggregated catalog (catalogRepository.list()) — mirrors backend CatalogProviderRecord. */

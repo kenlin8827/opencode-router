@@ -19,6 +19,9 @@ export type CatalogSourceId =
   | 'mapped'
   | 'service';
 
+/** OCR-level tier classification (mirrors backend TierLevel). */
+export type CatalogTier = 'fast' | 'flagship' | 'reasoning';
+
 export interface CatalogCost {
   input?: number;
   output?: number;
@@ -54,6 +57,13 @@ export interface CatalogModel {
   modalities?: CatalogModalities;
   cost?: CatalogCost;
   limit?: CatalogLimit;
+  /**
+   * Explicit tier assignment (OCR extension — not part of the models.dev
+   * schema). Sourced values never carry it; only aggregate overrides
+   * (overrides.json) set it. When present, boot-direct uses it verbatim
+   * instead of the price/name heuristic.
+   */
+  tier?: CatalogTier;
   source: CatalogSourceId;
 }
 

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CloudDownload, Plus, RefreshCw, Trash2, Lock, LockOpen, Globe, Eye, ChevronDown, ChevronRight, Database, Info, Braces, Copy, Pencil } from 'lucide-react';
 import {
+  api,
   opencodeApi,
   type CatalogSourceView,
   type CatalogSourceDataResponse,
@@ -15,7 +16,15 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { classifyTierDetailed, DEFAULT_TIER_MATCH, type ResolvedTierMatch, type TierReasonCode } from '../lib/tierMatch';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+
+const TIER_REASON_KEYS: Record<TierReasonCode, string> = {
+  name: 'catalogPage.ocrTierWhyName',
+  flag: 'catalogPage.ocrTierWhyReasoning',
+  cost: 'catalogPage.ocrTierWhyCost',
+  default: 'catalogPage.ocrTierWhyDefault',
+};
 
 /**
  * /catalog — remote catalog source management: view sync state (origin +
@@ -195,6 +204,22 @@ const ModelTable: React.FC<{
                   <Lock size={9} />
                 </span>
               )
+            )}
+            {m.tier && (
+              <span
+                title={t('catalogPage.ocrEditTier')}
+                style={{
+                  marginLeft: 6,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: '0 5px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border)',
+                  color: m.tier === 'fast' ? 'var(--accent-emerald)' : m.tier === 'reasoning' ? 'var(--accent-violet)' : 'var(--accent)',
+                }}
+              >
+                {m.tier}
+              </span>
             )}
           </div>
           <div style={{ ...cell, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -753,6 +778,8 @@ const OcrEditModal: React.FC<{
   const [costOutput, setCostOutput] = useState(cur.cost?.output != null ? String(cur.cost.output) : '');
   const [contextLimit, setContextLimit] = useState(cur.limit?.context != null ? String(cur.limit.context) : '');
   const [outputLimit, setOutputLimit] = useState(cur.limit?.output != null ? String(cur.limit.output) : '');
+  const [tier, setTier] = useState(cur.tier ?? '');
+  const [hadOverrideTier, setHadOverrideTier] = useState(false);
   const [hasOverride, setHasOverride] = useState(false);
   const [saving, setSaving] = useState(false);
   useBodyScrollLock(true);
@@ -769,6 +796,10 @@ const OcrEditModal: React.FC<{
         if (e.cost?.output != null) setCostOutput(String(e.cost.output));
         if (e.limit?.context != null) setContextLimit(String(e.limit.context));
         if (e.limit?.output != null) setOutputLimit(String(e.limit.output));
+        if (typeof e.tier === 'string') {
+          setTier(e.tier);
+          setHadOverrideTier(true);
+        }
       })
       .catch(() => undefined);
   }, [target.providerId, target.modelId]);
@@ -794,6 +825,9 @@ const OcrEditModal: React.FC<{
       if (num(contextLimit) !== undefined) limit.context = num(contextLimit)!;
       if (num(outputLimit) !== undefined) limit.output = num(outputLimit)!;
       if (Object.keys(limit).length > 0) entry.limit = limit;
+      // '' = 自动（不写 tier，走 boot 智能匹配）；从显式值改回自动要下发 null 清除旧键。
+      if (tier) entry.tier = tier;
+      else if (hadOverrideTier) entry.tier = null;
       await opencodeApi.putCatalogOverride(target.providerId, target.modelId, entry);
       toast.success(t('catalogPage.ocrEditSaved'));
       onSaved();
@@ -817,6 +851,20 @@ const OcrEditModal: React.FC<{
   };
 
   const fieldLabel: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '5px' };
+
+  // Preview of the backend smart match. The effective config (user `match`
+  // rules merged over the built-in baseline) comes from /tier-pools; the
+  // static DEFAULT mirror is only the offline fallback — never re-implement
+  // the heuristic here (it would drift from providers/tier-match.ts).
+  const [matchCfg, setMatchCfg] = useState<ResolvedTierMatch | null>(null);
+  useEffect(() => {
+    api
+      .getTierPools()
+      .then((r) => setMatchCfg((r.match as ResolvedTierMatch) ?? null))
+      .catch(() => setMatchCfg(null));
+  }, []);
+  const sug = classifyTierDetailed(cur.id, cur.cost?.input, cur.reasoning === true, matchCfg ?? DEFAULT_TIER_MATCH);
+  const suggest = { tier: sug.tier, why: [t(TIER_REASON_KEYS[sug.reason])] };
 
   return createPortal(
     <div
@@ -863,6 +911,25 @@ const OcrEditModal: React.FC<{
           <div>
             <label style={fieldLabel}>{t('catalogPage.dataColName')}</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input" />
+          </div>
+          <div>
+            <label style={fieldLabel}>{t('catalogPage.ocrEditTier')}</label>
+            <Combobox
+              value={tier}
+              onChange={setTier}
+              options={[
+                { value: '', label: t('catalogPage.ocrEditTierAuto'), meta: suggest.tier },
+                { value: 'fast', label: 'Fast' },
+                { value: 'flagship', label: 'Flagship' },
+                { value: 'reasoning', label: 'Reasoning' },
+              ]}
+              style={{ fontSize: '12px', padding: '5px 10px', width: '100%' }}
+            />
+            <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>
+              {t('catalogPage.ocrEditTierSuggested', { tier: suggest.tier })}
+              {suggest.why.length > 0 ? ` —— ${suggest.why.join(' / ')}` : ''}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '2px' }}>{t('catalogPage.ocrEditTierRestart')}</div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
             <div>

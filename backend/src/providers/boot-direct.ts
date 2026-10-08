@@ -1,5 +1,7 @@
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { TierLevel } from '../types/router.js';
+import { loadConfig } from '../config/index.js';
+import { resolveTierMatch, classifyTier } from './tier-match.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
 import {
   getProviderNodeById,
@@ -28,6 +30,9 @@ export interface DirectBootResult {
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
   const catalog = await catalogRepository.list();
+  // Boot-time smart match (config `tiers[t].match` over the built-in
+  // baseline). Restart required — same semantics as the composition policy.
+  const tierMatch = resolveTierMatch(loadConfig().tiers);
   const authEntries = readAuthEntries();
   const instances: DirectBootResult['instances'] = [];
   const models: ModelRegistration[] = [];
@@ -98,12 +103,16 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       const outputCost = catModel?.cost?.output ?? inputCost * 4.0;
       const cacheRead = catModel?.cost?.cache_read ?? inputCost * 0.25;
 
-      let tier: TierLevel = 'flagship';
-      const nameLower = mid.toLowerCase();
-      const isLightweight = /(flash|lite|speed|turbo|mini|fast)/.test(nameLower);
-      if (isReasoning || inputCost >= 5.0) tier = 'reasoning';
-      else if (isLightweight || (inputCost > 0 && inputCost <= 0.8)) tier = 'fast';
-      else tier = 'flagship';
+      // Explicit tier (catalog override / jsonc model def) wins; otherwise the
+      // configurable smart match classifies (patterns → reasoning flag → price
+      // band on the RAW catalog price → flagship). Free models (input = 0) can
+      // hit the fast band; models without catalog pricing simply skip bands.
+      const explicitTier = (v: unknown): TierLevel | undefined =>
+        v === 'fast' || v === 'flagship' || v === 'reasoning' ? (v as TierLevel) : undefined;
+      const tier: TierLevel =
+        explicitTier(catModel?.tier) ??
+        explicitTier(d?.tier) ??
+        classifyTier({ modelId: mid, inputPerM: catModel?.cost?.input, reasoningFlag: isReasoning }, tierMatch);
 
       models.push({
         id: `${rec.id}/${mid}`,

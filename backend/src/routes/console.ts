@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { resolveTierMatch } from '../providers/tier-match.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig } from '../config/index.js';
@@ -461,7 +462,7 @@ export function registerConsoleRoutes(
         excluded,
       };
     }
-    return { status: 'ok', pools };
+    return { status: 'ok', pools, match: resolveTierMatch(freshTiers) };
   };
   app.get('/api/ui/tier-pools', handleTierPools);
   app.get('/api/console/tier-pools', handleTierPools);
@@ -640,6 +641,9 @@ export function registerConsoleRoutes(
     const body = req.body as { providerId?: string; modelId?: string; entry?: any };
     if (!body?.providerId || !body?.modelId || typeof body.entry !== 'object') {
       return reply.status(400).send({ success: false, error: 'providerId, modelId and entry are required' });
+    }
+    if ('tier' in body.entry && body.entry.tier !== null && !['fast', 'flagship', 'reasoning'].includes(body.entry.tier)) {
+      return reply.status(400).send({ success: false, error: 'entry.tier must be fast | flagship | reasoning or null' });
     }
     const { upsertOverride } = await import('../opencode/catalog/overrides-store.js');
     const result = upsertOverride(String(body.providerId), String(body.modelId), body.entry);

@@ -135,11 +135,10 @@ export interface TranslationDict {
     tierFast: string;
     tierFlagship: string;
     tierReasoning: string;
-    priceTitle: string;
     minInput: string;
     maxInput: string;
-    maxOutput: string;
-    priceHint: string;
+    matchTitle: string;
+    matchHint: string;
     filterMode: string;
     filterNone: string;
     filterBlacklist: string;
@@ -158,9 +157,6 @@ export interface TranslationDict {
     excludedTitle: string;
     reasonBlacklist: string;
     reasonWhitelist: string;
-    reasonPriceMin: string;
-    reasonPriceMax: string;
-    reasonPriceOutput: string;
     poolUnhealthy: string;
     resetBtn: string;
     resetHint: string;
@@ -330,6 +326,7 @@ export interface TranslationDict {
     srcMapped: string;
     srcOpenaiCompatible: string;
     srcService: string;
+    srcBuiltin: string;
     lockHint: string;
     unlockHint: string;
     lockedToast: string;
@@ -636,6 +633,14 @@ export interface TranslationDict {
     ocrEditRestore: string;
     ocrEditSaved: string;
     ocrEditRestored: string;
+    ocrEditTier: string;
+    ocrEditTierAuto: string;
+    ocrEditTierSuggested: string;
+    ocrEditTierRestart: string;
+    ocrTierWhyReasoning: string;
+    ocrTierWhyName: string;
+    ocrTierWhyCost: string;
+    ocrTierWhyDefault: string;
     dataColOutputLimit: string;
     typeCustom: string;
     mapLabel: string;

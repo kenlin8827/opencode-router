@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Zap, Scale, Brain, Save, RefreshCw, Plus, X, RotateCcw, Eye, Ban, Search } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
+import { DEFAULT_TIER_MATCH } from '../lib/tierMatch';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
@@ -17,9 +18,9 @@ type FilterMode = 'none' | 'blacklist' | 'whitelist';
 type SelectionStrategy = 'priority' | 'weighted' | 'round_robin';
 
 interface TierPolicyForm {
-  minInputPerM: string;
-  maxInputPerM: string;
-  maxOutputPerM: string;
+  matchPatterns: string; // textarea, one wildcard pattern per line ('' = built-in default)
+  matchMinInputPerM: string;
+  matchMaxInputPerM: string;
   filterMode: FilterMode;
   filterPatterns: string; // textarea, one wildcard pattern per line
   selection: SelectionStrategy;
@@ -31,14 +32,6 @@ const TIERS: { key: Tier; labelKey: string; icon: typeof Zap; color: string }[] 
   { key: 'flagship', labelKey: 'tierPolicy.tierFlagship', icon: Scale, color: 'var(--accent)' },
   { key: 'reasoning', labelKey: 'tierPolicy.tierReasoning', icon: Brain, color: 'var(--accent-violet)' },
 ];
-
-// Suggested price bands ($/M input) used to prefill unconfigured tiers and by
-// the per-tier reset button. Values stay form-local until 保存全部策略.
-const DEFAULT_RANGES: Record<Tier, { min: string; max: string }> = {
-  fast: { min: '0', max: '0.5' },
-  flagship: { min: '0.5', max: '5' },
-  reasoning: { min: '5', max: '' },
-};
 
 const splitPatterns = (s: string): string[] =>
   s
@@ -53,10 +46,20 @@ const parseNum = (s: string): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+// The match inputs come PRE-FILLED with the built-in baseline (editable as-is);
+// clearing a field and saving omits it → backend falls back to the baseline
+// (providers/tier-match.ts). Note: saving persists the shown values explicitly.
+const dmMatchFields = (tier: Tier) => {
+  const dm = DEFAULT_TIER_MATCH[tier];
+  return {
+    matchPatterns: (dm.patterns || []).join('\n'),
+    matchMinInputPerM: dm.minInputPerM != null ? String(dm.minInputPerM) : '',
+    matchMaxInputPerM: dm.maxInputPerM != null ? String(dm.maxInputPerM) : '',
+  };
+};
+
 const defaultFormFor = (tier: Tier): TierPolicyForm => ({
-  minInputPerM: DEFAULT_RANGES[tier].min,
-  maxInputPerM: DEFAULT_RANGES[tier].max,
-  maxOutputPerM: '',
+  ...dmMatchFields(tier),
   filterMode: 'none',
   filterPatterns: '',
   selection: 'priority',
@@ -64,12 +67,16 @@ const defaultFormFor = (tier: Tier): TierPolicyForm => ({
 });
 
 const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
-  // Tiers the user hasn't configured yet get the suggested defaults prefilled.
-  if (!p || Object.keys(p).length === 0) return defaultFormFor(tier);
+  const dm = dmMatchFields(tier);
+  // Per-field: a saved value wins; an absent field shows the built-in baseline.
+  const withDefaults = {
+    matchPatterns: p?.match?.patterns != null ? p.match.patterns.join('\n') : dm.matchPatterns,
+    matchMinInputPerM: p?.match?.minInputPerM != null ? String(p.match.minInputPerM) : dm.matchMinInputPerM,
+    matchMaxInputPerM: p?.match?.maxInputPerM != null ? String(p.match.maxInputPerM) : dm.matchMaxInputPerM,
+  };
+  if (!p || Object.keys(p).length === 0) return { ...defaultFormFor(tier), ...withDefaults };
   return {
-    minInputPerM: p?.priceRange?.minInputPerM != null ? String(p.priceRange.minInputPerM) : '',
-    maxInputPerM: p?.priceRange?.maxInputPerM != null ? String(p.priceRange.maxInputPerM) : '',
-    maxOutputPerM: p?.priceRange?.maxOutputPerM != null ? String(p.priceRange.maxOutputPerM) : '',
+    ...withDefaults,
     filterMode: p?.blacklist?.length ? 'blacklist' : p?.whitelist?.length ? 'whitelist' : 'none',
     filterPatterns: p?.blacklist?.length ? p.blacklist.join('\n') : p?.whitelist?.length ? p.whitelist.join('\n') : '',
     selection: p?.selection ?? (p?.weights?.length ? 'weighted' : 'priority'),
@@ -79,16 +86,16 @@ const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
 
 const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
   const policy: Record<string, unknown> = {};
-  const min = parseNum(f.minInputPerM);
-  const max = parseNum(f.maxInputPerM);
-  const maxOut = parseNum(f.maxOutputPerM);
-  if (min != null || max != null || maxOut != null) {
-    const range: Record<string, number> = {};
-    if (min != null) range.minInputPerM = min;
-    if (max != null) range.maxInputPerM = max;
-    if (maxOut != null) range.maxOutputPerM = maxOut;
-    policy.priceRange = range;
-  }
+  // Smart match — only the fields the user actually filled; blanks keep the
+  // built-in baseline (backend providers/tier-match.ts DEFAULT_TIER_MATCH).
+  const match: Record<string, unknown> = {};
+  const mp = splitPatterns(f.matchPatterns);
+  if (mp.length) match.patterns = mp;
+  const matchMin = parseNum(f.matchMinInputPerM);
+  const matchMax = parseNum(f.matchMaxInputPerM);
+  if (matchMin != null) match.minInputPerM = matchMin;
+  if (matchMax != null) match.maxInputPerM = matchMax;
+  if (Object.keys(match).length > 0) policy.match = match;
   // Blacklist / whitelist are mutually exclusive — the mode selector guarantees it.
   const pats = splitPatterns(f.filterPatterns);
   if (f.filterMode === 'blacklist' && pats.length) policy.blacklist = pats;
@@ -104,9 +111,6 @@ const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
 const REASON_LABEL_KEY: Record<string, string> = {
   blacklist: 'tierPolicy.reasonBlacklist',
   whitelist: 'tierPolicy.reasonWhitelist',
-  'price-min': 'tierPolicy.reasonPriceMin',
-  'price-max': 'tierPolicy.reasonPriceMax',
-  'price-output': 'tierPolicy.reasonPriceOutput',
 };
 
 /** Provider logo via the cached catalog proxy; falls back to the initial letter. */
@@ -318,18 +322,28 @@ export const RulesPage: React.FC = () => {
                 </button>
               </div>
 
-              {/* Price range */}
+              {/* Smart match — classification rules that put models INTO this
+                  tier at boot (blank fields = built-in baseline, shown as
+                  placeholders). Takes effect on gateway restart. */}
               <div>
-                <label style={labelStyle}>{t('tierPolicy.priceTitle')}</label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                <label style={labelStyle}>{t('tierPolicy.matchTitle')}</label>
+                <textarea
+                  rows={2}
+                  className="input"
+                  style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
+                  placeholder={(DEFAULT_TIER_MATCH[tier].patterns || []).join('\n')}
+                  value={f.matchPatterns}
+                  onChange={(e) => updateForm(tier, { matchPatterns: e.target.value })}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '6px' }}>
                   <input
                     type="number"
                     step="any"
                     min={0}
                     className="input"
                     placeholder={t('tierPolicy.minInput')}
-                    value={f.minInputPerM}
-                    onChange={(e) => updateForm(tier, { minInputPerM: e.target.value })}
+                    value={f.matchMinInputPerM}
+                    onChange={(e) => updateForm(tier, { matchMinInputPerM: e.target.value })}
                   />
                   <input
                     type="number"
@@ -337,20 +351,11 @@ export const RulesPage: React.FC = () => {
                     min={0}
                     className="input"
                     placeholder={t('tierPolicy.maxInput')}
-                    value={f.maxInputPerM}
-                    onChange={(e) => updateForm(tier, { maxInputPerM: e.target.value })}
-                  />
-                  <input
-                    type="number"
-                    step="any"
-                    min={0}
-                    className="input"
-                    placeholder={t('tierPolicy.maxOutput')}
-                    value={f.maxOutputPerM}
-                    onChange={(e) => updateForm(tier, { maxOutputPerM: e.target.value })}
+                    value={f.matchMaxInputPerM}
+                    onChange={(e) => updateForm(tier, { matchMaxInputPerM: e.target.value })}
                   />
                 </div>
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.priceHint')}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.matchHint')}</div>
               </div>
 
               {/* Selection strategy + weights */}

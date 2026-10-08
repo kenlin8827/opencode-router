@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { CatalogCost, CatalogLimit, CatalogModalities } from './types.js';
+import type { CatalogCost, CatalogLimit, CatalogModalities, CatalogTier } from './types.js';
 import { getOcrStorePath } from './ocr-store.js';
 
 /**
@@ -19,6 +19,11 @@ export interface OverrideEntry {
   modalities?: CatalogModalities;
   tool_call?: boolean;
   reasoning?: boolean;
+  /**
+   * Explicit OCR tier assignment. `null` in an upsert payload = clear the
+   * key (fall back to the boot heuristic); absent = keep the stored value.
+   */
+  tier?: CatalogTier | null;
 }
 
 export interface OverrideStore {
@@ -68,6 +73,10 @@ export function upsertOverride(providerId: string, modelId: string, entry: Overr
     if (entry.modalities) merged.modalities = entry.modalities;
     if (entry.tool_call !== undefined) merged.tool_call = entry.tool_call;
     if (entry.reasoning !== undefined) merged.reasoning = entry.reasoning;
+    if (entry.tier !== undefined) {
+      if (entry.tier === null) delete merged.tier;
+      else merged.tier = entry.tier;
+    }
     store.models[overrideKey(providerId, modelId)] = merged;
     persist(store);
     return { success: true };

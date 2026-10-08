@@ -796,6 +796,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
         if (entry.modalities) model.modalities = entry.modalities;
         if (entry.tool_call !== undefined) model.tool_call = entry.tool_call;
         if (entry.reasoning !== undefined) model.reasoning = entry.reasoning;
+        if (entry.tier != null) model.tier = entry.tier;
       }
     }
 

@@ -111,21 +111,13 @@ export class ProviderRegistry {
   /**
    * Why a model is rejected from a tier ('' = allowed). Single source of truth
    * shared by the hot-path filter and the pool introspection endpoint.
-   * Matching order: blacklist → whitelist → priceRange.
+   * Matching order: blacklist → whitelist.
    */
   private policyRejectionReason(policies: TiersConfig | undefined, tier: TierLevel, m: ModelRegistration): string {
     const policy = policies?.[tier];
     if (!policy) return '';
     if (globMatchAny(policy.blacklist, m.id)) return 'blacklist';
     if (policy.whitelist?.length && !globMatchAny(policy.whitelist, m.id)) return 'whitelist';
-    const range = policy.priceRange;
-    if (range) {
-      const input = m.pricing?.input;
-      const output = m.pricing?.output;
-      if (range.minInputPerM != null && input != null && input < range.minInputPerM) return 'price-min';
-      if (range.maxInputPerM != null && input != null && input > range.maxInputPerM) return 'price-max';
-      if (range.maxOutputPerM != null && output != null && output > range.maxOutputPerM) return 'price-output';
-    }
     return '';
   }
 
@@ -208,7 +200,7 @@ export class ProviderRegistry {
   /**
    * Returns all candidate models registered for a given tier, sorted by priority.
    * If healthyOnly is true, only returns models where circuit breaker allows execution.
-   * The tier composition policy (blacklist/whitelist/priceRange) is applied first.
+   * The tier composition policy (blacklist/whitelist) is applied first.
    */
   public getCandidateModelsForTier(tier: TierLevel, healthyOnly = true): ModelRegistration[] {
     let list = this.applyTierPolicy(this.tierPolicies, tier, Array.from(this.models.values()).filter(m => m.tier === tier));
