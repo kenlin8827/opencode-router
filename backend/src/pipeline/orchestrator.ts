@@ -11,7 +11,7 @@ import { BudgetManager } from '../budget/budget-manager.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { FlywheelCollector } from '../flywheel/collector.js';
-import { SessionManager } from '../session/session-manager.js';
+import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
@@ -19,6 +19,8 @@ import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../r
 export interface ProcessContext {
   clientIp?: string;
   headers?: Record<string, string | string[] | undefined>;
+  /** Inbound wire that produced this request — recorded as session birth metadata. */
+  wire?: 'chat' | 'anthropic' | 'responses';
 }
 
 /** Deep-enough message copy for capture snapshots (content parts cloned). */
@@ -124,6 +126,7 @@ export class PipelineOrchestrator {
     const captureEnabled = this.captureRecorder.isEnabled();
 
     let captureSessionId = '';
+    let preResolvedSession: SessionResolveResult | undefined;
     let captureRequest: ChatCompletionRequest | undefined;
     const captureOut: {
       upstreamRequest?: ChatCompletionRequest;
@@ -132,11 +135,15 @@ export class PipelineOrchestrator {
     if (captureEnabled) {
       const normalizedMessages = PromptOptimizer.normalizeMessages(request);
       const snapshotRequest: ChatCompletionRequest = { ...request, messages: normalizedMessages };
-      captureSessionId = this.sessionManager.resolveSessionId(
+      // Resolve ONCE here and hand the result to processInternal: cold-start
+      // IDs carry fresh random entropy, so a second resolve of the same
+      // request would mint a different ID and split capture from routing.
+      preResolvedSession = this.sessionManager.resolveSessionId(
         snapshotRequest,
         context?.clientIp,
         context?.headers
-      ).sessionId;
+      );
+      captureSessionId = preResolvedSession.sessionId;
       captureRequest = {
         ...snapshotRequest,
         messages: snapshotMessages(normalizedMessages),
@@ -144,7 +151,7 @@ export class PipelineOrchestrator {
     }
 
     try {
-      const result = await this.processInternal(request, context, captureOut);
+      const result = await this.processInternal(request, context, captureOut, preResolvedSession);
       if (captureEnabled) {
         void this.captureRecorder.record({
           sessionId: captureSessionId,
@@ -201,7 +208,8 @@ export class PipelineOrchestrator {
     captureOut?: {
       upstreamRequest?: ChatCompletionRequest;
       upstreamError?: unknown;
-    }
+    },
+    preResolvedSession?: SessionResolveResult
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
 
@@ -235,6 +243,25 @@ export class PipelineOrchestrator {
       // which IS the intelligent-routing product behavior.
     }
 
+    // 1A. Custom model combo: the client named a configured combo id — the
+    // combo's member list IS the candidate pool. Classifier tier routing,
+    // session ratchet and schema-assertion escalation are all bypassed
+    // (explicit user composition wins, mirroring the exact-model
+    // pass-through above).
+    const comboByName =
+      !explicitModel && request.model && this.registry.isCombo(request.model)
+        ? request.model
+        : undefined;
+    if (comboByName && this.registry.resolveCombo(comboByName).length === 0) {
+      // Fail fast instead of silently degrading to classifier routing: the
+      // combo is still advertised via /v1/models, so routing it as `auto`
+      // would be invisible billing/model drift.
+      throw new Error(
+        `Combo '${comboByName}' has no registered member models — check that every id in config.combos exists in config.models.`
+      );
+    }
+    const comboId = comboByName ?? undefined;
+
     // 1B. Global routing mode (config.routing.mode) — cost/quality force the tier
     // for auto/default requests; explicit client choices always win.
     const modeTier = routingModeForceTier(
@@ -246,12 +273,15 @@ export class PipelineOrchestrator {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: modeTier };
     }
 
-    // 2. Identify / track conversation session (zero-header prefix chain + root anchor)
-    const sessionResolve = this.sessionManager.resolveSessionId(
-      normalizedRequest,
-      context?.clientIp,
-      context?.headers
-    );
+    // 2. Identify / track conversation session (zero-header layered resolution).
+    // Reuse the capture-time resolve when present: both call sites normalize
+    // identically, and one request must yield exactly one session ID.
+    const sessionResolve = preResolvedSession ??
+      this.sessionManager.resolveSessionId(
+        normalizedRequest,
+        context?.clientIp,
+        context?.headers
+      );
     const sessionId = sessionResolve.sessionId;
 
     // 2B. Token-saver compression (toolOutput 工具输出压缩 → headroom sidecar →
@@ -270,33 +300,96 @@ export class PipelineOrchestrator {
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
     // 3. Multi-Layer Hierarchical Router (Layer 1 Local CPU -> Layer 2 Jev)
-    const initialDecision = await RouterEngine.routeAsync(normalizedRequest, this.config.classifier);
+    // Combo requests bypass the classifier entirely: the combo id IS the
+    // explicit routing decision; targetTier here is a placeholder — the
+    // executed member's real tier overwrites it after the pool run.
+    const initialDecision: RoutingDecision = comboId
+      ? {
+          targetTier: 'flagship',
+          confidence: 1.0,
+          reason: `Custom combo '${comboId}' — explicit candidate list, classifier bypassed`,
+          layerUsed: 'layer0',
+          needsSchemaValidation: false,
+          features: {
+            tokenCountEstimate: 0,
+            hasCode: false,
+            hasMathOrProof: false,
+            hasMultiTurn: false,
+            hasToolsOrSchema: false,
+            complexityScore: 0,
+          },
+        }
+      : await RouterEngine.routeAsync(normalizedRequest, this.config.classifier);
 
-    // 4. Apply Monotonic Session Ratchet
-    const ratchetResult = this.sessionManager.applyRatchet(
-      sessionId,
-      initialDecision,
-      (tier) => this.registry.getModelForTier(tier)
-    );
-    const decision = ratchetResult.finalDecision;
-    decision.sessionId = sessionId;
-    decision.sessionRatchetApplied = ratchetResult.ratchetApplied;
+    // 4. Apply Monotonic Session Ratchet — three session-interaction modes,
+    // resolved once here (the unified policy seam for all entry modes):
+    // - 'ratchet'  : auto routing — full monotonic ratchet (upgrade allowed,
+    //                downgrade intercepted, pin honored)
+    // - 'explicit' : client named a registered model — turn recorded and a
+    //                higher tier still escalates the ceiling, but the session
+    //                NEVER rewrites the proposed tier (explicit user choice
+    //                always wins)
+    // - 'bypass'   : combo — no pin read/write, no ceiling raise, the combo
+    //                composition IS the decision
+    const sessionMode: 'ratchet' | 'explicit' | 'bypass' = comboId
+      ? 'bypass'
+      : explicitModel
+        ? 'explicit'
+        : 'ratchet';
+    let decision: RoutingDecision;
+    let ratchetApplied = false;
+    let sessionTurnCount: number;
+    if (sessionMode === 'bypass') {
+      decision = { ...initialDecision, sessionId, sessionRatchetApplied: false, sessionLookupType: sessionResolve.lookupType };
+      sessionTurnCount = (this.sessionManager.getSession(sessionId)?.turnCount ?? 0) + 1;
+    } else {
+      const ratchetResult = this.sessionManager.applyRatchet(
+        sessionId,
+        initialDecision,
+        (tier) => this.registry.getModelForTier(tier),
+        { allowIntercept: sessionMode === 'ratchet' }
+      );
+      decision = ratchetResult.finalDecision;
+      decision.sessionId = sessionId;
+      decision.sessionRatchetApplied = ratchetResult.ratchetApplied;
+      decision.sessionLookupType = sessionResolve.lookupType;
+      ratchetApplied = ratchetResult.ratchetApplied;
+      sessionTurnCount = ratchetResult.session.turnCount;
+    }
+
+    // Birth metadata: attach once per session (first-write-wins inside the
+    // manager), recording the inbound wire, the layer that resolved the id,
+    // the client ip and a first-message snippet for UI identification.
+    const bornSession = this.sessionManager.getSession(sessionId);
+    if (bornSession && bornSession.turnCount === 1) {
+      const firstUser = normalizedRequest.messages.find((m) => m.role === 'user');
+      this.sessionManager.attachOrigin(
+        sessionId,
+        { wire: context?.wire, lookupType: sessionResolve.lookupType },
+        context?.clientIp,
+        typeof firstUser?.content === 'string' ? firstUser.content : undefined
+      );
+    }
 
     let actualTier = decision.targetTier;
 
-    // 4B. Session Self-Healing:
+    // 4B. Session Self-Healing (ratchet mode only — explicit/combo requests
+    // have no session pin):
     // If the pinned model for this session is currently tripped in OPEN state,
     // dynamically unpin/repin to the healthiest candidate model in actualTier!
-    let preferredModel = ratchetResult.session.pinnedModel
-      ? this.registry.getModel(ratchetResult.session.pinnedModel)
-      : null;
-
     const cbManager = this.registry.getCircuitBreakerManager();
-    if (preferredModel && !cbManager.isAvailable(preferredModel.id)) {
-      const healthyReplacement = this.registry.getModelForTier(actualTier, true);
-      if (healthyReplacement && healthyReplacement.id !== preferredModel.id) {
-        this.sessionManager.repinModel(sessionId, healthyReplacement);
-        preferredModel = healthyReplacement;
+    let preferredModel: ModelRegistration | null = null;
+    if (sessionMode === 'ratchet') {
+      const pinnedModel = this.sessionManager.getSession(sessionId)?.pinnedModel;
+      preferredModel = pinnedModel ? this.registry.getModel(pinnedModel) ?? null : null;
+      if (preferredModel && !cbManager.isAvailable(preferredModel.id)) {
+        const healthyReplacement = this.registry.getModelForTier(actualTier, true);
+        // Guard: getModelForTier falls back to unhealthy candidates when the
+        // whole tier is down — never repin onto a known-tripped model.
+        if (healthyReplacement && healthyReplacement.id !== preferredModel.id && cbManager.isAvailable(healthyReplacement.id)) {
+          this.sessionManager.repinModel(sessionId, healthyReplacement);
+          preferredModel = healthyReplacement;
+        }
       }
     }
 
@@ -310,15 +403,24 @@ export class PipelineOrchestrator {
     let inplaceRetries = 0;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
-    // (fast-lead cascade is skipped for explicit model choices — the client
-    // named a specific model and must not be silently rerouted to fast tier)
-    if (decision.needsSchemaValidation && this.config.fallback.enabled && !request.router_options?.disable_fallback && !explicitModel) {
+    // (fast-lead cascade is skipped for explicit model choices and combos —
+    // the client named exactly what to run and must not be silently rerouted)
+    const retryConfig = this.config.retry;
+    const failoverEnabled = retryConfig?.enabled !== false && retryConfig?.failover?.enabled !== false;
+    const maxFailoverCandidates = failoverEnabled ? (retryConfig?.failover?.maxAttempts ?? 2) : 1;
+    const tierCrossPolicy = retryConfig?.failover?.tierCrossPolicy ?? 'allow_escalate';
+
+    if (decision.needsSchemaValidation && this.config.fallback.enabled && !request.router_options?.disable_fallback && !explicitModel && !comboId) {
       // 5A: Fast Tier lead - Deploy Fast Tier first with resilience
+      const fastPool = this.registry.getCandidateModelsForTier('fast', true);
       const fastResult = await this.executeCandidatePool(
         normalizedRequest,
-        'fast',
-        decision,
-        null,
+        {
+          chain: fastPool.length > 0 ? fastPool : this.registry.getCandidateModelsForTier('fast', false),
+          tier: 'fast',
+          allowEscalate: tierCrossPolicy === 'allow_escalate',
+          attemptCap: maxFailoverCandidates,
+        },
         captureOut
       );
 
@@ -364,9 +466,12 @@ export class PipelineOrchestrator {
 
         const flagshipResult = await this.executeCandidatePool(
           fallbackReq,
-          escalateTier,
-          decision,
-          null,
+          {
+            chain: this.registry.getCandidateModelsForTier(escalateTier, true),
+            tier: escalateTier,
+            allowEscalate: false,
+            attemptCap: maxFailoverCandidates,
+          },
           captureOut
         );
 
@@ -383,12 +488,47 @@ export class PipelineOrchestrator {
         inplaceRetries += flagshipResult.inplaceRetries;
       }
     } else {
+      // Unified candidate-chain resolution for the direct path. One shape for
+      // all entry modes: chain[0] = leader, rest = failover order; escalation
+      // and attempt-cap are explicit policy fields (see executeCandidatePool).
+      let chain: ModelRegistration[];
+      let attemptCap: number;
+      let allowEscalate: boolean;
+      let poolLabel: string | undefined;
+
+      if (comboId) {
+        // Combo: the configured member list IS the chain — leader chosen by
+        // the combo's selection strategy (registry.pickComboLeader, breaker-
+        // aware), the rest follow config order. No cross-tier escalation: the
+        // user's composition is authoritative. Cap = full chain length so
+        // long combos are never truncated by retry.failover.maxAttempts.
+        const members = this.registry.resolveCombo(comboId);
+        const leader = members.length > 0 ? this.registry.pickComboLeader(comboId, members) : undefined;
+        chain = leader ? [leader, ...members.filter(m => m.id !== leader.id)] : members;
+        attemptCap = Math.max(1, chain.length);
+        allowEscalate = false;
+        poolLabel = `combo '${comboId}'`;
+      } else {
+        // Auto & explicit: tier pool (peek-filtered; fall back to the full
+        // pool when everything is tripped — the loop force-tries the last
+        // candidate). Head = pinned model (auto, post-self-healing) or the
+        // explicit model, so KV-cache affinity is preserved.
+        let pool = this.registry.getCandidateModelsForTier(actualTier, true);
+        if (pool.length === 0) pool = this.registry.getCandidateModelsForTier(actualTier, false);
+        const head = explicitModel ?? preferredModel;
+        chain = head ? [head, ...pool.filter(m => m.id !== head.id)] : pool;
+        // Auto keeps the configured failover budget; explicit/combo are
+        // bounded by their own chain length (failover.maxAttempts governs
+        // auto routing only). Cross-tier escalation is an auto-routing
+        // policy — an explicit model fails over within its tier by contract.
+        attemptCap = explicitModel ? Math.max(1, chain.length) : maxFailoverCandidates;
+        allowEscalate = !explicitModel && tierCrossPolicy === 'allow_escalate' && actualTier === 'fast';
+      }
+
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
       const execResult = await this.executeCandidatePool(
         normalizedRequest,
-        actualTier,
-        decision,
-        explicitModel ?? preferredModel,
+        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel },
         captureOut
       );
 
@@ -403,6 +543,21 @@ export class PipelineOrchestrator {
       failoverAttempts = execResult.failoverAttempts;
       failoverPath = execResult.failoverPath;
       inplaceRetries = execResult.inplaceRetries;
+
+      // Explicit-mode pin write-back: when the explicitly named model itself
+      // served the request at the session's current ceiling tier, migrate the
+      // session pin onto it — keeps the pin coherent with actually-used
+      // models (KV-cache locality) without ever rewriting the client's choice.
+      if (
+        explicitModel &&
+        execResult.modelUsed?.id === explicitModel.id &&
+        sessionMode === 'explicit'
+      ) {
+        const sess = this.sessionManager.getSession(sessionId);
+        if (sess && sess.maxTier === explicitModel.tier && sess.pinnedModel !== explicitModel.id) {
+          this.sessionManager.repinModel(sessionId, explicitModel);
+        }
+      }
     }
 
     // 6. Post-Turn Registration: Register completed turn prefix fingerprint for zero-header tracking
@@ -412,7 +567,8 @@ export class PipelineOrchestrator {
     this.sessionManager.registerCompletedTurn(
       sessionId,
       fingerprintMessages,
-      assistantContent
+      assistantContent,
+      context?.clientIp
     );
 
     // 7. FinOps Tracking & Economics Calculation
@@ -462,7 +618,7 @@ export class PipelineOrchestrator {
     this.traceTracker.record({
       traceId,
       sessionId,
-      turnNumber: ratchetResult.session.turnCount,
+      turnNumber: sessionTurnCount,
       timestamp: startTime,
       request: {
         model: request.model || 'auto',
@@ -476,7 +632,8 @@ export class PipelineOrchestrator {
         targetTier: actualTier,
         confidence: decision.confidence,
         reason: decision.reason,
-        sessionRatchetApplied: ratchetResult.ratchetApplied,
+        sessionRatchetApplied: ratchetApplied,
+        sessionLookupType: sessionResolve.lookupType,
       },
       execution: {
         modelUsed: actualModel.id,
@@ -514,7 +671,8 @@ export class PipelineOrchestrator {
       inplaceRetries,
       breakerState,
       sessionId,
-      sessionRatchetApplied: ratchetResult.ratchetApplied,
+      sessionRatchetApplied: ratchetApplied,
+      sessionLookupType: sessionResolve.lookupType,
       traceId,
       costUsd: actualCost,
       baselineCostUsd: baselineCost,
@@ -524,7 +682,16 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * Resilient candidate execution pool dispatcher (ADR-0008, ADR-0009).
+   * Resilient candidate-chain executor (ADR-0008, ADR-0009) — the single
+   * execution path shared by ALL entry modes (auto / explicit model / combo /
+   * schema-assertion cascade). Callers resolve a candidate chain + policy
+   * fields; this function only runs the loop.
+   *
+   * Chain contract: chain[0] is the leader (pinned model / explicit model /
+   * combo leader), the rest follow failover order. When `allowEscalate` is
+   * set (auto fast-tier only), healthy flagship models are appended as a
+   * cross-tier escalation tail — Strict Anti-Downgrade: flagship chains never
+   * get fast models appended.
    *
    * Two-Tier Cost-Aware Resilience Architecture:
    * 1. In-Place Retry (Preserve Upstream KV Prompt Cache, Prevent 10x Cost Invalidation):
@@ -532,18 +699,26 @@ export class PipelineOrchestrator {
    *    with backoff + jitter. If the transient blip recovers, 100% of KV cache is retained!
    *    Hard errors (402 Quota Exhausted, 401 Auth) skip in-place retry instantly (0 wasted retries).
    *
-   * 2. Hierarchical Failover (Multi-Model Pool & Tier Crossing Policy):
-   *    If in-place retry fails or error is non-transient (402/429):
-   *    Failover proceeds across candidates in the tier.
-   *    - 'allow_escalate': If all fast-tier models are exhausted, escalate to flagship models.
-   *      Strict Anti-Downgrade: Flagship requests NEVER downgrade to fast tier.
-   *    - 'same_tier_only': Strictly confine failover to the requested tier.
+   * 2. Hierarchical Failover: proceed across the chain while an untried
+   *    candidate remains; the LAST candidate is always force-tried (a breaker
+   *    rejection costs nothing upstream — when the whole chain is down this is
+   *    the last-resort attempt). `attemptCap` bounds real attempts: the
+   *    configured retry.failover.maxAttempts for auto routing, the full chain
+   *    length for explicit/combo chains.
+   *
+   * Breaker gate: canExecute() here is the ONLY probe-consuming check in the
+   * request path — every selection/filtering site uses the non-consuming
+   * peek, so HALF_OPEN canary quota is never starved by lookups.
    */
   private async executeCandidatePool(
     request: ChatCompletionRequest,
-    tier: TierLevel,
-    decision: RoutingDecision,
-    preferredModel?: ModelRegistration | null,
+    opts: {
+      chain: ModelRegistration[];
+      tier: TierLevel;
+      allowEscalate: boolean;
+      attemptCap: number;
+      label?: string;
+    },
     captureOut?: {
       upstreamRequest?: ChatCompletionRequest;
       upstreamError?: unknown;
@@ -559,64 +734,21 @@ export class PipelineOrchestrator {
     inplaceRetries: number;
     lastError?: any;
   }> {
+    const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
     const retryConfig = this.config.retry;
     const inplaceConfig = retryConfig?.inplace;
-    const failoverConfig = retryConfig?.failover;
 
     const inplaceEnabled = retryConfig?.enabled !== false && inplaceConfig?.enabled !== false;
     const maxInplaceAttempts = inplaceEnabled ? (inplaceConfig?.maxAttempts ?? 1) : 0;
     const backoffMs = inplaceConfig?.backoffMs ?? 200;
     const jitterMs = inplaceConfig?.jitterMs ?? 100;
 
-    const failoverEnabled = retryConfig?.enabled !== false && failoverConfig?.enabled !== false;
-    const maxFailoverCandidates = failoverEnabled ? (failoverConfig?.maxAttempts ?? 2) : 1;
-    const tierCrossPolicy = failoverConfig?.tierCrossPolicy ?? 'allow_escalate';
-
-    // 1. Build Candidate Pool
-    const primaryMap = new Map<string, ModelRegistration>();
-
-    // A. Add preferred model first if healthy and in tier
-    if (preferredModel && preferredModel.tier === tier && cbManager.isAvailable(preferredModel.id)) {
-      primaryMap.set(preferredModel.id, preferredModel);
-    }
-
-    // B. Add all healthy candidate models for this tier (sorted by priority / default)
-    for (const m of this.registry.getCandidateModelsForTier(tier, true)) {
-      if (!primaryMap.has(m.id)) primaryMap.set(m.id, m);
-    }
-
-    // C. Escalation Candidates (Cross-tier policy)
-    const escalationCandidates: ModelRegistration[] = [];
-    if (tierCrossPolicy === 'allow_escalate' && tier === 'fast') {
-      // Allow fast -> flagship escalation when fast tier fails
+    // 1. Candidate list = resolved chain (+ cross-tier escalation tail when allowed)
+    const candidateList = [...opts.chain];
+    if (allowEscalate) {
       for (const m of this.registry.getCandidateModelsForTier('flagship', true)) {
-        if (!primaryMap.has(m.id)) escalationCandidates.push(m);
-      }
-    }
-    // Strict Anti-Downgrade: if tier === 'flagship', NEVER add 'fast' models!
-
-    // D. If primaryMap is empty (all healthy models unavailable in tier):
-    if (primaryMap.size === 0) {
-      if (escalationCandidates.length > 0) {
-        // Escalate immediately if no healthy fast models exist
-        for (const m of escalationCandidates) {
-          primaryMap.set(m.id, m);
-        }
-      } else {
-        // Last-resort fallback: include any registered models in tier even if OPEN
-        for (const m of this.registry.getCandidateModelsForTier(tier, false)) {
-          if (!primaryMap.has(m.id)) primaryMap.set(m.id, m);
-        }
-      }
-    }
-
-    // Form final ordered candidate list
-    const candidateList = Array.from(primaryMap.values());
-    // Append escalation candidates if not already present
-    for (const m of escalationCandidates) {
-      if (!candidateList.some(c => c.id === m.id)) {
-        candidateList.push(m);
+        if (!candidateList.some(c => c.id === m.id)) candidateList.push(m);
       }
     }
 
@@ -625,15 +757,19 @@ export class PipelineOrchestrator {
     let totalInplaceRetries = 0;
     const failoverPath: string[] = [];
 
-    for (const candidate of candidateList) {
-      if (failoverAttempts >= maxFailoverCandidates) {
+    for (let ci = 0; ci < candidateList.length; ci++) {
+      const candidate = candidateList[ci];
+
+      if (failoverAttempts >= attemptCap) {
         break;
       }
 
-      // Check circuit breaker
+      // Execution gate — position-based skip: drop an unavailable candidate
+      // while an untried one remains AFTER it; the last candidate is always
+      // attempted (the pool builder already exhausted healthy-only options,
+      // and a rejected upstream call is free).
       const check = cbManager.canExecute(candidate.id);
-      if (!check.allowed && candidateList.length > 1 && failoverAttempts < candidateList.length - 1) {
-        // Skip tripped models if alternative untripped candidates exist in pool
+      if (!check.allowed && ci < candidateList.length - 1) {
         continue;
       }
 
@@ -752,7 +888,7 @@ export class PipelineOrchestrator {
       failoverAttempts,
       failoverPath,
       inplaceRetries: totalInplaceRetries,
-      lastError: lastError || new Error(`No available models for tier '${tier}'`),
+      lastError: lastError || new Error(`No available models for ${label ?? `tier '${tier}'`}`),
     };
   }
 }
