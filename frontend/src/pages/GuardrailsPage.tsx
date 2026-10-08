@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { ShieldAlert, RefreshCw, Search, RotateCcw, Ban } from 'lucide-react';
+import { ShieldAlert, RefreshCw, Search, RotateCcw, Ban, Zap, Loader2 } from 'lucide-react';
 import { api, type GatewayStatusResponse, type BreakerInfo } from '../lib/api';
+import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Pagination } from '../components/Pagination';
@@ -36,6 +37,7 @@ export const GuardrailsPage: React.FC = () => {
   const [tripPanelModel, setTripPanelModel] = useState<string | null>(null);
   const [tripReason, setTripReason] = useState('');
   const [trippingModel, setTrippingModel] = useState<string | null>(null);
+  const { testingIds, testResults, testOne, isBusy } = useModelTest();
 
   const breakers: BreakerInfo[] = status?.circuitBreakers?.breakers || [];
   const openCount = status?.circuitBreakers?.tripped || 0;
@@ -116,6 +118,20 @@ export const GuardrailsPage: React.FC = () => {
     ms >= 3600 * 1000
       ? t('guardrails.cooldownH', { h: (ms / (3600 * 1000)).toFixed(1) })
       : t('guardrails.cooldown', { sec: Math.round(ms / 1000) });
+
+  /**
+   * Probe target for a breaker row. Registered model ids are qualified
+   * (`providerId/modelId` — both boot-direct and catalog sync build them that
+   * way) while the probe endpoint takes the bare config/catalog model key, so
+   * strip the provider prefix. Rows whose id is not prefixed (hand-written
+   * config models) cannot be mapped to a provider and get no test button.
+   */
+  const testTargetFor = (b: BreakerInfo): ModelTestTarget | null => {
+    const prefix = `${b.provider}/`;
+    return b.modelId.startsWith(prefix)
+      ? { key: b.modelId, providerId: b.provider, modelId: b.modelId.slice(prefix.length) }
+      : null;
+  };
 
   const stateFilters: { key: StateFilter; label: string }[] = [
     { key: 'ALL', label: `${t('guardrails.stateAll')} (${breakers.length})` },
@@ -202,6 +218,8 @@ export const GuardrailsPage: React.FC = () => {
             pagedBreakers.map(b => {
               const isClosed = b.state === 'CLOSED';
               const isOpen = b.state === 'OPEN';
+              const testTarget = testTargetFor(b);
+              const res = testResults[b.modelId];
               const borderColor = isOpen
                 ? 'var(--accent-rose)'
                 : b.state === 'HALF_OPEN'
@@ -221,9 +239,24 @@ export const GuardrailsPage: React.FC = () => {
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: 'JetBrains Mono, monospace', overflowWrap: 'anywhere' }}>
-                      {b.modelId}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: 'JetBrains Mono, monospace', overflowWrap: 'anywhere' }}>
+                        {b.modelId}
+                      </span>
+                      {res && (
+                        <span
+                          style={{
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fontSize: '10px',
+                            whiteSpace: 'nowrap',
+                            color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                          }}
+                          title={res.ok ? `${res.latencyMs} ms` : res.error}
+                        >
+                          {res.ok ? `✓${res.latencyMs}ms` : '✗'}
+                        </span>
+                      )}
+                    </div>
                     <span
                       className={`badge ${isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}
                       style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
@@ -289,11 +322,26 @@ export const GuardrailsPage: React.FC = () => {
                       </div>
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', minHeight: '26px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', minHeight: '26px', flexWrap: 'wrap' }}>
                       {!isClosed && (
                         <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: 'auto' }}>
                           {categoryLabel(b.category)}
                         </span>
+                      )}
+                      {testTarget && (
+                        <button
+                          className="btn btn-sm"
+                          style={{ display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                          disabled={isBusy}
+                          onClick={() => testOne(testTarget)}
+                        >
+                          {testingIds.has(b.modelId) ? (
+                            <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
+                          ) : (
+                            <Zap size={12} />
+                          )}
+                          <span>{testingIds.has(b.modelId) ? t('op.testing') : t('op.testBtn')}</span>
+                        </button>
                       )}
                       {!isClosed ? (
                         <button

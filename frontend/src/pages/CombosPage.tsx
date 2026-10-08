@@ -15,6 +15,8 @@ type Selection = 'priority' | 'weighted' | 'round_robin';
 const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
 const COMBOS_PAGE_SIZE = 12;
 const COMBOS_PAGE_SIZES = [12, 24, 48];
+/** Combo cards show at most this many member chips; longer chains collapse into a "+N more" row. */
+const COMBO_PREVIEW_MEMBERS = 6;
 
 interface MemberDraft {
   id: string;
@@ -461,6 +463,9 @@ export const CombosPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [combosPage, setCombosPage] = useState(1);
   const [combosPageSize, setCombosPageSize] = useState(COMBOS_PAGE_SIZE);
+  // Absolute combo indices whose member chain is expanded past COMBO_PREVIEW_MEMBERS.
+  // Cleared whenever the list order could shift (paging / save) so indices never point at the wrong card.
+  const [expandedCards, setExpandedCards] = useState<Set<number>>(new Set());
 
   const refreshMeta = useCallback(() => {
     api
@@ -503,6 +508,7 @@ export const CombosPage: React.FC = () => {
         await api.saveConfig({ combos: next.map(toPayload) });
         toast.success(t('combos.savedNotice'));
         refreshMeta();
+        setExpandedCards(new Set()); // deletes can shift indices — drop per-card expansion
         return true;
       } catch (err: any) {
         toast.error('Failed: ' + err.message);
@@ -584,6 +590,8 @@ export const CombosPage: React.FC = () => {
             const inactive = comboMeta ? comboMeta.active === false : false;
             const modelIds = registeredIds;
             const warn = validateDraft(combo, combos, idx, modelIds);
+            const collapsed = combo.models.length > COMBO_PREVIEW_MEMBERS && !expandedCards.has(idx);
+            const shownMembers = collapsed ? combo.models.slice(0, COMBO_PREVIEW_MEMBERS) : combo.models;
             return (
               <div
                 key={idx}
@@ -638,7 +646,7 @@ export const CombosPage: React.FC = () => {
 
                 {/* Member chips (failover chain order) */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  {combo.models.map((m, mIdx) => {
+                  {shownMembers.map((m, mIdx) => {
                     const mm = membersMeta.find(x => x.id === m.id);
                     const unregistered = m.id && mm && !mm.registered;
                     return (
@@ -657,7 +665,7 @@ export const CombosPage: React.FC = () => {
                       >
                         <span style={{ color: 'var(--text-dim)', fontSize: '10px', width: '14px' }}>{mIdx + 1}</span>
                         <HealthDot member={mm} />
-                        <span style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span title={m.id} style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {m.id || <span style={{ color: 'var(--accent-rose)' }}>{t('combos.warnEmptyMember')}</span>}
                         </span>
                         {combo.selection !== 'priority' && (m.weight ?? 1) > 1 && (
@@ -666,6 +674,25 @@ export const CombosPage: React.FC = () => {
                       </div>
                     );
                   })}
+                  {combo.models.length > COMBO_PREVIEW_MEMBERS && (
+                    <button
+                      className="btn btn-sm"
+                      style={{ alignSelf: 'flex-start', fontSize: '11px', padding: '2px 8px' }}
+                      onClick={e => {
+                        e.stopPropagation();
+                        setExpandedCards(prev => {
+                          const next = new Set(prev);
+                          if (next.has(idx)) next.delete(idx);
+                          else next.add(idx);
+                          return next;
+                        });
+                      }}
+                    >
+                      {collapsed
+                        ? t('combos.showMoreMembers', { count: combo.models.length - COMBO_PREVIEW_MEMBERS })
+                        : t('combos.collapseMembers')}
+                    </button>
+                  )}
                 </div>
 
                 {/* Card foot: count + actions */}
@@ -714,10 +741,10 @@ export const CombosPage: React.FC = () => {
           page={combosPage}
           pageSize={combosPageSize}
           total={combos.length}
-          onChange={setCombosPage}
+          onChange={p => { setCombosPage(p); setExpandedCards(new Set()); }}
           showSummary
           pageSizeOptions={COMBOS_PAGE_SIZES}
-          onPageSizeChange={(s) => { setCombosPageSize(s); setCombosPage(1); }}
+          onPageSizeChange={(s) => { setCombosPageSize(s); setCombosPage(1); setExpandedCards(new Set()); }}
         />
       )}
 
