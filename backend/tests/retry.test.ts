@@ -6,6 +6,19 @@ import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { createServer } from '../src/server.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/index.js';
+import { loadConfig } from '../src/config/index.js';
+
+/**
+ * Auth mirror of server.ts preHandler key resolution: when the local
+ * config.yaml defines apiKeys, inference endpoints require a valid key even
+ * though the test config passes none (disk keys win over the test config by
+ * design). Reuse the first enabled disk key so the e2e cases run both on
+ * machines with a populated config.yaml and in clean CI checkouts.
+ */
+const authHeaders = (): Record<string, string> => {
+  const diskKeys = (loadConfig().apiKeys || []).filter(k => k.enabled !== false && k.key);
+  return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
+};
 
 describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-0009)', () => {
   const baseConfig: RouterConfig = {
@@ -372,6 +385,7 @@ describe('Resilience: End-to-End HTTP Headers & Observability', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
+      headers: authHeaders(),
       payload: {
         model: 'auto',
         messages: [{ role: 'user', content: 'What is 42?' }],

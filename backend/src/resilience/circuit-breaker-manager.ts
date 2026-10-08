@@ -75,9 +75,17 @@ export class CircuitBreakerManager {
     };
   }
 
+  /**
+   * NON-CONSUMING availability check (peek) — safe for selection, filtering
+   * and introspection; never takes a HALF_OPEN probe slot. The consuming
+   * gate is getBreaker(modelId)?.canExecute() at the execution site only.
+   */
   public isAvailable(modelId: string): boolean {
-    const check = this.canExecute(modelId);
-    return check.allowed;
+    const breaker = this.breakers.get(modelId);
+    if (!breaker) {
+      return true;
+    }
+    return breaker.peekExecute().allowed;
   }
 
   public recordSuccess(modelId: string): void {

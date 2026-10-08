@@ -171,8 +171,9 @@ export class ErrorClassifier {
       combinedText.includes('rpm');
 
     if (isRateLimitPattern) {
+      const maxCooldownMs = circuitConfig?.maxCooldownMs || 5 * 3600 * 1000;
       const cooldownMs = retryAfterSeconds
-        ? retryAfterSeconds * 1000
+        ? Math.max(1000, Math.min(retryAfterSeconds * 1000, maxCooldownMs))
         : Math.min(60 * 1000, defaultInitialCooldown);
 
       const isShortBurst = Boolean(
@@ -181,6 +182,11 @@ export class ErrorClassifier {
       );
       const networkCause: NetworkFailureCause = isShortBurst ? 'RATE_LIMIT_BURST' : 'UNKNOWN';
       const inPlaceAllowed = isShortBurst && isCauseInPlaceRetriable('rate_limit_burst');
+      // The upstream gave an explicit wait LONGER than we would ever retry
+      // in place — trust it and hard-trip for exactly that duration instead
+      // of re-discovering the limit through the 3-strike threshold. 429
+      // without Retry-After stays a soft statistical failure.
+      const hardTrip = Boolean(retryAfterSeconds && !isShortBurst);
 
       return {
         category: 'RATE_LIMITED',
@@ -189,10 +195,10 @@ export class ErrorClassifier {
         isRetriable: true,
         isInPlaceRetriable: inPlaceAllowed,
         shouldTripBreaker: true,
-        hardTrip: false, // Standard trip or short backoff
+        hardTrip,
         suggestedCooldownMs: cooldownMs,
         retryAfterSeconds,
-        reason: `Rate limit (429) on model '${modelId}' (Retry-After: ${retryAfterSeconds ?? 'unknown'}s, InPlace: ${inPlaceAllowed})`,
+        reason: `Rate limit (429) on model '${modelId}' (Retry-After: ${retryAfterSeconds ?? 'unknown'}s, InPlace: ${inPlaceAllowed}, HardTrip: ${hardTrip})`,
         rawError: error,
       };
     }

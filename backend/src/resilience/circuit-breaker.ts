@@ -124,6 +124,46 @@ export class CircuitBreaker {
   }
 
   /**
+   * NON-CONSUMING availability check for selection/filtering ("dry checks"):
+   * pool building, session self-healing, leader picks, console introspection.
+   * Identical state evaluation to canExecute() but NEVER takes a HALF_OPEN
+   * probe slot — only the execution gate (canExecute, called immediately
+   * before the upstream call) may consume the canary quota, otherwise
+   * lookups starve a recovering model into a permanent HALF_OPEN.
+   */
+  public peekExecute(): { allowed: boolean; reason?: string } {
+    if (!this.config.enabled) {
+      return { allowed: true };
+    }
+
+    this.checkCooldownTransition();
+
+    if (this.state === 'CLOSED') {
+      return { allowed: true };
+    }
+
+    if (this.state === 'HALF_OPEN') {
+      if (this.halfOpenProbes < this.config.halfOpenMaxProbes) {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        reason: `Model '${this.modelId}' is in HALF_OPEN trial probe state; probe quota (${this.config.halfOpenMaxProbes}) reached.`,
+      };
+    }
+
+    const now = this.nowFn();
+    const remainingMs = Math.max(0, this.cooldownUntil - now);
+    const remainingSec = Math.ceil(remainingMs / 1000);
+    const remainingHours = (remainingMs / (3600 * 1000)).toFixed(1);
+
+    return {
+      allowed: false,
+      reason: `Model '${this.modelId}' is OPEN (Tripped). Reason: ${this.reason || 'Service degradation'}. Cooldown remaining: ${remainingMs > 3600000 ? remainingHours + 'h' : remainingSec + 's'}.`,
+    };
+  }
+
+  /**
    * Record a successful response.
    * If in HALF_OPEN state, this confirms upstream recovery and closes the circuit!
    */
@@ -157,6 +197,12 @@ export class CircuitBreaker {
 
     // Client errors (400, context length exceeded, content filter) are NOT upstream failures
     if (!diagnosis.shouldTripBreaker) {
+      // A consumed HALF_OPEN canary slot must be released here: the probe
+      // request COMPLETED (with a non-penalty outcome), otherwise the quota
+      // stays exhausted and the breaker sticks in HALF_OPEN forever.
+      if (this.state === 'HALF_OPEN' && this.halfOpenProbes > 0) {
+        this.halfOpenProbes--;
+      }
       return;
     }
 

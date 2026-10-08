@@ -12,6 +12,19 @@ import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { createServer } from '../src/server.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
+import { loadConfig } from '../src/config/index.js';
+
+/**
+ * Auth mirror of server.ts preHandler key resolution: when the local
+ * config.yaml defines apiKeys, inference endpoints require a valid key even
+ * though the test config passes none (disk keys win over the test config by
+ * design). Reuse the first enabled disk key so the e2e cases run both on
+ * machines with a populated config.yaml and in clean CI checkouts.
+ */
+const authHeaders = (): Record<string, string> => {
+  const diskKeys = (loadConfig().apiKeys || []).filter(k => k.enabled !== false && k.key);
+  return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
+};
 
 describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
   it('should classify HTTP 402 and quota exhaustion as hard-tripping QUOTA_EXHAUSTED', () => {
@@ -57,9 +70,36 @@ describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
 
     const diagnosis = ErrorClassifier.classify(err429, 'gpt-4o-mini', 'openai');
     assert.equal(diagnosis.category, 'RATE_LIMITED');
-    assert.equal(diagnosis.hardTrip, false);
+    // Explicit Retry-After longer than the in-place wait budget: trust the
+    // upstream and hard-trip for exactly that duration.
+    assert.equal(diagnosis.hardTrip, true);
     assert.equal(diagnosis.suggestedCooldownMs, 45000);
     assert.equal(diagnosis.retryAfterSeconds, 45);
+  });
+
+  it('should keep short-burst 429 soft (in-place retry, no hard trip)', () => {
+    const err429short = new UpstreamError({
+      message: 'Rate limit reached for requests per minute',
+      status: 429,
+      provider: 'openai',
+      modelId: 'gpt-4o-mini',
+      retryAfterSeconds: 1,
+    });
+
+    const diagnosis = ErrorClassifier.classify(err429short, 'gpt-4o-mini', 'openai');
+    assert.equal(diagnosis.category, 'RATE_LIMITED');
+    assert.equal(diagnosis.hardTrip, false);
+    assert.equal(diagnosis.isInPlaceRetriable, true);
+
+    // 429 WITHOUT Retry-After: statistical path, no hard trip either
+    const err429blind = new UpstreamError({
+      message: 'Too many requests',
+      status: 429,
+      provider: 'openai',
+      modelId: 'gpt-4o-mini',
+    });
+    const diagBlind = ErrorClassifier.classify(err429blind, 'gpt-4o-mini', 'openai');
+    assert.equal(diagBlind.hardTrip, false);
   });
 
   it('should classify 5xx, network timeouts and connection drops as SERVICE_UNAVAILABLE', () => {
@@ -422,6 +462,7 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     const res = await app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
+      headers: authHeaders(),
       payload: {
         model: 'auto',
         messages: [{ role: 'user', content: 'What is the speed of light?' }],
