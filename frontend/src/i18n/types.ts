@@ -376,7 +376,7 @@ export interface TranslationDict {
     catManual: string;
     catUnknown: string;
   };
-  usage: {
+  sessions: {
     sessionsTitle: string;
     sessionsDesc: string;
     refresh: string;
@@ -580,6 +580,13 @@ export interface TranslationDict {
     headroomTitle: string;
     headroomEnable: string;
     headroomDesc: string;
+    headroomStepInstall: string;
+    headroomStepRun: string;
+    headroomStepNote: string;
+    headroomCacheNote: string;
+    headroomDocs: string;
+    copy: string;
+    copied: string;
     headroomUrl: string;
     headroomTimeout: string;
     headroomCompressUser: string;

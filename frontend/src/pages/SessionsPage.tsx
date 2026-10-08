@@ -20,9 +20,9 @@ const TH_STYLE: React.CSSProperties = {
 
 /** Tier display: show the tier's own name (Fast / Flagship / Reasoning), not opaque numbers. */
 const TIER_LABEL: Record<SessionRecord['maxTier'], string> = {
-  fast: 'usage.tierNameFast',
-  flagship: 'usage.tierNameFlagship',
-  reasoning: 'usage.tierNameReasoning',
+  fast: 'sessions.tierNameFast',
+  flagship: 'sessions.tierNameFlagship',
+  reasoning: 'sessions.tierNameReasoning',
 };
 const TIER_BADGE: Record<SessionRecord['maxTier'], string> = {
   fast: 'badge-success',
@@ -48,10 +48,10 @@ const SWITCH_BADGE: Record<SwitchKind, string> = {
 };
 
 const SWITCH_LABEL: Record<SwitchKind, string> = {
-  first: 'usage.switchFirst',
-  ratchet: 'usage.switchRatchet',
-  fallback: 'usage.switchFallback',
-  switch: 'usage.switchPlain',
+  first: 'sessions.switchFirst',
+  ratchet: 'sessions.switchRatchet',
+  fallback: 'sessions.switchFallback',
+  switch: 'sessions.switchPlain',
 };
 
 /**
@@ -82,7 +82,7 @@ const buildSwitchTimeline = (traces: TraceRecord[]): SwitchEvent[] => {
   return events;
 };
 
-export const UsagePage: React.FC = () => {
+export const SessionsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const navigate = useNavigate();
@@ -143,7 +143,7 @@ export const UsagePage: React.FC = () => {
       } catch (err) {
         console.error(err);
         setTimeline(null);
-        toast.error(t('usage.switchLoadFailed'));
+        toast.error(t('sessions.switchLoadFailed'));
       }
     },
     [t, toast]
@@ -154,7 +154,7 @@ export const UsagePage: React.FC = () => {
       <div className="card-header">
         <div className="card-title">
           <Users size={18} color="var(--accent-violet)" />
-          <span>{t('usage.sessionsTitle')}</span>
+          <span>{t('sessions.sessionsTitle')}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ position: 'relative' }}>
@@ -166,34 +166,34 @@ export const UsagePage: React.FC = () => {
               className="input"
               value={filterInput}
               onChange={e => setFilterInput(e.target.value)}
-              placeholder={t('usage.filterPlaceholder')}
+              placeholder={t('sessions.filterPlaceholder')}
               style={{ fontSize: '12px', padding: '5px 8px 5px 24px', width: 240 }}
             />
           </div>
           <button className="btn btn-sm" onClick={loadData} disabled={loading}>
             <RefreshCw size={12} />
-            <span>{t('usage.refresh')}</span>
+            <span>{t('sessions.refresh')}</span>
           </button>
         </div>
       </div>
       <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: '0 0 12px 0' }}>
-        {t('usage.sessionsDesc')}
+        {t('sessions.sessionsDesc')}
       </p>
 
       <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--card-border)', color: 'var(--text-dim)' }}>
-              <th style={TH_STYLE}>{t('usage.thSessionId')}</th>
-              <th style={TH_STYLE}>{t('usage.thPinned')}</th>
-              <th style={TH_STYLE}>{t('usage.thTier')}</th>
-              <th style={TH_STYLE}>{t('usage.thSwitches')}</th>
-              <th style={TH_STYLE}>{t('usage.thTurns')}</th>
-              <th style={TH_STYLE}>{t('usage.thRequests')}</th>
-              <th style={TH_STYLE}>{t('usage.thCache')}</th>
-              <th style={TH_STYLE}>{t('usage.thCostSaved')}</th>
-              <th style={TH_STYLE}>{t('usage.thActive')}</th>
-              {captureOn && <th style={{ ...TH_STYLE, width: 60, whiteSpace: 'nowrap' }}>{t('usage.thCapture')}</th>}
+              <th style={TH_STYLE}>{t('sessions.thSessionId')}</th>
+              <th style={TH_STYLE}>{t('sessions.thPinned')}</th>
+              <th style={TH_STYLE}>{t('sessions.thTier')}</th>
+              <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
+              <th style={TH_STYLE}>{t('sessions.thTurns')}</th>
+              <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
+              <th style={TH_STYLE}>{t('sessions.thCache')}</th>
+              <th style={TH_STYLE}>{t('sessions.thCostSaved')}</th>
+              <th style={TH_STYLE}>{t('sessions.thActive')}</th>
+              {captureOn && <th style={{ ...TH_STYLE, width: 60, whiteSpace: 'nowrap' }}>{t('sessions.thCapture')}</th>}
             </tr>
           </thead>
           <tbody>
@@ -206,8 +206,8 @@ export const UsagePage: React.FC = () => {
                       style={{ cursor: 'copy' }}
                       onClick={async () => {
                         const ok = await copyToClipboard(s.id);
-                        if (ok) toast.success(t('usage.copiedSessionId'));
-                        else toast.error(t('usage.copyFailed'));
+                        if (ok) toast.success(t('sessions.copiedSessionId'));
+                        else toast.error(t('sessions.copyFailed'));
                       }}
                     >
                       {formatSessionId(s.id)}
@@ -220,7 +220,7 @@ export const UsagePage: React.FC = () => {
                   <td style={{ padding: '10px 14px' }}>
                     <span
                       role="button"
-                      title={`${t('usage.switchTitle')} · ${t('usage.switchHint')}`}
+                      title={`${t('sessions.switchTitle')} · ${t('sessions.switchHint')}`}
                       onClick={() => openTimeline(s)}
                       style={{
                         cursor: 'pointer',
@@ -260,8 +260,8 @@ export const UsagePage: React.FC = () => {
                     <td style={{ padding: '10px 14px' }}>
                       <span
                         role="button"
-                        aria-label={t('usage.jumpToCapture')}
-                        title={t('usage.jumpToCapture')}
+                        aria-label={t('sessions.jumpToCapture')}
+                        title={t('sessions.jumpToCapture')}
                         onClick={() => navigate(`/captures?session=${encodeURIComponent(s.id)}`)}
                         style={{
                           color: 'var(--text-dim)',
@@ -281,7 +281,7 @@ export const UsagePage: React.FC = () => {
             ) : (
               <tr>
                 <td colSpan={captureOn ? 10 : 9} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)' }}>
-                  {filter ? t('usage.filterEmpty') : t('usage.emptySessions')}
+                  {filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
                 </td>
               </tr>
             )}
@@ -324,7 +324,7 @@ export const UsagePage: React.FC = () => {
             <div className="card-header">
               <div className="card-title">
                 <GitBranch size={16} color="var(--accent)" />
-                <span>{t('usage.switchTitle')}</span>
+                <span>{t('sessions.switchTitle')}</span>
               </div>
               <button className="btn btn-sm" onClick={() => setTimeline(null)} aria-label="close">
                 <X size={12} />
@@ -342,7 +342,7 @@ export const UsagePage: React.FC = () => {
               {timeline.session.id}
             </div>
             {timeline.events.length === 0 ? (
-              <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: 0 }}>{t('usage.switchEmpty')}</p>
+              <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {timeline.events.map((ev, i) => (
