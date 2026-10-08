@@ -18,6 +18,11 @@ interface ComboboxProps {
   style?: React.CSSProperties;
   /** Show a clear (×) affordance when a non-empty value is selected; clearing calls onChange(''). */
   clearable?: boolean;
+  /**
+   * Minimum panel width — use for long labels (e.g. model ids) so options are
+   * readable even when the trigger is narrow; clamped to the viewport.
+   */
+  panelMinWidth?: number;
 }
 
 /**
@@ -35,7 +40,9 @@ interface ComboboxProps {
  *   confirm dialog (300) in the project z-index scale.
  */
 const PANEL_Z = 220;
-const PANEL_MAX_HEIGHT = 264;
+const PANEL_MAX_HEIGHT = 380;
+/** Panel never shrinks below this, even when the trigger is tiny. */
+const PANEL_MIN_WIDTH_DEFAULT = 200;
 /** Show the filter input only above this many options. */
 const FILTER_THRESHOLD = 8;
 
@@ -51,7 +58,7 @@ const optionStyle: React.CSSProperties = {
   fontFamily: "'JetBrains Mono', Consolas, monospace",
 };
 
-export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, placeholder, style, clearable }) => {
+export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, placeholder, style, clearable, panelMinWidth }) => {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -87,12 +94,15 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
     const r = el.getBoundingClientRect();
     const spaceBelow = window.innerHeight - r.bottom;
     const openUp = spaceBelow < PANEL_MAX_HEIGHT && r.top > spaceBelow;
+    const width = Math.max(r.width, panelMinWidth ?? PANEL_MIN_WIDTH_DEFAULT);
+    // Clamp horizontally: a panel wider than its trigger must not overflow the right edge.
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
     setPos(
       openUp
-        ? { left: r.left, width: Math.max(r.width, 200), bottom: window.innerHeight - r.top + 4 }
-        : { left: r.left, width: Math.max(r.width, 200), top: r.bottom + 4 }
+        ? { left, width, bottom: window.innerHeight - r.top + 4 }
+        : { left, width, top: r.bottom + 4 }
     );
-  }, []);
+  }, [panelMinWidth]);
 
   const openPanel = useCallback(() => {
     position();
@@ -197,6 +207,7 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
+        title={selected ? `${selected.label}${selected.meta ? ` · ${selected.meta}` : ''}` : undefined}
         onClick={() => (open ? close() : openPanel())}
         onKeyDown={onTriggerKeyDown}
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
@@ -304,6 +315,7 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
                     key={o.value || `idx-${i}`}
                     role="option"
                     aria-selected={isSelected}
+                    title={`${o.label}${o.meta ? ` — ${o.meta}` : ''}`}
                     onMouseEnter={() => setActive(i)}
                     onClick={() => pick(o)}
                     style={{

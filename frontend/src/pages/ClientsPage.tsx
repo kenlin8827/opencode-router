@@ -144,7 +144,7 @@ export const ClientsPage: React.FC = () => {
     { value: 'auto', label: t('clients.modelAuto') },
     ...models
       .filter(m => m.id !== 'auto')
-      .map(m => ({ value: m.id, label: m.id, meta: m.tier })),
+      .map(m => ({ value: m.id, label: m.id })),
   ];
 
   const addExtraModel = (clientName: string, id: string) => {
@@ -163,7 +163,7 @@ export const ClientsPage: React.FC = () => {
   const extraOptions = (clientName: string) =>
     models
       .filter(m => !m.id.startsWith('auto') && !(extraSel[clientName] || []).includes(m.id))
-      .map(m => ({ value: m.id, label: m.id, meta: m.tier }));
+      .map(m => ({ value: m.id, label: m.id }));
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) =>
@@ -324,6 +324,7 @@ export const ClientsPage: React.FC = () => {
                               }))
                             }
                             options={modelOptions}
+                            panelMinWidth={360}
                           />
                         </div>
                       ))}
@@ -347,6 +348,7 @@ export const ClientsPage: React.FC = () => {
                             onChange={v => addExtraModel(c.name, v)}
                             options={extraOptions(c.name)}
                             placeholder={t('clients.addModel')}
+                            panelMinWidth={360}
                           />
                         </div>
                       )}
