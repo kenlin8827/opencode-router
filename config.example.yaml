@@ -106,6 +106,22 @@ flywheel:
   logUserPrompt: true               # Set to false if prompt logging should be omitted for privacy
 
 # ==============================================================================
+# Request Capture (full request/response body audit log, OPT-IN)
+# ==============================================================================
+# Archives every orchestrated turn (success AND failure) as append-only JSONL:
+#   <dir>/<YYYY-MM-DD>/<sessionId>.jsonl   (local-timezone date directories)
+# Browse in the console at /captures. Retention sweeps whole date directories
+# at boot + hourly. Request headers are NEVER recorded.
+# WARNING: captured bodies may contain sensitive data; the console /api/ui/*
+# endpoints are auth-exempt. Enable consciously.
+capture:
+  enabled: false                    # Master switch — off by default
+  # dir: "~/.opencode-router/capture"   # Archive root directory
+  retentionDays: 7                  # Date dirs older than today-N are deleted
+  maxTotalMB: 512                   # Oldest date dirs deleted first when exceeded
+  maxBodyBytes: 65536               # Per-body truncation budget (request & response separately)
+
+# ==============================================================================
 # Multi-Turn Monotonic Session Ratchet & KV Cache Protection (ADR-0006)
 # ==============================================================================
 session:

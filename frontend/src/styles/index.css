@@ -503,3 +503,7 @@ td, th {
   from { opacity: 1; transform: translateX(0); }
   to { opacity: 0; transform: translateX(24px); }
 }
+@keyframes ocr-slide-in-right {
+  from { transform: translateX(48px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

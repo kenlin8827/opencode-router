@@ -31,6 +31,7 @@ export interface TranslationDict {
     traces: string;
     sessions: string;
     logs: string;
+    captures: string;
     settings: string;
     yaml: string;
     auto: string;
@@ -412,6 +413,44 @@ export interface TranslationDict {
     empty: string;
     noFile: string;
   };
+  captures: {
+    title: string;
+    refresh: string;
+    dir: string;
+    retention: string;
+    days: string;
+    totalSize: string;
+    disabledHint: string;
+    on: string;
+    off: string;
+    hotHint: string;
+    enableConfirm: string;
+    toggleSaved: string;
+    emptyDates: string;
+    sessionsUnit: string;
+    deleteDate: string;
+    deleteConfirm: string;
+    deleted: string;
+    emptySessions: string;
+    pickSession: string;
+    turnsTitle: string;
+    turnsUnit: string;
+    emptyRecords: string;
+    statusOk: string;
+    statusError: string;
+    truncatedBadge: string;
+    fileTruncatedHint: string;
+    tabReqIn: string;
+    tabReqOut: string;
+    tabResp: string;
+    tabEmpty: string;
+    inboundModel: string;
+    outboundModel: string;
+    exportTitle: string;
+    exported: string;
+    lastOkTitle: string;
+    lastErrorTitle: string;
+  };
   clients: {
     title: string;
     desc: string;
@@ -453,6 +492,13 @@ export interface TranslationDict {
     flywheelTitle: string;
     flywheelEnable: string;
     flywheelPath: string;
+    capTitle: string;
+    capEnable: string;
+    capRetention: string;
+    capMaxTotal: string;
+    capMaxBody: string;
+    capPrivacyHint: string;
+    capHotHint: string;
   };
   proxy: {
     title: string;

@@ -132,6 +132,57 @@ export interface TraceRecord {
   };
 }
 
+// Mirrors backend capture types (backend/src/capture/recorder.ts)
+export interface CaptureStatus {
+  enabled: boolean;
+  dir: string;
+  retentionDays: number;
+  maxTotalMB: number;
+  maxBodyBytes: number;
+  totalBytes: number;
+  dateCount: number;
+}
+
+export interface CaptureDateRow {
+  date: string; // YYYY-MM-DD
+  sessions: number;
+  bytes: number;
+}
+
+export interface CaptureSessionRow {
+  file: string;
+  sessionId: string;
+  bytes: number;
+  mtimeMs: number;
+  lastStatus?: 'ok' | 'error';
+}
+
+export interface CaptureRecord {
+  id: string;
+  ts: number;
+  sessionId: string;
+  status: 'ok' | 'error';
+  model: string;
+  request?: unknown;
+  /** Post-compression snapshot of what the successful upstream call received */
+  upstreamRequest?: unknown;
+  /** Upstream error payload (status + parsed body) when a candidate call failed */
+  upstreamError?: unknown;
+  response?: unknown;
+  error?: string;
+  routing?: {
+    tierUsed?: string;
+    layerUsed?: string;
+    modelUsed?: string;
+    provider?: string;
+    fallbackOccurred?: boolean;
+    failoverPath?: string[];
+  };
+  usage?: unknown;
+  latencyMs?: number;
+  truncated?: boolean;
+}
+
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
 export interface SessionRecord {
   id: string;
@@ -419,6 +470,56 @@ export const api = {
 
   async deleteApiKey(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await fetch(`/api/ui/api-keys/${id}`, { method: 'DELETE' });
+    return res.json();
+  },
+
+  /* ------------------------------------------------------------------ *
+   * Request-capture archive (full bodies, opt-in; /api/ui/capture/*)
+   * ------------------------------------------------------------------ */
+
+  async getCaptureStatus(): Promise<CaptureStatus> {
+    const res = await fetch('/api/ui/capture/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getCaptureDates(): Promise<CaptureDateRow[]> {
+    const res = await fetch('/api/ui/capture/dates');
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.dates || [];
+  },
+
+  async getCaptureSessions(date: string): Promise<CaptureSessionRow[]> {
+    const res = await fetch(`/api/ui/capture/${encodeURIComponent(date)}/sessions`);
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.sessions || [];
+  },
+
+  async getCaptureRecords(
+    date: string,
+    file: string,
+    limit = 200
+  ): Promise<{ records: CaptureRecord[]; totalLines: number; fileTruncated: boolean }> {
+    const res = await fetch(
+      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?limit=${limit}`
+    );
+    if (!res.ok) return { records: [], totalLines: 0, fileTruncated: false };
+    return res.json();
+  },
+
+  /** Verbatim JSONL download of one session archive. */
+  async exportCaptureArchive(date: string, file: string): Promise<Blob> {
+    const res = await fetch(
+      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?format=raw`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
+  },
+
+  async deleteCaptureDate(date: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/ui/capture/${encodeURIComponent(date)}`, { method: 'DELETE' });
     return res.json();
   },
 };

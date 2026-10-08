@@ -203,6 +203,24 @@ export interface CompressionConfig {
 }
 
 /**
+ * Request capture (full request/response body audit log). Every orchestrated
+ * turn — successes AND failures — is appended as one JSONL line, archived by
+ * local-date directory and session id:
+ *   <dir>/<YYYY-MM-DD>/<sanitized-sessionId>.jsonl
+ *
+ * OFF by default (opt-in): captured bodies may contain sensitive data, and the
+ * console /api/ui/* endpoints are auth-exempt — enable consciously.
+ * Request headers are NEVER recorded.
+ */
+export interface CaptureConfig {
+  enabled?: boolean; // master switch; default false
+  dir?: string; // default: ~/.opencode-router/capture
+  retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
+  maxTotalMB?: number; // default 512; oldest date dirs are deleted first when exceeded
+  maxBodyBytes?: number; // default 65536; truncation budget applied to request and response separately
+}
+
+/**
  * Daemon-process log rotation (size-based). Only applies when the gateway is
  * started via `ocr start` — a manual `bun backend/src/index.ts` logs to its
  * own console and bypasses rotation entirely.
@@ -223,6 +241,7 @@ export interface RouterConfig {
   opencode?: OpenCodeConfig;
   proxy?: ProxyConfig;
   compression?: CompressionConfig;
+  capture?: CaptureConfig;
   logging?: LoggingConfig;
   catalog?: CatalogConfig;
   tiers?: TiersConfig;

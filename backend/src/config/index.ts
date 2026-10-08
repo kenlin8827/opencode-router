@@ -48,6 +48,12 @@ const DEFAULT_CONFIG: RouterConfig = {
     headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000 },
     caveman: { enabled: false, level: 'full' },
   },
+  capture: {
+    enabled: false, // opt-in: full bodies may contain sensitive data
+    retentionDays: 7,
+    maxTotalMB: 512,
+    maxBodyBytes: 65536,
+  },
   circuitBreaker: {
     enabled: true,
     failureThreshold: 3,
@@ -131,6 +137,7 @@ export function loadConfig(configPath?: string): RouterConfig {
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...parsed?.compression?.headroom },
           caveman: { ...DEFAULT_CONFIG.compression?.caveman, ...parsed?.compression?.caveman },
         },
+        capture: { ...DEFAULT_CONFIG.capture, ...parsed?.capture },
         circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...parsed?.circuitBreaker },
         retry: {
           enabled: parsed?.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,

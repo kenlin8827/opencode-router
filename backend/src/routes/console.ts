@@ -95,6 +95,7 @@ export const SPA_ROUTES = [
   '/traces',
   '/sessions',
   '/logs',
+  '/captures',
   '/settings',
   '/yaml',
 ];
@@ -449,10 +450,11 @@ export function registerConsoleRoutes(
     }
     const result = saveConfig(body);
     if (!result.success) return reply.status(400).send(result);
-    // Proxy policy is the ONE hot-applied config section: the resolver reads a
-    // module singleton per call, so re-snapshot it right after a successful save
-    // (everything else still requires a gateway restart — no hot reload).
+    // Hot-applied config sections: proxy policy (module singleton per call)
+    // and the capture recorder (enabled/toggles take effect immediately, no
+    // gateway restart needed). Everything else still requires a restart.
     initProxyConfig(loadConfig().proxy);
+    orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture);
     return result;
   };
   app.post('/api/ui/config', handleSaveConfig);
@@ -470,6 +472,7 @@ export function registerConsoleRoutes(
     const result = saveRawConfig(body.yaml);
     if (!result.success) return reply.status(400).send(result);
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
+    orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture); // hot-apply capture too
     return result;
   };
   app.post('/api/ui/config/raw', handleSaveRawYaml);
@@ -1053,6 +1056,63 @@ export function registerConsoleRoutes(
   };
   app.get('/api/ui/logs', handleGetLogs);
   app.get('/api/console/logs', handleGetLogs);
+
+  /* ---------------------------------------------------------------------- *
+   * 12. Request-capture archive browser (CaptureRecorder; opt-in audit log)
+   * Bodies may contain sensitive data — these endpoints sit under /api/ui/*
+   * which the auth preHandler whitelists, exactly like /api/ui/logs.
+   * ---------------------------------------------------------------------- */
+  const captureRecorder = orchestrator.getCaptureRecorder();
+  const CAPTURE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  const handleCaptureStatus = async () => captureRecorder.getStatus();
+  app.get('/api/ui/capture/status', handleCaptureStatus);
+
+  const handleCaptureDates = async () => ({ status: 'ok', dates: captureRecorder.listDates() });
+  app.get('/api/ui/capture/dates', handleCaptureDates);
+
+  app.get('/api/ui/capture/:date/sessions', async (req: any, reply: any) => {
+    const { date } = req.params as { date: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    return { status: 'ok', date, sessions: captureRecorder.listSessions(date) };
+  });
+
+  app.get('/api/ui/capture/:date/:file', async (req: any, reply: any) => {
+    const { date, file } = req.params as { date: string; file: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    // Raw export: verbatim JSONL download, no record parsing/cap.
+    if ((req.query as any)?.format === 'raw') {
+      const content = captureRecorder.readRawArchive(date, file);
+      if (content === null) {
+        return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
+      }
+      reply.header('Content-Type', 'application/x-ndjson; charset=utf-8');
+      reply.header('Content-Disposition', `attachment; filename="capture-${date}-${file}"`);
+      return reply.send(content);
+    }
+    const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '200', 10) || 200, 1), 2000);
+    const result = captureRecorder.readRecords(date, file, limit);
+    if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
+      return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
+    }
+    return { status: 'ok', date, file, ...result };
+  });
+
+  app.delete('/api/ui/capture/:date', async (req: any, reply: any) => {
+    const { date } = req.params as { date: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    const deleted = captureRecorder.deleteDate(date);
+    if (!deleted) {
+      return reply.status(404).send({ status: 'error', message: `No capture archive for ${date}` });
+    }
+    return { status: 'ok', message: `Capture archive ${date} deleted` };
+  });
 }
 
 // Backwards compatibility export

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Orbit } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Orbit, Archive } from 'lucide-react';
 import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -136,6 +136,66 @@ export const SettingsPage: React.FC = () => {
                 onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, datasetPath: e.target.value } })}
                 className="input"
               />
+            </div>
+          </div>
+
+          {/* Section 4: Request Capture (hot-applied — no restart needed) */}
+          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Archive size={14} />
+              {t('settings.capTitle')}
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <span>{t('settings.capEnable')}</span>
+              <Switch
+                checked={config.capture?.enabled ?? false}
+                onChange={v => setConfig({
+                  ...config,
+                  capture: {
+                    retentionDays: 7,
+                    maxTotalMB: 512,
+                    maxBodyBytes: 65536,
+                    ...(config.capture || {}),
+                    enabled: v,
+                  },
+                })}
+              />
+            </label>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capRetention')}</label>
+              <input
+                type="number"
+                min="1"
+                value={config.capture?.retentionDays ?? 7}
+                onChange={e => setConfig({ ...config, capture: { ...(config.capture || {}), retentionDays: parseInt(e.target.value) || 7 } })}
+                className="input"
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxTotal')}</label>
+              <input
+                type="number"
+                min="1"
+                value={config.capture?.maxTotalMB ?? 512}
+                onChange={e => setConfig({ ...config, capture: { ...(config.capture || {}), maxTotalMB: parseInt(e.target.value) || 512 } })}
+                className="input"
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxBody')}</label>
+              <input
+                type="number"
+                min="1024"
+                step="1024"
+                value={config.capture?.maxBodyBytes ?? 65536}
+                onChange={e => setConfig({ ...config, capture: { ...(config.capture || {}), maxBodyBytes: parseInt(e.target.value) || 65536 } })}
+                className="input"
+              />
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              {t('settings.capPrivacyHint')}
+              <br />
+              {t('settings.capHotHint')}
             </div>
           </div>
         </div>

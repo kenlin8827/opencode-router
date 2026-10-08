@@ -13,11 +13,20 @@ import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager } from '../session/session-manager.js';
 import { TraceTracker } from '../trace/tracker.js';
+import { CaptureRecorder } from '../capture/recorder.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 
 export interface ProcessContext {
   clientIp?: string;
   headers?: Record<string, string | string[] | undefined>;
+}
+
+/** Deep-enough message copy for capture snapshots (content parts cloned). */
+function snapshotMessages(messages: any[]): any[] {
+  return messages.map((m: any) => ({
+    role: m.role,
+    content: Array.isArray(m.content) ? m.content.map((p: any) => ({ ...p })) : m.content,
+  }));
 }
 
 export class PipelineOrchestrator {
@@ -27,6 +36,7 @@ export class PipelineOrchestrator {
   private flywheel: FlywheelCollector;
   private sessionManager: SessionManager;
   private traceTracker: TraceTracker;
+  private captureRecorder: CaptureRecorder;
   private baselinePricing: ModelPricing;
   private healthProber?: ActiveHealthProber;
 
@@ -42,6 +52,7 @@ export class PipelineOrchestrator {
     this.flywheel = new FlywheelCollector(config.flywheel);
     this.sessionManager = sessionManager || new SessionManager(config.session);
     this.traceTracker = new TraceTracker();
+    this.captureRecorder = new CaptureRecorder(config.capture);
 
     // Lookup baseline pricing for FinOps dollar calculation
     const baselineModel = this.registry.getModel(config.baselineModel) || this.registry.getModelForTier('flagship');
@@ -72,6 +83,10 @@ export class PipelineOrchestrator {
     return this.traceTracker;
   }
 
+  public getCaptureRecorder(): CaptureRecorder {
+    return this.captureRecorder;
+  }
+
   public getRegistry(): ProviderRegistry {
     return this.registry;
   }
@@ -89,6 +104,87 @@ export class PipelineOrchestrator {
   }
 
   /**
+   * Public entry point — thin capture wrapper around processInternal.
+   *
+   * Records the full request/response into the opt-in CaptureRecorder audit
+   * log on BOTH the success and the failure path (debugging failed requests
+   * is the primary use case). Implemented as a wrapper instead of an inline
+   * hook so processInternal stays untouched: the session-id resolution and
+   * the PRE-compression message snapshot are rebuilt here with the same pure
+   * functions (PromptOptimizer.normalizeMessages / resolveSessionId) — both
+   * are deterministic and run in the same synchronous segment, so the wrapper
+   * snapshot is byte-identical to what processInternal sees before
+   * applyCompression mutates the request. Request headers are never captured.
+   */
+  public async process(
+    request: ChatCompletionRequest,
+    context?: ProcessContext
+  ): Promise<ExecutionResult> {
+    const startTime = Date.now();
+    const captureEnabled = this.captureRecorder.isEnabled();
+
+    let captureSessionId = '';
+    let captureRequest: ChatCompletionRequest | undefined;
+    const captureOut: {
+      upstreamRequest?: ChatCompletionRequest;
+      upstreamError?: unknown;
+    } = {};
+    if (captureEnabled) {
+      const normalizedMessages = PromptOptimizer.normalizeMessages(request);
+      const snapshotRequest: ChatCompletionRequest = { ...request, messages: normalizedMessages };
+      captureSessionId = this.sessionManager.resolveSessionId(
+        snapshotRequest,
+        context?.clientIp,
+        context?.headers
+      ).sessionId;
+      captureRequest = {
+        ...snapshotRequest,
+        messages: snapshotMessages(normalizedMessages),
+      };
+    }
+
+    try {
+      const result = await this.processInternal(request, context, captureOut);
+      if (captureEnabled) {
+        void this.captureRecorder.record({
+          sessionId: captureSessionId,
+          status: 'ok',
+          model: request.model || 'auto',
+          request: captureRequest,
+          upstreamRequest: captureOut.upstreamRequest,
+          upstreamError: captureOut.upstreamError,
+          response: result.response,
+          routing: {
+            tierUsed: result.tierUsed,
+            layerUsed: result.layerUsed,
+            modelUsed: result.modelUsed,
+            provider: this.registry.getModel(result.modelUsed)?.provider,
+            fallbackOccurred: result.fallbackOccurred,
+            failoverPath: result.failoverPath,
+          },
+          usage: result.response.usage,
+          latencyMs: result.latencyMs,
+        });
+      }
+      return result;
+    } catch (err: any) {
+      if (captureEnabled) {
+        void this.captureRecorder.record({
+          sessionId: captureSessionId,
+          status: 'error',
+          model: request.model || 'auto',
+          request: captureRequest,
+          upstreamRequest: captureOut.upstreamRequest,
+          upstreamError: captureOut.upstreamError,
+          error: err?.message || String(err),
+          latencyMs: Date.now() - startTime,
+        });
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Complete orchestration workflow:
    * 1. Prompt normalization (canonical order)
    * 2. Zero-header session identification & prefix fingerprinting
@@ -99,9 +195,13 @@ export class PipelineOrchestrator {
    * 7. Active learning data flywheel logging
    * 8. Post-turn prefix fingerprint registration
    */
-  public async process(
+  private async processInternal(
     request: ChatCompletionRequest,
-    context?: ProcessContext
+    context?: ProcessContext,
+    captureOut?: {
+      upstreamRequest?: ChatCompletionRequest;
+      upstreamError?: unknown;
+    }
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
 
@@ -217,7 +317,9 @@ export class PipelineOrchestrator {
       const fastResult = await this.executeCandidatePool(
         normalizedRequest,
         'fast',
-        decision
+        decision,
+        null,
+        captureOut
       );
 
       let fastRes: ChatCompletionResponse | null = null;
@@ -263,7 +365,9 @@ export class PipelineOrchestrator {
         const flagshipResult = await this.executeCandidatePool(
           fallbackReq,
           escalateTier,
-          decision
+          decision,
+          null,
+          captureOut
         );
 
         if (!flagshipResult.success || !flagshipResult.response) {
@@ -284,7 +388,8 @@ export class PipelineOrchestrator {
         normalizedRequest,
         actualTier,
         decision,
-        explicitModel ?? preferredModel
+        explicitModel ?? preferredModel,
+        captureOut
       );
 
       if (!execResult.success || !execResult.response) {
@@ -438,7 +543,11 @@ export class PipelineOrchestrator {
     request: ChatCompletionRequest,
     tier: TierLevel,
     decision: RoutingDecision,
-    preferredModel?: ModelRegistration | null
+    preferredModel?: ModelRegistration | null,
+    captureOut?: {
+      upstreamRequest?: ChatCompletionRequest;
+      upstreamError?: unknown;
+    }
   ): Promise<{
     success: boolean;
     response?: ChatCompletionResponse;
@@ -543,6 +652,22 @@ export class PipelineOrchestrator {
           break; // successfully executed on this candidate!
         } catch (err: any) {
           lastError = err;
+          // Capture the upstream error payload verbatim (status + parsed body)
+          // so failed turns show what the provider actually returned.
+          if (captureOut && err?.errorBody !== undefined) {
+            let parsedBody: unknown = err.errorBody;
+            try {
+              parsedBody = JSON.parse(err.errorBody);
+            } catch {
+              // Not JSON — keep the raw string.
+            }
+            captureOut.upstreamError = {
+              status: err.status,
+              provider: err.provider,
+              modelId: err.modelId,
+              body: parsedBody,
+            };
+          }
           const diagnosis = ErrorClassifier.classify(
             err,
             candidate.id,
@@ -554,6 +679,12 @@ export class PipelineOrchestrator {
 
           // 1. Client error (400 Bad Request, context length exceeded) -> NEVER retriable, fail immediately
           if (!diagnosis.isRetriable) {
+            if (captureOut) {
+              captureOut.upstreamRequest = {
+                ...request,
+                messages: snapshotMessages(request.messages || []),
+              };
+            }
             return {
               success: false,
               failoverOccurred: false,
@@ -582,6 +713,15 @@ export class PipelineOrchestrator {
       }
 
       if (candidateSucceeded && candidateResponse) {
+        // Capture what the SUCCESSFUL upstream call actually received — for
+        // the escalation path this is the fallback/escalation request, not
+        // the original (post-compression) one.
+        if (captureOut) {
+          captureOut.upstreamRequest = {
+            ...request,
+            messages: snapshotMessages(request.messages || []),
+          };
+        }
         return {
           success: true,
           response: candidateResponse,
@@ -595,6 +735,17 @@ export class PipelineOrchestrator {
       }
     }
 
+    // Pool exhausted — record the request that was actually sent to the last
+    // attempted candidate (all candidates receive the same request), so failed
+    // turns still carry the outbound view for debugging. Zero-attempt failures
+    // (empty pool / every candidate skipped by breaker) never wrote anything
+    // upstream, so no snapshot is recorded for them.
+    if (captureOut && failoverAttempts > 0) {
+      captureOut.upstreamRequest = {
+        ...request,
+        messages: snapshotMessages(request.messages || []),
+      };
+    }
     return {
       success: false,
       failoverOccurred: failoverAttempts > 1,
