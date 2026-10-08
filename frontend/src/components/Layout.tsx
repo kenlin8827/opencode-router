@@ -17,6 +17,7 @@ import {
   Globe,
   Plug,
   Cpu,
+  CloudDownload,
   ArrowLeftRight,
   Zap,
   Activity,
@@ -77,8 +78,8 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: Shuffle,
     items: [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-      { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
       { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+      { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     ],
   },
   {
@@ -88,6 +89,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
+      { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
       { to: '/proxy', labelKey: 'nav.proxy', icon: ArrowLeftRight },
       { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
     ],
@@ -130,6 +132,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
+  '/catalog': { groupKey: 'nav.grpUpstream', titleKey: 'nav.catalogSources' },
   '/proxy': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
@@ -443,7 +446,7 @@ export const Layout: React.FC = () => {
                   boxShadow: '0 0 8px var(--accent-emerald)',
                 }}
               />
-              <span>{t('header.livePort')}</span>
+              <span>{t('header.livePort', { port: status?.port || window.location.port || '—' })}</span>
             </div>
 
             {/* Language Switcher (i18n) */}

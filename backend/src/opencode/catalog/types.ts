@@ -9,7 +9,15 @@
  * (models.dev `cost` is already $/1M; OpenRouter is converted at the source).
  */
 
-export type CatalogSourceId = 'builtin' | 'openrouter' | 'openai-compatible' | 'config' | 'service';
+export type CatalogSourceId =
+  | 'opencode'
+  | 'models-dev'
+  | 'openrouter'
+  | 'openai-compatible'
+  | 'config'
+  | 'custom'
+  | 'mapped'
+  | 'service';
 
 export interface CatalogCost {
   input?: number;

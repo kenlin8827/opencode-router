@@ -179,7 +179,7 @@ export const RulesPage: React.FC = () => {
     }
   }, []);
 
-  // provider id → logo URL (catalog merged view); logos are decorative, failures ignored
+  // provider id → logo URL (OCR catalog view); logos are decorative, failures ignored
   const ensureLogos = useCallback(async () => {
     try {
       const res = await opencodeApi.listProviders();

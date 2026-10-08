@@ -185,23 +185,77 @@ export interface ApiKeyConfig {
  */
 export interface CatalogSourceConfig {
   id: string;
-  type: 'provider-catalog' | 'model-list' | 'openai-compatible';
+  type: 'provider-catalog' | 'model-list' | 'openai-compatible' | 'custom';
   url: string;
   enabled?: boolean;
   priority?: number;
+  /**
+   * type: 'custom' ONLY — declarative field mapping from the source payload to
+   * OCR standard fields (CatalogModel). Lets a NEW response shape be onboarded
+   * with pure configuration, no normalizer code.
+   */
+  map?: SourceMapConfig;
+}
+
+/**
+ * Declarative mapping for type: 'custom' sources. Field values are dotted paths
+ * into each item (e.g. 'pricing.prompt'). `costScale` multiplies raw price
+ * values into $/1M (1 = already $/1M; 1e-6 = $/token; 1e-3 = $/K).
+ */
+export interface SourceMapConfig {
+  /** dotted path to the models array inside the response (default: root array) */
+  items?: string;
+  /** REQUIRED: dotted path to the model id */
+  id: string;
+  name?: string;
+  /** → limit.context / limit.output */
+  context?: string;
+  output?: string;
+  /** → cost.input / cost.output / cost.cache_read / cost.cache_write (× costScale) */
+  inputCost?: string;
+  outputCost?: string;
+  cacheReadCost?: string;
+  cacheWriteCost?: string;
+  /** multiplier into $/1M (default 1 = already $/1M; 1e6 = source is $/token; 1e3 = $/K) */
+  costScale?: number;
+  toolCall?: string;
+  reasoning?: string;
+  modalitiesInput?: string;
+  modalitiesOutput?: string;
 }
 
 export interface CatalogConfig {
   syncIntervalMs?: number;
   sources?: CatalogSourceConfig[];
+  /**
+   * Locally anchored model ids (bare model id, applies across providers): a
+   * locked id that already has a local/opencode.jsonc definition keeps its
+   * maintained values — INCLUDING explicit zero prices — no remote source may
+   * overwrite them. Read live from config.yaml (hot, no restart needed).
+   */
+  lockedModels?: string[];
+  /**
+   * Auto-pull models for every opencode.jsonc provider on each sync period
+   * (live /v1/models first, static catalog fallback). ADD-ONLY: existing
+   * definitions are never overwritten. Default: true.
+   */
+  autoPullModels?: boolean;
 }
 
+/** The baseline catalog source is MANDATORY — console locks it against removal/disabling. */
+export const BUILTIN_SOURCE_ID = 'opencode';
+
 export const DEFAULT_CATALOG_SOURCES: CatalogSourceConfig[] = [
-  // Baseline: the OpenCode built-in catalog (models.dev) — lowest priority number,
-  // processed first, so its non-blank values win and later sources only fill blanks.
-  { id: 'builtin', type: 'provider-catalog', url: 'https://models.dev/api.json', enabled: true, priority: 10 },
+  // Baseline: the OpenCode built-in catalog (models.opencode.ai — same models.dev
+  // schema, OpenCode's own domain) — lowest priority number, processed first, so
+  // its non-blank values win and later sources only fill blanks. This source is
+  // mandatory: it defines the model universe and can never be removed/disabled.
+  { id: BUILTIN_SOURCE_ID, type: 'provider-catalog', url: 'https://models.opencode.ai/api.json', enabled: true, priority: 10 },
   // Extension sources fill missing fields only (never overwrite non-blank values).
   { id: 'openrouter', type: 'model-list', url: 'https://openrouter.ai/api/v1/models', enabled: true, priority: 30 },
+  // Disabled by default: models.dev mirrors the opencode catalog (same schema) —
+  // a spare baseline the user can enable from the console for cross-checking.
+  { id: 'models-dev', type: 'provider-catalog', url: 'https://models.dev/api.json', enabled: false, priority: 20 },
 ];
 
 /**

@@ -97,9 +97,12 @@ const fieldLabelStyle: React.CSSProperties = {
 };
 
 const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string }> = {
-  builtin: { color: 'var(--accent)', bg: 'rgba(6,182,212,0.12)', labelKey: 'models.srcBuiltin' },
+  opencode: { color: 'var(--accent)', bg: 'rgba(6,182,212,0.12)', labelKey: 'models.srcOpencode' },
+  'models-dev': { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', labelKey: 'models.srcModelsDev' },
   openrouter: { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', labelKey: 'models.srcOpenrouter' },
   config: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', labelKey: 'models.srcConfig' },
+  custom: { color: '#34d399', bg: 'rgba(52,211,153,0.12)', labelKey: 'models.srcCustom' },
+  mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
   'openai-compatible': { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcOpenaiCompatible' },
   service: { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcService' },
 };
@@ -571,7 +574,7 @@ export const ProviderModelsDialog: React.FC<{
                 >
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
                   {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace', fontSize: 10 }}>→ {d.modelID}</span>}
-                  {d.name && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>}
+                  {(d.name || row.id.split('/').pop()) && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || row.id.split('/').pop()}</span>}
                   {defThinking(d) && <span style={badge('#a78bfa', 'rgba(167,139,250,0.12)')} title={t('models.badgeReasoning')}>{effort ? `R·${effort}` : 'R'}</span>}
                   {defTools(d) && <span style={badge('var(--accent)', 'rgba(6,182,212,0.12)')} title={t('models.badgeToolCall')}>T</span>}
                   {defVision(d) && <span style={badge('#34d399', 'rgba(52,211,153,0.12)')} title={t('models.badgeVision')}><Eye size={9} /></span>}
@@ -697,7 +700,7 @@ export const ProviderModelsDialog: React.FC<{
                   {hover.row.id}
                   {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> (disabled)</span>}
                 </div>
-                {d.name && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name}</div>}
+                {(d.name || hover.row.id.split('/').pop()) && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name || hover.row.id.split('/').pop()}</div>}
                 {d.modelID && (
                   <div style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
                     modelID → {d.modelID}

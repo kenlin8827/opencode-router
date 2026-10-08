@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { normalizeModelsDev, modelsDevLogoUrl } from '../src/opencode/catalog/sources/models-dev.js';
 import { normalizeOpenRouter, OPENROUTER_PROVIDER_ID } from '../src/opencode/catalog/sources/openrouter.js';
-import { mergeModels } from '../src/opencode/catalog/repository.js';
+import { mergeModels, CatalogRepository } from '../src/opencode/catalog/repository.js';
 import { readCacheFile, writeCacheFile } from '../src/opencode/catalog/cache.js';
+import { readOcrStore, writeOcrStore } from '../src/opencode/catalog/ocr-store.js';
 import { isAllowedLogoUrl, localLogoApiPath, getLogoCached, writeLogoCache } from '../src/opencode/catalog/logos.js';
-import { resolveSources, parseByType, normalizeOpenAICompatible } from '../src/opencode/catalog/sources/registry.js';
+import { resolveSources, parseByType, normalizeOpenAICompatible, normalizeMapped } from '../src/opencode/catalog/sources/registry.js';
 import type { CatalogModel } from '../src/opencode/catalog/types.js';
 
 describe('Catalog sources & repository', () => {
@@ -18,11 +19,13 @@ describe('Catalog sources & repository', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-'));
     oldCacheHome = process.env.XDG_CACHE_HOME;
     process.env.XDG_CACHE_HOME = tmpDir;
+    process.env.OCR_CATALOG_PATH = path.join(tmpDir, 'catalog-merged.json');
   });
 
   afterEach(() => {
     if (oldCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
     else process.env.XDG_CACHE_HOME = oldCacheHome;
+    delete process.env.OCR_CATALOG_PATH;
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -56,7 +59,7 @@ describe('Catalog sources & repository', () => {
     expect(a.id).toBe('anthropic');
     expect(a.logo).toBe('https://models.dev/logos/anthropic.svg');
     const m = a.models[0];
-    expect(m.source).toBe('builtin');
+    expect(m.source).toBe('opencode');
     expect(m.tool_call).toBe(true);
     expect(m.reasoning).toBe(true);
     expect(m.limit).toEqual({ context: 200000, output: 64000 });
@@ -128,6 +131,55 @@ describe('Catalog sources & repository', () => {
     expect(merged[0].limit?.context).toBe(4096); // empty container → fillable
   });
 
+  it('lockedModels anchor locally maintained values (including explicit zeros)', () => {    const local: CatalogModel[] = [
+      { id: 'plan-model', name: 'Subscription', cost: { input: 0, output: 0 }, source: 'config' },
+    ];
+    const remote: CatalogModel[] = [
+      { id: 'plan-model', name: 'Subscription', cost: { input: 5, output: 15 }, limit: { context: 200000 }, source: 'opencode' },
+    ];
+
+    // unlocked: 0 is "unset" → backfilled from the remote source (existing semantics)
+    const unlocked = mergeModels(local, remote);
+    expect(unlocked[0].cost?.input).toBe(5);
+
+    // locked: the locally maintained definition stands untouched — zeros included
+    const locked = mergeModels(local, remote, new Set(['plan-model']));
+    expect(locked[0].cost?.input).toBe(0);
+    expect(locked[0].cost?.output).toBe(0);
+    expect(locked[0].limit?.context).toBeUndefined(); // overlay contributed nothing
+    expect(locked[0].source).toBe('config');
+
+    // locked ids with NO local entry are unaffected (new models still enter)
+    const onlyRemote = mergeModels([], remote, new Set(['plan-model']));
+    expect(onlyRemote[0].cost?.input).toBe(5);
+  });
+
+  it('ocr store round-trips and validates shape (static local database)', () => {
+    expect(readOcrStore()).toBeNull(); // no file yet
+
+    const providers = [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        custom: false,
+        connected: false,
+        sources: ['config', 'opencode'],
+        models: [{ id: 'claude-haiku-4-5', cost: { input: 1 }, source: 'opencode' }],
+      },
+    ];
+    writeOcrStore('sig-1', providers as any);
+    const store = readOcrStore();
+    expect(store?.version).toBe(2);
+    expect(store?.sig).toBe('sig-1');
+    expect(store?.builtAt).toBeGreaterThan(0);
+    expect(store?.providers[0].id).toBe('anthropic');
+    expect(store?.providers[0].models[0].cost?.input).toBe(1);
+
+    // corrupt file → treated as absent (rebuild path kicks in)
+    fs.writeFileSync(process.env.OCR_CATALOG_PATH!, '{broken', 'utf8');
+    expect(readOcrStore()).toBeNull();
+  });
+
   it('caches catalog payloads to disk (round-trip + stale-on-error)', () => {
     writeCacheFile('unit-test-src', [{ hello: 'world' }]);
     const read = readCacheFile<any[]>('unit-test-src');
@@ -140,17 +192,22 @@ describe('Catalog sources & repository', () => {
     expect(OPENROUTER_PROVIDER_ID).toBe('openrouter');
   });
 
-  it('resolveSources falls back to defaults with builtin as the baseline (first)', () => {
+  it('resolveSources falls back to defaults with opencode as the baseline (first)', () => {
     const defaults = resolveSources(undefined);
-    expect(defaults.map((s) => s.id)).toEqual(['builtin', 'openrouter']); // priority ascending
+    // priority ascending; the disabled models-dev mirror is retained for the console
+    expect(defaults.map((s) => s.id)).toEqual(['opencode', 'models-dev', 'openrouter']);
     expect(defaults[0].priority).toBeLessThan(defaults[1].priority);
+    expect(defaults[0].url).toBe('https://models.opencode.ai/api.json'); // mandatory baseline
+    expect(defaults.find((s) => s.id === 'models-dev')?.enabled).toBe(false); // spare, off by default
 
-    // config override replaces the whole list; disabled entries are dropped
+    // config override replaces the whole list; DISABLED entries are retained
+    // (enabled=false) so the console can list and re-enable them
     const custom = resolveSources([
       { id: 'relay', type: 'openai-compatible', url: 'http://x/v1/models', priority: 10 },
       { id: 'off', type: 'model-list', url: 'https://y', enabled: false },
     ]);
-    expect(custom.map((s) => s.id)).toEqual(['relay']);
+    expect(custom.map((s) => s.id)).toEqual(['relay', 'off']);
+    expect(custom.find((s) => s.id === 'off')?.enabled).toBe(false);
   });
 
   it('parseByType dispatches to the registered normalizer', () => {
@@ -174,6 +231,51 @@ describe('Catalog sources & repository', () => {
     });
     expect(models.length).toBe(2);
     expect(models[1].limit?.context).toBe(8192);
+  });
+
+  it('normalizeMapped applies the declarative schema map (zero-code type extension)', () => {
+    const { normalizeMapped } = require('../src/opencode/catalog/sources/registry.js');
+    const map = {
+      items: 'data.models',
+      id: 'model_id',
+      name: 'display_name',
+      context: 'limits.ctx',
+      output: 'limits.max_out',
+      inputCost: 'pricing.in',
+      outputCost: 'pricing.out',
+      costScale: 1e6, // $/token → $/1M
+      toolCall: 'supports.tools',
+      reasoning: 'supports.reasoning',
+      modalitiesInput: 'io.in',
+      modalitiesOutput: 'io.out',
+    };
+    const raw = {
+      data: {
+        models: [
+          {
+            model_id: 'glm-5.3-flash',
+            display_name: 'GLM 5.3 Flash',
+            limits: { ctx: 200000, max_out: 64000 },
+            pricing: { in: '0.00000015', out: 0.0000005 },
+            supports: { tools: true, reasoning: false },
+            io: { in: ['text'], out: ['text'] },
+          },
+          { no_id: true },
+        ],
+      },
+    };
+    const models = normalizeMapped(raw, map);
+    expect(models.length).toBe(1);
+    const m = models[0];
+    expect(m.id).toBe('glm-5.3-flash');
+    expect(m.name).toBe('GLM 5.3 Flash');
+    expect(m.source).toBe('mapped');
+    expect(m.limit).toEqual({ context: 200000, output: 64000 });
+    expect(m.cost?.input).toBeCloseTo(0.15, 6); // 0.00000015 × 1e6
+    expect(m.cost?.output).toBeCloseTo(0.5, 6);
+    expect(m.tool_call).toBe(true);
+    expect(m.reasoning).toBe(false);
+    expect(m.modalities).toEqual({ input: ['text'], output: ['text'] });
   });
 
   it('logo proxy path allow-lists hosts and passes unknown URLs through', () => {
@@ -202,5 +304,241 @@ describe('Catalog sources & repository', () => {
     // non-allow-listed URLs are rejected outright
     expect(await getLogoCached('https://evil.example/logo.svg')).toBeNull();
     expect(await getLogoCached(undefined)).toBeNull();
+  });
+});
+
+describe('CatalogRepository source management', () => {
+  // Unreachable URL that fails FAST (ECONNREFUSED) — no real network in tests.
+  const DEAD_URL = 'http://127.0.0.1:9/v1/models';
+
+  let tmpDir: string;
+  let oldCacheHome: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-mgmt-'));
+    oldCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = tmpDir;
+  });
+
+  afterEach(() => {
+    if (oldCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = oldCacheHome;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('guards the mandatory baseline source (no removal, no disable)', async () => {
+    const repo = new CatalogRepository();
+    expect(() => repo.removeSource('opencode')).toThrow(/mandatory/);
+    await expect(repo.setSourceEnabled('opencode', false)).rejects.toThrow(/mandatory/);
+    await expect(
+      repo.addSource({ id: 'opencode', type: 'provider-catalog', url: DEAD_URL })
+    ).rejects.toThrow(/cannot be redefined/);
+  });
+
+  it('adds, lists, toggles and removes sources at runtime', async () => {
+    const repo = new CatalogRepository();
+    const view = await repo.addSource({
+      id: 'Relay_List', // uppercase → normalized lowercase
+      type: 'model-list',
+      url: DEAD_URL,
+      priority: 20,
+    });
+    expect(view.id).toBe('relay_list');
+    expect(view.builtin).toBe(false);
+    expect(view.enabled).toBe(true);
+    expect(view.priority).toBe(20);
+    expect(view.origin).toBe('none'); // dead URL → sync failed, error captured
+    expect(view.lastError).toBeTruthy();
+    expect(view.records).toBe(0);
+
+    // listed with live state, priority-ascending (builtin 10 → relay_list 20 → openrouter 30)
+    expect(repo.sourceStates().map((s) => s.id)).toEqual(['opencode', 'models-dev', 'relay_list', 'openrouter']);
+
+    // validation errors
+    await expect(
+      repo.addSource({ id: 'relay_list', type: 'model-list', url: DEAD_URL })
+    ).rejects.toThrow(/already exists/);
+    await expect(repo.addSource({ id: 'x', type: 'model-list', url: DEAD_URL })).rejects.toThrow(/invalid source id/);
+    await expect(repo.addSource({ id: 'ok', type: 'nope', url: DEAD_URL })).rejects.toThrow(/unknown source type/);
+    await expect(repo.addSource({ id: 'ok', type: 'model-list', url: 'ftp://x' })).rejects.toThrow(/http\(s\)/);
+
+    // disable → row retained with enabled=false; manual refresh stays allowed
+    // (dead URL → 'none' again) — disabling only excludes the source from the
+    // OCR aggregation, records stay viewable
+    const off = await repo.setSourceEnabled('relay_list', false);
+    expect(off.enabled).toBe(false);
+    expect(repo.sourceStates().find((s) => s.id === 'relay_list')?.enabled).toBe(false);
+    const refreshed = await repo.refreshSource('relay_list');
+    expect(refreshed.enabled).toBe(false);
+    expect(refreshed.origin).toBe('none');
+    expect(refreshed.lastError).toBeTruthy();
+
+    // re-enable → syncs again (dead URL, still 'none')
+    const on = await repo.setSourceEnabled('relay_list', true);
+    expect(on.enabled).toBe(true);
+
+    // remove → row gone, builtin untouched
+    repo.removeSource('relay_list');
+    expect(repo.sourceStates().map((s) => s.id)).toEqual(['opencode', 'models-dev', 'openrouter']);
+    expect(repo.removeSource.bind(repo, 'nope')).toThrow(/not found/);
+
+    // runtime defs are exportable for config persistence
+    expect(repo.configuredSources().map((s) => s.id)).toEqual(['opencode', 'models-dev', 'openrouter']);
+    expect(repo.configuredSources()[0].url).toBe('https://models.opencode.ai/api.json');
+  });
+
+  it('disabled sources stay refreshable + viewable but never enter the OCR aggregation', async () => {
+    // Loopback mock source (loopback is never proxied) + hermetic user-config dirs
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => Response.json({ data: [{ id: 'peek-vendor/peek-model', pricing: { prompt: '0.000001' } }] }),
+    });
+    const tmpCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-cfg-'));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-data-'));
+    const oldCfg = process.env.XDG_CONFIG_HOME;
+    const oldData = process.env.XDG_DATA_HOME;
+    process.env.XDG_CONFIG_HOME = tmpCfg;
+    process.env.XDG_DATA_HOME = tmpData;
+    try {
+      const repo = new CatalogRepository();
+      await repo.addSource({
+        id: 'peek',
+        type: 'model-list',
+        url: `http://127.0.0.1:${server.port}/v1/models`,
+        priority: 40,
+      });
+
+      // enabled → the first-party record for the source exists in the aggregation
+      expect((await repo.list()).find((p) => p.id === 'peek')).toBeTruthy();
+
+      // disable → record GONE from the aggregation, payload retained for the viewer
+      await repo.setSourceEnabled('peek', false);
+      expect((await repo.list()).find((p) => p.id === 'peek')).toBeFalsy();
+      expect(repo.sourceStates().find((s) => s.id === 'peek')?.records).toBe(1);
+      expect(repo.sourceData('peek').models?.[0]?.id).toBe('peek-vendor/peek-model');
+
+      // manual refresh on a disabled source is allowed (cache/view only)
+      const refreshed = await repo.refreshSource('peek');
+      expect(refreshed.enabled).toBe(false);
+      expect(refreshed.origin).toBe('network');
+      expect(repo.sourceData('peek').models?.length).toBe(1);
+      expect((await repo.list()).find((p) => p.id === 'peek')).toBeFalsy();
+    } finally {
+      server.stop(true);
+      if (oldCfg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = oldCfg;
+      if (oldData === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = oldData;
+      try {
+        fs.rmSync(tmpCfg, { recursive: true, force: true });
+        fs.rmSync(tmpData, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
+});
+
+describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
+  // Regression for autoPullProviderModels(): Phase-1 used getProviderNodeById
+  // before its late destructuring (ReferenceError swallowed by autoPullSafely's
+  // catch — the sweep silently did nothing). The provider below points at an
+  // unreachable baseURL so the live-fetch branch fails FAST (ECONNREFUSED),
+  // exercising Phase-1 without any real network or catalog aggregation.
+  let tmpDir: string;
+  let oldConfigHome: string | undefined;
+  let oldDataHome: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-autopull-'));
+    oldConfigHome = process.env.XDG_CONFIG_HOME;
+    oldDataHome = process.env.XDG_DATA_HOME;
+    process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'config');
+    process.env.XDG_DATA_HOME = path.join(tmpDir, 'data');
+    fs.mkdirSync(path.join(process.env.XDG_CONFIG_HOME, 'opencode'), { recursive: true });
+    fs.writeFileSync(
+      path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc'),
+      JSON.stringify({
+        provider: {
+          'home-lab': {
+            npm: '@ai-sdk/openai-compatible',
+            options: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' },
+          },
+        },
+      }),
+      'utf8',
+    );
+  });
+
+  afterEach(() => {
+    if (oldConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = oldConfigHome;
+    if (oldDataHome === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = oldDataHome;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('sweeps every provider without throwing and records the per-provider failure', async () => {
+    const { autoPullProviderModels } = await import('../src/opencode/catalog/auto-pull.js');
+    // Pre-fix this rejected with `Cannot access 'getProviderNodeById' before initialization`.
+    const entries = await autoPullProviderModels();
+    expect(Array.isArray(entries)).toBe(true);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].providerId).toBe('home-lab');
+    expect(entries[0].mode).toBe('live');
+    expect(entries[0].pulled).toBe(0);
+    expect(entries[0].error).toBeDefined();
+  });
+});
+
+describe('custom store: clearCustomModels', () => {
+  let tmpDir: string;
+  let oldCatalogPath: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-custom-clear-'));
+    oldCatalogPath = process.env.OCR_CATALOG_PATH;
+    process.env.OCR_CATALOG_PATH = path.join(tmpDir, 'catalog-merged.json');
+  });
+
+  afterEach(() => {
+    if (oldCatalogPath === undefined) delete process.env.OCR_CATALOG_PATH;
+    else process.env.OCR_CATALOG_PATH = oldCatalogPath;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('mirrors clearProviderModels semantics against the custom store', async () => {
+    const { upsertCustomProviderModels, getCustomProviderModels, clearCustomModels } =
+      await import('../src/opencode/catalog/custom-store.js');
+    upsertCustomProviderModels('p1', { name: 'P1' }, [
+      { id: 'alpha' },
+      { id: 'gpt-x' },
+      { id: 'gpt-y' },
+    ] as any);
+
+    // pattern → only matching ids removed, provider meta kept
+    const byPattern = clearCustomModels('p1', 'gpt-*');
+    expect(byPattern).toEqual({ success: true, removed: 2 });
+    expect(getCustomProviderModels('p1').map((m) => m.id)).toEqual(['alpha']);
+
+    // no pattern → all removed; entry still exists (removed: 0 on re-run)
+    const all = clearCustomModels('p1');
+    expect(all).toEqual({ success: true, removed: 1 });
+    expect(clearCustomModels('p1')).toEqual({ success: true, removed: 0 });
+
+    // unknown provider → failure signal preserved (handler keeps its 404)
+    expect(clearCustomModels('ghost').success).toBe(false);
   });
 });

@@ -78,6 +78,8 @@ export interface MaskedProviderStatus {
 export interface GatewayStatusResponse {
   status: string;
   timestamp: string;
+  /** Actual gateway listening port (config.yaml `port`). */
+  port: number;
   metrics: GatewayMetrics;
   circuitBreakers: {
     total: number;
@@ -643,6 +645,67 @@ export interface OpenCodeCatalogProvider {
   priceFrom?: number;
 }
 
+/** One remote catalog source (config def + live sync state) — mirrors backend CatalogSourceView. */
+export interface CatalogSourceView {
+  id: string;
+  type: 'provider-catalog' | 'model-list' | 'openai-compatible' | 'custom';
+  url: string;
+  enabled: boolean;
+  priority: number;
+  /** mandatory baseline (models.opencode.ai) — locked against removal/disabling */
+  builtin: boolean;
+  origin: 'network' | 'cache' | 'stale' | 'none';
+  /** last successful sync (epoch ms) */
+  fetchedAt?: number;
+  lastError?: string;
+  records: number;
+}
+
+export interface CatalogSourceDataModelRecord {
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  tool_call?: boolean;
+  cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
+  limit?: { context?: number; output?: number };
+  /** ocr view only: creating source of this model entry */
+  source?: string;
+}
+
+/** Full aggregated catalog (catalogRepository.list()) — mirrors backend CatalogProviderRecord. */
+export interface OcrCatalogProvider {
+  id: string;
+  name?: string;
+  logo?: string;
+  npm?: string;
+  baseURL?: string;
+  doc?: string;
+  env?: string[];
+  custom: boolean;
+  connected: boolean;
+  sources: string[];
+  models: CatalogSourceDataModelRecord[];
+}
+
+export interface CatalogSourceDataProviderRecord {
+  id: string;
+  name?: string;
+  npm?: string;
+  api?: string;
+  doc?: string;
+  env?: string[];
+  models?: CatalogSourceDataModelRecord[];
+}
+
+/** Payload behind the console "view data" dialog — mirrors backend sourceData(). */
+export interface CatalogSourceDataResponse {
+  status: string;
+  source: CatalogSourceView;
+  fetchedAt?: number;
+  providers: CatalogSourceDataProviderRecord[];
+  models: CatalogSourceDataModelRecord[];
+}
+
 export interface CustomProviderPayload {
   id: string;
   name?: string;
@@ -708,6 +771,105 @@ export const opencodeApi = {
 
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {
     return ocJson(await fetch(`/api/ui/opencode/catalog${refresh ? '?refresh=1' : ''}`));
+  },
+
+  async catalogSources(): Promise<{ status: string; syncIntervalMs: number; sources: CatalogSourceView[] }> {
+    return ocJson(await fetch('/api/ui/catalog/sources'));
+  },
+
+  async setCatalogSyncInterval(intervalMs: number): Promise<{ status: string; syncIntervalMs: number }> {
+    return ocJson(
+      await fetch('/api/ui/catalog/sync-interval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ intervalMs }),
+      })
+    );
+  },
+
+  async catalogSourceData(id: string): Promise<CatalogSourceDataResponse> {
+    return ocJson(await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}/data`));
+  },
+
+  async addCatalogSource(payload: {
+    id: string;
+    type: string;
+    url: string;
+    priority?: number;
+    enabled?: boolean;
+    map?: Record<string, any>;
+  }): Promise<{ status: string; source: CatalogSourceView }> {
+    return ocJson(
+      await fetch('/api/ui/catalog/sources', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    );
+  },
+
+  async toggleCatalogSource(id: string, enabled: boolean): Promise<{ status: string; source: CatalogSourceView }> {
+    return ocJson(
+      await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+    );
+  },
+
+  async removeCatalogSource(id: string): Promise<{ status: string }> {
+    return ocJson(await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+  },
+
+  async refreshCatalogSource(id: string): Promise<{ status: string; source: CatalogSourceView }> {
+    return ocJson(await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' }));
+  },
+
+  async refreshAllCatalogSources(): Promise<{ status: string; sources: CatalogSourceView[] }> {
+    return ocJson(await fetch('/api/ui/catalog/sources/refresh', { method: 'POST' }));
+  },
+
+  async lockedCatalogModels(): Promise<{ status: string; lockedModels: string[] }> {
+    return ocJson(await fetch('/api/ui/catalog/locked-models'));
+  },
+
+  async ocrCatalog(): Promise<{ status: string; providers: OcrCatalogProvider[] }> {
+    return ocJson(await fetch('/api/ui/catalog/ocr'));
+  },
+
+  async getCatalogOverride(providerId: string, modelId: string): Promise<{ status: string; entry: Record<string, any> | null }> {
+    const qs = new URLSearchParams({ providerId, modelId });
+    return ocJson(await fetch(`/api/ui/catalog/override?${qs.toString()}`));
+  },
+
+  async putCatalogOverride(
+    providerId: string,
+    modelId: string,
+    entry: Record<string, any>
+  ): Promise<{ status: string }> {
+    return ocJson(
+      await fetch('/api/ui/catalog/override', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerId, modelId, entry }),
+      })
+    );
+  },
+
+  async removeCatalogOverride(providerId: string, modelId: string): Promise<{ status: string }> {
+    const qs = new URLSearchParams({ providerId, modelId });
+    return ocJson(await fetch(`/api/ui/catalog/override?${qs.toString()}`, { method: 'DELETE' }));
+  },
+
+  async toggleCatalogModelLock(id: string, locked: boolean): Promise<{ status: string; lockedModels: string[] }> {
+    return ocJson(
+      await fetch('/api/ui/catalog/locked-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, locked }),
+      })
+    );
   },
 
   async listModels(params?: { provider?: string; connected?: boolean }): Promise<{

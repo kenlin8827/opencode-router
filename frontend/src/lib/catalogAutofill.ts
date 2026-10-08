@@ -60,28 +60,38 @@ export function candidateKeys(keys: (string | undefined)[]): string[] {
 
 /**
  * Score a catalog entry against the candidates. Priority (high → low): exact
- * match on an earlier candidate > later candidate; same-provider >
- * cross-provider; dash-insensitive exact ('gemini3.8flash' ≡ 'gemini-3.8-flash',
- * some gateways drop separators) > vendor-qualified suffix match as last resort.
+ * match on an earlier candidate > later candidate > dash-insensitive exact
+ * ('gemini3.8flash' ≡ 'gemini-3.8-flash', some gateways drop separators) >
+ * vendor-qualified suffix match as last resort. The caller EXCLUDES the
+ * provider's own entries before scoring — self-matches can never fill values.
  */
-function scoreCandidate(m: OpenCodeModelView, candidates: string[], provider: string): number {
+function scoreCandidate(m: OpenCodeModelView, candidates: string[]): number {
   const id = (m.id || '').toLowerCase();
-  const sameProvider = Boolean(provider) && (m.providerId || '').toLowerCase() === provider;
   const exactIdx = candidates.indexOf(id);
   if (exactIdx >= 0) {
-    const exact = sameProvider ? [50, 30, 22] : [40, 25, 12];
-    return exact[Math.min(exactIdx, exact.length - 1)];
+    return [40, 25, 12][Math.min(exactIdx, 2)];
   }
   const normId = id.replace(/-/g, '');
   if (normId.length >= MIN_SUFFIX_LEN) {
     const dashIdx = candidates.findIndex((c) => c.replace(/-/g, '') === normId);
-    if (dashIdx >= 0) return (sameProvider ? 35 : 28) - dashIdx;
+    if (dashIdx >= 0) return 28 - dashIdx;
   }
   const want = candidates[0];
   if (want.length >= MIN_SUFFIX_LEN && id.length >= MIN_SUFFIX_LEN && (id.endsWith(want) || want.endsWith(id))) {
-    return sameProvider ? 15 : 5;
+    return 5;
   }
   return 0;
+}
+
+/** How much usable data an entry carries — tie-break between equal matches. */
+function infoScore(m: OpenCodeModelView): number {
+  let s = 0;
+  if (m.name) s += 1;
+  if (typeof m.cost?.input === 'number' && m.cost.input >= 0) s += 2;
+  if (typeof m.cost?.output === 'number' && m.cost.output >= 0) s += 2;
+  if (typeof m.limit?.context === 'number' && m.limit.context > 0) s += 1;
+  if (m.modalities?.input?.length || m.modalities?.output?.length) s += 1;
+  return s;
 }
 
 export interface CatalogMatch {
@@ -90,33 +100,62 @@ export interface CatalogMatch {
   alternatives: number;
 }
 
+/** Field-by-field fill-missing merge — a lower-ranked entry may carry exactly
+ *  the field the top one lacks (pricing vs context vs modalities). */
+function mergeModel(a: OpenCodeModelView, b: OpenCodeModelView): OpenCodeModelView {
+  const out: OpenCodeModelView = { ...a };
+  out.name = out.name || b.name;
+  const cost = { ...(out.cost ?? {}) };
+  for (const k of ['input', 'output', 'cache_read', 'cache_write'] as const) {
+    if (cost[k] === undefined && b.cost?.[k] !== undefined) cost[k] = b.cost[k];
+  }
+  if (Object.values(cost).some((v) => v !== undefined)) out.cost = cost;
+  const limit = { ...(out.limit ?? {}) };
+  for (const k of ['context', 'output'] as const) {
+    if (limit[k] === undefined && b.limit?.[k] !== undefined) limit[k] = b.limit[k];
+  }
+  if (limit.context !== undefined || limit.output !== undefined) out.limit = limit;
+  if (!out.modalities?.input?.length && !out.modalities?.output?.length && b.modalities) out.modalities = b.modalities;
+  if (out.tool_call === undefined && b.tool_call !== undefined) out.tool_call = b.tool_call;
+  if (out.reasoning === undefined && b.reasoning !== undefined) out.reasoning = b.reasoning;
+  if (out.attachment === undefined && b.attachment !== undefined) out.attachment = b.attachment;
+  return out;
+}
+
 /**
  * Find the best catalog match for a model among the given candidate ids
  * (later keys act as fallbacks, e.g. [modelID, modelKey]). Handles vendor
  * prefixes, trailing reasoning-effort suffixes and dash-style variants via
- * candidateKeys() + scoreCandidate(). Ties keep the first catalog entry —
- * `alternatives` reports the ambiguity so callers can surface it.
+ * candidateKeys() + scoreCandidate().
+ *
+ * The provider's OWN entries are excluded — they are the values being filled
+ * (a live-pulled list carries no pricing), so a self-match is useless. All
+ * equal-best matches are MERGED field-by-field (info-richest first), so the
+ * patch carries the union of what the catalog knows; `alternatives` reports
+ * how many entries contributed.
  */
 export async function matchCatalogModel(providerId: string, ...keys: (string | undefined)[]): Promise<CatalogMatch | null> {
   const candidates = candidateKeys(keys);
   if (candidates.length === 0) return null;
   const res = await opencodeApi.listModels();
   const provider = (providerId || '').trim().toLowerCase();
-  let best: OpenCodeModelView | null = null;
-  let bestScore = 0;
-  let alternatives = 0;
+  const scored: { m: OpenCodeModelView; s: number; info: number }[] = [];
   for (const m of res.models || []) {
-    const s = scoreCandidate(m, candidates, provider);
-    if (s <= 0) continue;
-    if (s > bestScore) {
-      best = m;
-      bestScore = s;
-      alternatives = 1;
-    } else if (s === bestScore) {
-      alternatives++;
-    }
+    if (provider && (m.providerId || '').toLowerCase() === provider) continue; // never self-fill
+    const s = scoreCandidate(m, candidates);
+    if (s > 0) scored.push({ m, s, info: infoScore(m) });
   }
-  return best ? { model: best, alternatives } : null;
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.s - a.s || b.info - a.info);
+  const top = scored[0];
+  let merged = top.m;
+  let alternatives = 1;
+  for (const { m, s, info } of scored.slice(1)) {
+    if (s !== top.s || info !== top.info) continue;
+    merged = mergeModel(merged, m);
+    alternatives++;
+  }
+  return { model: merged, alternatives };
 }
 
 export interface CatalogAutofillPatch {

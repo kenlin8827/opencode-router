@@ -36,7 +36,7 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
           modalities: m.modalities && typeof m.modalities === 'object' ? m.modalities : undefined,
           cost: m.cost && typeof m.cost === 'object' ? m.cost : undefined,
           limit: m.limit && typeof m.limit === 'object' ? m.limit : undefined,
-          source: 'builtin',
+          source: 'opencode',
         });
       }
     }
@@ -51,7 +51,7 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
       env: Array.isArray(entry.env) ? entry.env : undefined,
       custom: false,
       connected: false,
-      sources: ['builtin'],
+      sources: ['opencode'],
       models,
     });
   }

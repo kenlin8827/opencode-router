@@ -8,6 +8,7 @@ import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig } from '../config/index.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { RouterConfig } from '../config/types.js';
+import type { CatalogModel } from '../opencode/catalog/types.js';
 import {
   listApiKeys,
   createApiKey,
@@ -87,6 +88,7 @@ export const SPA_ROUTES = [
   '/keys', // legacy alias for /providers
   '/api-keys',
   '/models',
+  '/catalog',
   '/proxy',
   '/token-saver',
   '/clients',
@@ -210,102 +212,46 @@ function bodyToModelDef(body: any): Record<string, any> {
   return def;
 }
 
-/** CatalogModel is already in the OpenCode schema — strip id/source, pass the rest through. */
-function catalogModelToDef(m: Record<string, any>): Record<string, any> {
+/** CatalogModel → opencode model definition (moved to opencode/catalog/auto-pull.ts). */
+
+/** v2 def → CatalogModel (custom-store mirror of the editor form payload). */
+function defToCatalogModel(id: string, def: Record<string, any>): CatalogModel {
+  const caps = def.capabilities && typeof def.capabilities === 'object' ? def.capabilities : {};
+  const modalities =
+    def.modalities && typeof def.modalities === 'object'
+      ? def.modalities
+      : caps.input || caps.output
+        ? { input: caps.input, output: caps.output }
+        : undefined;
+  return {
+    id,
+    name: def.name || undefined,
+    reasoning: def.reasoning === true || caps.reasoning === true || undefined,
+    tool_call: def.tool_call === true || (typeof caps.tools === 'boolean' ? caps.tools : undefined),
+    modalities,
+    cost: def.cost && typeof def.cost === 'object' ? def.cost : undefined,
+    limit: def.limit && typeof def.limit === 'object' ? def.limit : undefined,
+    source: 'custom',
+  };
+}
+
+/** CatalogModel → v2-ish def (management view for credential-only providers). */
+function catalogModelToV2Def(m: CatalogModel): Record<string, any> {
   const def: Record<string, any> = {};
-  for (const [k, v] of Object.entries(m)) {
-    if (k === 'id' || k === 'source') continue;
-    if (v === undefined) continue;
-    // Flat catalog npm → opencode's model-level `provider: { npm }` override
-    // (models.dev schema), so added models keep their exact wire shape.
-    if (k === 'npm') {
-      def.provider = { ...(def.provider || {}), npm: v };
-      continue;
-    }
-    def[k] = v;
-  }
+  if (m.name) def.name = m.name;
+  if (m.reasoning != null) def.reasoning = m.reasoning;
+  const caps: Record<string, any> = {};
+  if (m.tool_call != null) caps.tools = m.tool_call;
+  if (m.modalities?.input?.length) caps.input = m.modalities.input;
+  if (m.modalities?.output?.length) caps.output = m.modalities.output;
+  if (Object.keys(caps).length > 0) def.capabilities = caps;
+  if (m.cost) def.cost = m.cost;
+  if (m.limit) def.limit = m.limit;
   return def;
 }
 
-/**
- * Live pull: fetch the provider's own /v1/models (OpenAI-compatible) using its
- * configured baseURL + credential, so self-hosted gateways absent from the
- * static catalog can still be populated. Every failure mode surfaces a real
- * error (auth, DNS, HTTP status) — never a silent empty result.
- */
-async function livePullModels(id: string, body: { pattern?: string; dryRun?: boolean }, reply: any) {
-  const { getProviderNodeById, getProviderModelDefs, upsertProviderModel, matchesGlobPattern, expandEnvTemplate, readAuthEntries } =
-    await import('../opencode/user-config.js');
-  const def = getProviderNodeById(id);
-  if (!def) {
-    return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in opencode.jsonc` });
-  }
-  const baseURL = def?.options?.baseURL;
-  if (!baseURL) {
-    return reply.status(400).send({ success: false, error: `Provider '${id}' has no baseURL configured` });
-  }
-  const inlineKey = expandEnvTemplate(def?.options?.apiKey);
-  const key = inlineKey || readAuthEntries()[id]?.key;
-  if (!key) {
-    return reply.status(400).send({
-      success: false,
-      authHint: true,
-      error: `No API key for '${id}' (auth.json or inline) — cannot authenticate against ${baseURL}`,
-    });
-  }
-
-  const url = `${String(baseURL).replace(/\/+$/, '')}/models`;
-  let res: Response;
-  try {
-    res = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000) });
-  } catch (err: any) {
-    const cause = err?.cause?.code || err?.cause?.message || err?.message;
-    return reply.status(502).send({ success: false, error: `无法访问 ${url}: ${cause}` });
-  }
-  if (!res.ok) {
-    const text = (await res.text().catch(() => '')).slice(0, 200);
-    const hint =
-      res.status === 401 || res.status === 403
-        ? ' —— 鉴权失败，请检查 API Key'
-        : res.status === 404
-          ? ' —— 端点不存在，baseURL 可能缺少 /v1 后缀'
-          : '';
-    return reply.status(res.status === 401 || res.status === 403 ? 401 : 502).send({
-      success: false,
-      authHint: res.status === 401 || res.status === 403,
-      error: `${url} → HTTP ${res.status}${hint}${text ? ` | ${text}` : ''}`,
-    });
-  }
-  const raw = await res.json().catch(() => null);
-  if (!raw) {
-    return reply.status(502).send({ success: false, error: `${url} 返回了非 JSON 内容` });
-  }
-  const { normalizeOpenAICompatible } = await import('../opencode/catalog/sources/registry.js');
-  const models = normalizeOpenAICompatible(raw);
-  const pattern = body?.pattern?.trim();
-  const matched = models.filter((m) => !pattern || matchesGlobPattern(pattern, m.id));
-  const existing = getProviderModelDefs(id) || {};
-  const pullable = matched.filter((m) => !(m.id in existing));
-  if (body?.dryRun) {
-    return { status: 'ok', live: true, matched: matched.length, pullable: pullable.length, models: pullable };
-  }
-  let pulled = 0;
-  for (const m of pullable) {
-    const result = upsertProviderModel(id, m.id, catalogModelToDef(m));
-    if (!result.success) return reply.status(400).send(result);
-    pulled++;
-  }
-  return {
-    status: 'ok',
-    success: true,
-    live: true,
-    matched: matched.length,
-    pullable: pullable.length,
-    pulled,
-    skipped: matched.length - pullable.length,
-    models: pullable.map((m) => m.id),
-  };
-}
+// Live/catalog model pull moved to opencode/catalog/auto-pull.ts so the
+// periodic auto-pull scheduler and the console share one implementation.
 
 export function registerConsoleRoutes(
   app: FastifyInstance,
@@ -333,6 +279,8 @@ export function registerConsoleRoutes(
       return reply.status(400).send('Bad Request');
     }
     if (fs.existsSync(filePath)) {
+      // Hashed filenames → safe to cache forever; a rebuild produces new names.
+      reply.header('Cache-Control', 'public, max-age=31536000, immutable');
       if (file.endsWith('.js')) reply.type('application/javascript');
       else if (file.endsWith('.css')) reply.type('text/css');
       else if (file.endsWith('.svg')) reply.type('image/svg+xml');
@@ -349,7 +297,9 @@ export function registerConsoleRoutes(
   const handleHtml = async (_req: any, reply: any) => {
     const indexHtmlPath = path.join(FRONTEND_DIST, 'index.html');
     if (fs.existsSync(indexHtmlPath)) {
-      return reply.type('text/html').send(fs.readFileSync(indexHtmlPath, 'utf8'));
+      // no-cache: the HTML references hashed asset names — always re-fetch it so
+      // a rebuilt frontend is picked up on a normal refresh (no hard-reload needed).
+      return reply.type('text/html').header('Cache-Control', 'no-cache').send(fs.readFileSync(indexHtmlPath, 'utf8'));
     }
     return reply.type('text/html').send(`
       <!DOCTYPE html>
@@ -384,6 +334,9 @@ export function registerConsoleRoutes(
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
+      // Actual listening port (config.yaml `port` is the single source of truth)
+      // so the console header shows the real gateway port instead of a literal.
+      port: config.port,
       metrics,
       circuitBreakers: cbSummary,
       clients,
@@ -513,6 +466,219 @@ export function registerConsoleRoutes(
   app.get('/api/ui/tier-pools', handleTierPools);
   app.get('/api/console/tier-pools', handleTierPools);
 
+  // 6b-2. Catalog source management — view/add/remove/toggle/refresh the remote
+  // catalog sources (config.catalog.sources). Mutations apply to the live
+  // CatalogRepository immediately (no gateway restart) and are persisted to
+  // config.yaml so they survive restarts. The 'opencode' baseline source is
+  // mandatory: the repository rejects its removal/disabling with 403.
+  const persistCatalogSources = async () => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    const current = loadConfig().catalog ?? {};
+    saveConfig({
+      catalog: {
+        ...current,
+        sources: catalogRepository.configuredSources().map((d) => ({
+          id: d.id,
+          type: d.type,
+          url: d.url,
+          enabled: d.enabled,
+          priority: d.priority,
+          // 'custom' sources are invalid without their field mapping — persist
+          // it too, otherwise the first save silently wipes it from config.yaml
+          ...(d.map ? { map: d.map } : {}),
+        })),
+      },
+    });
+  };
+
+  const listCatalogSources = async () => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    return {
+      status: 'ok',
+      syncIntervalMs: catalogRepository.syncInterval,
+      sources: catalogRepository.sourceStates(),
+    };
+  };
+
+  // Hot-apply the auto-sync period (no restart) and persist to config.yaml.
+  const handleSetCatalogSyncInterval = async (req: any, reply: any) => {
+    const body = req.body ?? {};
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    try {
+      catalogRepository.setSyncInterval(Number(body.intervalMs));
+      const current = loadConfig().catalog ?? {};
+      const result = saveConfig({ catalog: { ...current, syncIntervalMs: catalogRepository.syncInterval } });
+      if (!result.success) return reply.status(400).send(result);
+      return { status: 'ok', syncIntervalMs: catalogRepository.syncInterval };
+    } catch (err: any) {
+      return reply.status(err?.statusCode ?? 400).send({ success: false, error: err?.message });
+    }
+  };
+
+  const handleAddCatalogSource = async (req: any, reply: any) => {
+    const body = req.body ?? {};
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    try {
+      const source = await catalogRepository.addSource({
+        id: String(body.id ?? ''),
+        type: String(body.type ?? ''),
+        url: String(body.url ?? ''),
+        priority: typeof body.priority === 'number' ? body.priority : undefined,
+        enabled: body.enabled,
+        map: body.map && typeof body.map === 'object' ? body.map : undefined,
+      });
+      await persistCatalogSources();
+      await catalogRepository.ensureOcrStore();
+      return { status: 'ok', source };
+    } catch (err: any) {
+      return reply.status(err?.statusCode ?? 400).send({ success: false, error: err?.message ?? 'failed to add source' });
+    }
+  };
+
+  const handleToggleCatalogSource = async (req: any, reply: any) => {
+    const body = req.body ?? {};
+    if (typeof body.enabled !== 'boolean') {
+      return reply.status(400).send({ success: false, error: 'body.enabled (boolean) is required' });
+    }
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    try {
+      const source = await catalogRepository.setSourceEnabled(req.params.id, body.enabled);
+      await persistCatalogSources();
+      await catalogRepository.ensureOcrStore();
+      return { status: 'ok', source };
+    } catch (err: any) {
+      return reply.status(err?.statusCode ?? 400).send({ success: false, error: err?.message });
+    }
+  };
+
+  const handleRemoveCatalogSource = async (req: any, reply: any) => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    try {
+      catalogRepository.removeSource(req.params.id);
+      await persistCatalogSources();
+      await catalogRepository.ensureOcrStore();
+      return { status: 'ok' };
+    } catch (err: any) {
+      return reply.status(err?.statusCode ?? 400).send({ success: false, error: err?.message });
+    }
+  };
+
+  const handleRefreshCatalogSource = async (req: any, reply: any) => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    try {
+      const source = await catalogRepository.refreshSource(req.params.id);
+      // Rebuild + persist the OCR store immediately so catalog/ocr.json reflects
+      // the refresh the moment this call returns.
+      await catalogRepository.ensureOcrStore();
+      return { status: 'ok', source };
+    } catch (err: any) {
+      return reply.status(err?.statusCode ?? 400).send({ success: false, error: err?.message });
+    }
+  };
+
+  const handleRefreshCatalogSources = async () => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    await catalogRepository.refreshAll();
+    await catalogRepository.ensureOcrStore();
+    return { status: 'ok', sources: catalogRepository.sourceStates() };
+  };
+
+  const getCatalogSourceData = async (req: any, reply: any) => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    try {
+      const data = catalogRepository.sourceData(req.params.id);
+      return { status: 'ok', ...data };
+    } catch (err: any) {
+      return reply.status(err?.statusCode ?? 400).send({ success: false, error: err?.message });
+    }
+  };
+
+  // Toggle one model id in catalog.lockedModels (locally anchored: remote sources
+  // never overwrite its maintained values, explicit zeros included). Hot-effective:
+  // the repository reads config.yaml live on every aggregation.
+  const handleLockCatalogModel = async (req: any, reply: any) => {
+    const body = req.body as { id?: string; locked?: boolean };
+    if (!body?.id || typeof body.locked !== 'boolean') {
+      return reply.status(400).send({ success: false, error: 'body.id (string) and body.locked (boolean) are required' });
+    }
+    const current = loadConfig().catalog ?? {};
+    const set = new Set(current.lockedModels ?? []);
+    if (body.locked) set.add(String(body.id));
+    else set.delete(String(body.id));
+    const lockedModels = [...set].sort();
+    const result = saveConfig({ catalog: { ...current, lockedModels } });
+    if (!result.success) return reply.status(400).send(result);
+    return { status: 'ok', lockedModels };
+  };
+
+  const listLockedCatalogModels = async () => ({
+    status: 'ok',
+    lockedModels: loadConfig().catalog?.lockedModels ?? [],
+  });
+
+  // The FULL OCR catalog view (catalogRepository.list()): opencode.jsonc
+  // definitions + credentials first, then provider-catalog sources (builtin
+  // baseline) and model-list enrichments, service baseURL hints — the exact
+  // aggregation the /providers and /models pages are built on.
+  const getCatalogOcr = async () => {
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    const providers = await catalogRepository.list();
+    return { status: 'ok', providers };
+  };
+
+  // Aggregate-level model overrides (OCR Catalog viewer edits) — a separate
+  // editing plane from opencode.jsonc definitions. Applied LAST on the
+  // aggregation so edited values always win over sourced values.
+  const handleGetCatalogOverride = async (req: any) => {
+    const { getOverride } = await import('../opencode/catalog/overrides-store.js');
+    const q = req.query as { providerId?: string; modelId?: string };
+    if (!q.providerId || !q.modelId) return { status: 'ok', entry: null };
+    return { status: 'ok', entry: getOverride(q.providerId, q.modelId) ?? null };
+  };
+
+  const handlePutCatalogOverride = async (req: any, reply: any) => {
+    const body = req.body as { providerId?: string; modelId?: string; entry?: any };
+    if (!body?.providerId || !body?.modelId || typeof body.entry !== 'object') {
+      return reply.status(400).send({ success: false, error: 'providerId, modelId and entry are required' });
+    }
+    const { upsertOverride } = await import('../opencode/catalog/overrides-store.js');
+    const result = upsertOverride(String(body.providerId), String(body.modelId), body.entry);
+    if (!result.success) return reply.status(400).send(result);
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    await catalogRepository.ensureOcrStore();
+    return { status: 'ok' };
+  };
+
+  const handleDeleteCatalogOverride = async (req: any, reply: any) => {
+    const q = req.query as { providerId?: string; modelId?: string };
+    if (!q.providerId || !q.modelId) {
+      return reply.status(400).send({ success: false, error: 'providerId and modelId are required' });
+    }
+    const { removeOverride } = await import('../opencode/catalog/overrides-store.js');
+    const result = removeOverride(q.providerId, q.modelId);
+    if (!result.success) return reply.status(400).send(result);
+    const { catalogRepository } = await import('../opencode/catalog/repository.js');
+    await catalogRepository.ensureOcrStore();
+    return { status: 'ok' };
+  };
+
+  for (const prefix of ['/api/ui', '/api/console']) {
+    app.get(`${prefix}/catalog/sources`, listCatalogSources);
+    app.post(`${prefix}/catalog/sources`, handleAddCatalogSource);
+    app.post(`${prefix}/catalog/sources/refresh`, handleRefreshCatalogSources);
+    app.post(`${prefix}/catalog/sources/:id/refresh`, handleRefreshCatalogSource);
+    app.put(`${prefix}/catalog/sources/:id`, handleToggleCatalogSource);
+    app.delete(`${prefix}/catalog/sources/:id`, handleRemoveCatalogSource);
+    app.get(`${prefix}/catalog/sources/:id/data`, getCatalogSourceData);
+    app.get(`${prefix}/catalog/locked-models`, listLockedCatalogModels);
+    app.post(`${prefix}/catalog/locked-models`, handleLockCatalogModel);
+    app.get(`${prefix}/catalog/ocr`, getCatalogOcr);
+    app.get(`${prefix}/catalog/override`, handleGetCatalogOverride);
+    app.put(`${prefix}/catalog/override`, handlePutCatalogOverride);
+    app.delete(`${prefix}/catalog/override`, handleDeleteCatalogOverride);
+    app.post(`${prefix}/catalog/sync-interval`, handleSetCatalogSyncInterval);
+  }
+
   // 6c. Custom model combos — resolved member view for the /combos console
   // page. Reads the FRESH config (loadConfig) so a just-saved combo shows up
   // without a restart; member health/breaker state comes from the live
@@ -568,6 +734,9 @@ export function registerConsoleRoutes(
           const u = byId.get(v.id);
           return {
             ...v,
+            // upgraded custom: an explicit jsonc definition OR not covered by
+            // the remote catalog (credential-only zhipu, private relays, …)
+            custom: u?.custom ?? v.custom,
             logo: u?.logo,
             // auth-only providers have no config baseURL — fall back to the
             // catalog's effective base (config override → live service hint)
@@ -632,9 +801,21 @@ export function registerConsoleRoutes(
       if (!body?.id) {
         return reply.status(400).send({ success: false, error: 'Provider id is required' });
       }
+      const id = String(body.id);
+      // An id covered by the remote catalog (opencode / models-dev) may NOT be
+      // redefined as a custom provider — it would shadow the catalog entry.
+      // Connect it with credentials instead (auth.json), no definition needed.
+      const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      const covered = await catalogRepository.getProvider(id);
+      if (covered && covered.sources.some((s) => s === 'opencode' || s === 'models-dev')) {
+        return reply.status(409).send({
+          success: false,
+          error: `'${id}' is covered by the built-in catalog — connect it with credentials instead of redefining it`,
+        });
+      }
       const { upsertCustomProvider } = await import('../opencode/user-config.js');
       const result = upsertCustomProvider({
-        id: String(body.id),
+        id,
         name: body.name,
         npm: body.npm,
         baseURL: body.baseURL,
@@ -820,6 +1001,14 @@ export function registerConsoleRoutes(
       const { getProviderModelDefs } = await import('../opencode/user-config.js');
       const defs = getProviderModelDefs(id);
       if (defs === undefined) {
+        // credential-only provider → models live in the custom store
+        const { getCustomProviderModels } = await import('../opencode/catalog/custom-store.js');
+        const custom = getCustomProviderModels(id);
+        if (custom.length > 0) {
+          const models: Record<string, any> = {};
+          for (const m of custom) models[m.id] = catalogModelToV2Def(m);
+          return { status: 'ok', id, models, custom: true };
+        }
         return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in opencode.jsonc` });
       }
       return { status: 'ok', id, models: defs };
@@ -835,13 +1024,26 @@ export function registerConsoleRoutes(
       }
       const defs = getProviderModelDefs(id);
       if (defs === undefined) {
-        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in opencode.jsonc` });
+        // credential-only provider (no jsonc node) → the custom store is the landing spot
+        const { readCustomStore, upsertCustomModel } = await import('../opencode/catalog/custom-store.js');
+        const custom = readCustomStore()?.providers[id];
+        if (custom?.models.some((m) => m.id === String(body.id))) {
+          return reply.status(409).send({ success: false, error: `Model '${body.id}' already exists — use PATCH to modify it` });
+        }
+        const model = defToCatalogModel(String(body.id), bodyToModelDef(body));
+        const result = upsertCustomModel(id, model);
+        if (!result.success) return reply.status(400).send(result);
+        const { catalogRepository } = await import('../opencode/catalog/repository.js');
+        await catalogRepository.ensureOcrStore();
+        return { status: 'ok', success: true, model: body.id, custom: true };
       }
       if (body.id in defs) {
         return reply.status(409).send({ success: false, error: `Model '${body.id}' already exists — use PATCH to modify it` });
       }
       const result = upsertProviderModel(id, String(body.id), bodyToModelDef(body));
       if (!result.success) return reply.status(400).send(result);
+      const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      await catalogRepository.ensureOcrStore();
       return { status: 'ok', success: true, model: body.id };
     },
 
@@ -852,7 +1054,18 @@ export function registerConsoleRoutes(
       const { getProviderModelDefs, upsertProviderModel, removeProviderModel } = await import('../opencode/user-config.js');
       const defs = getProviderModelDefs(id);
       if (defs === undefined) {
-        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in opencode.jsonc` });
+        // credential-only provider → merge the patch into the custom-store model
+        const { readCustomStore, upsertCustomModel, removeCustomModel } = await import('../opencode/catalog/custom-store.js');
+        const model = readCustomStore()?.providers[id]?.models.find((m) => m.id === modelId);
+        if (!model) {
+          return reply.status(404).send({ success: false, error: `Model '${modelId}' is not defined for provider '${id}'` });
+        }
+        const targetId = body?.newId ? String(body.newId) : modelId;
+        const next = { ...model, ...defToCatalogModel(targetId, bodyToModelDef(body)), id: targetId, source: 'custom' as const };
+        const result = upsertCustomModel(id, next);
+        if (!result.success) return reply.status(400).send(result);
+        if (targetId !== modelId) removeCustomModel(id, modelId);
+        return { status: 'ok', success: true, model: targetId, renamed: targetId !== modelId, custom: true };
       }
       if (!(modelId in defs)) {
         return reply.status(404).send({ success: false, error: `Model '${modelId}' is not defined for provider '${id}'` });
@@ -861,9 +1074,9 @@ export function registerConsoleRoutes(
       const targetId = body?.newId ? String(body.newId) : modelId;
       const existing = defs[modelId] && typeof defs[modelId] === 'object' ? defs[modelId] : {};
       const patch = bodyToModelDef(body);
-      const merged: Record<string, any> = { ...existing, ...patch };
+      const next: Record<string, any> = { ...existing, ...patch };
       // limit/cost: partial merge (the form sends them only when edited)
-      if (patch.limit || existing.limit) merged.limit = { ...(existing.limit || {}), ...(patch.limit || {}) };
+      if (patch.limit || existing.limit) next.limit = { ...(existing.limit || {}), ...(patch.limit || {}) };
       // cost: a payload carrying a `cost` key replaces it wholesale (the editor
       // form always sends the full object, so blank fields clear stored prices);
       // a payload without `cost` keeps the old values. Empty `{}` clears.
@@ -873,13 +1086,13 @@ export function registerConsoleRoutes(
           const v = (body.cost as any)[k];
           if (typeof v === 'number' && Number.isFinite(v)) c[k] = v;
         }
-        if (Object.keys(c).length > 0) merged.cost = c;
-        else delete merged.cost; // blank form → drop the key instead of writing `cost: {}`
+        if (Object.keys(c).length > 0) next.cost = c;
+        else delete next.cost; // blank form → drop the key instead of writing `cost: {}`
       }
       // v2 composite fields (capabilities/settings/headers/body/compatibility/
       // variants): the form is a full-definition editor — values present in the
       // payload (even {}) replace wholesale; absent keys keep their old values.
-      const result = upsertProviderModel(id, targetId, merged);
+      const result = upsertProviderModel(id, targetId, next);
       if (!result.success) return reply.status(400).send(result);
       if (targetId !== modelId) {
         const rm = removeProviderModel(id, modelId);
@@ -890,6 +1103,8 @@ export function registerConsoleRoutes(
           });
         }
       }
+      const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      await catalogRepository.ensureOcrStore();
       return { status: 'ok', success: true, model: targetId, renamed: targetId !== modelId };
     },
 
@@ -897,7 +1112,17 @@ export function registerConsoleRoutes(
       const { id, modelId } = req.params as { id: string; modelId: string };
       const { removeProviderModel } = await import('../opencode/user-config.js');
       const result = removeProviderModel(id, modelId);
-      if (!result.success) return reply.status(404).send(result);
+      if (!result.success) {
+        // credential-only provider → remove from the custom store
+        const { removeCustomModel } = await import('../opencode/catalog/custom-store.js');
+        const rm = removeCustomModel(id, modelId);
+        if (!rm.success) return reply.status(404).send(result);
+        const { catalogRepository: repo } = await import('../opencode/catalog/repository.js');
+        await repo.ensureOcrStore();
+        return { status: 'ok', success: true, model: modelId, custom: true };
+      }
+      const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      await catalogRepository.ensureOcrStore();
       return { status: 'ok', success: true, model: modelId };
     },
 
@@ -905,58 +1130,23 @@ export function registerConsoleRoutes(
      * Pull models into the provider's config definition. Data source is chosen
      * automatically: providers with baseURL + credential are pulled LIVE from
      * their own /v1/models (failures surface real errors); providers without a
-     * usable baseURL/key fall back to the static catalog (builtin → extensions).
+     * usable baseURL/key fall back to the static merged catalog. The same
+     * engine powers the periodic auto-pull (catalog.autoPullModels).
      */
     modelsPull: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const body = req.body as { pattern?: string; dryRun?: boolean } | undefined;
       const { getProviderNodeById, expandEnvTemplate, readAuthEntries } = await import('../opencode/user-config.js');
-      if (!getProviderNodeById(id)) {
-        return reply.status(404).send({
-          success: false,
-          error: `Provider '${id}' is not defined in opencode.jsonc — create it as a custom provider first`,
-        });
-      }
+      // Credential-only providers (no jsonc node) are pullable too — they land
+      // in catalog/custom.json (the 'custom' aggregation source).
       const def = getProviderNodeById(id);
       const inlineKey = expandEnvTemplate(def?.options?.apiKey);
       const liveCapable = Boolean(def?.options?.baseURL && (inlineKey || readAuthEntries()[id]?.key));
-      if (liveCapable) {
-        return livePullModels(id, body || {}, reply);
-      }
-      const { getProviderModelDefs, upsertProviderModel, matchesGlobPattern } = await import(
-        '../opencode/user-config.js'
-      );
-      const { catalogRepository } = await import('../opencode/catalog/repository.js');
-      const provider = await catalogRepository.getProvider(id);
-      if (!provider) {
-        return reply.status(404).send({ success: false, error: `Provider '${id}' not found in the model catalog` });
-      }
-      const existing = getProviderModelDefs(id) || {};
-      const pattern = body?.pattern?.trim();
-      const matched = provider.models.filter((m) => !pattern || matchesGlobPattern(pattern, m.id));
-      const pullable = matched.filter((m) => !(m.id in existing)); // never overwrite maintained defs
-      // self-hosted gateways are absent from the static catalog — say so instead of a silent 0
-      const notInCatalog = provider.sources.every((s) => s === 'config');
-      const hint = notInCatalog && matched.length === 0 ? 'not-in-catalog' : undefined;
-      if (body?.dryRun) {
-        return { status: 'ok', matched: matched.length, pullable: pullable.length, models: pullable, hint };
-      }
-      let pulled = 0;
-      for (const m of pullable) {
-        const result = upsertProviderModel(id, m.id, catalogModelToDef(m));
-        if (!result.success) return reply.status(400).send(result);
-        pulled++;
-      }
-      return {
-        status: 'ok',
-        success: true,
-        matched: matched.length,
-        pullable: pullable.length,
-        pulled,
-        skipped: matched.length - pullable.length,
-        models: pullable.map((m) => m.id),
-        hint,
-      };
+      const { pullLiveModels, pullCatalogModels } = await import('../opencode/catalog/auto-pull.js');
+      const result = liveCapable
+        ? await pullLiveModels(id, body || {})
+        : await pullCatalogModels(id, body || {});
+      return reply.status(result.httpStatus).send(result.body);
     },
 
     /** Clear models — whole node without a pattern, matching ids only with one. */
@@ -965,7 +1155,18 @@ export function registerConsoleRoutes(
       const body = req.body as { pattern?: string } | undefined;
       const { clearProviderModels } = await import('../opencode/user-config.js');
       const result = clearProviderModels(id, body?.pattern);
-      if (!result.success) return reply.status(404).send(result);
+      if (!result.success) {
+        // credential-only provider (no jsonc node) → clear from the custom store,
+        // same fallback as modelRemove
+        const { clearCustomModels } = await import('../opencode/catalog/custom-store.js');
+        const cm = clearCustomModels(id, body?.pattern);
+        if (!cm.success) return reply.status(404).send(result);
+        const { catalogRepository: repo } = await import('../opencode/catalog/repository.js');
+        await repo.ensureOcrStore();
+        return { status: 'ok', success: true, removed: cm.removed, custom: true };
+      }
+      const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      await catalogRepository.ensureOcrStore();
       return { status: 'ok', ...result };
     },
   };

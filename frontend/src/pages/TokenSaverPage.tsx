@@ -29,11 +29,10 @@ const CmdLine: React.FC<{ cmd: string }> = ({ cmd }) => {
         style={{
           flex: 1,
           fontSize: '12px',
-          padding: '6px 10px',
+          padding: '5px 10px',
           borderRadius: '6px',
-          background: 'var(--input-bg)',
-          border: '1px solid var(--card-border)',
-          color: 'var(--text-main)',
+          background: 'var(--btn-bg)',
+          color: 'var(--text-muted)',
           fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', monospace",
           whiteSpace: 'nowrap',
           overflowX: 'auto',
@@ -42,14 +41,21 @@ const CmdLine: React.FC<{ cmd: string }> = ({ cmd }) => {
         {cmd}
       </code>
       <button
-        className="btn"
-        style={{ padding: '6px 8px', flexShrink: 0 }}
         title={copied ? t('tokenSaver.copied') : t('tokenSaver.copy')}
         onClick={async () => {
           if (await copyToClipboard(cmd)) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }
+        }}
+        style={{
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          color: 'var(--text-dim)',
         }}
       >
         {copied ? <Check size={13} color="var(--accent-emerald)" /> : <Copy size={13} />}
@@ -64,9 +70,8 @@ const Section: React.FC<{
   enabled: boolean;
   onToggle: (v: boolean) => void;
   enableLabel: string;
-  details?: React.ReactNode;
   children?: React.ReactNode;
-}> = ({ title, desc, enabled, onToggle, enableLabel, details, children }) => (
+}> = ({ title, desc, enabled, onToggle, enableLabel, children }) => (
   <div style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
       <span style={{ fontSize: '14px', fontWeight: 600 }}>{title}</span>
@@ -75,10 +80,9 @@ const Section: React.FC<{
         <Switch checked={enabled} onChange={onToggle} />
       </label>
     </div>
-    <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: details || children ? '12px' : 0 }}>
+    <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: children ? '12px' : 0 }}>
       {desc}
     </div>
-    {details}
     {enabled && children}
   </div>
 );
@@ -152,8 +156,9 @@ export const TokenSaverPage: React.FC = () => {
           enabled={headroom.enabled ?? false}
           onToggle={v => setCompression({ ...compression, headroom: { ...headroom, enabled: v } })}
           enableLabel={t('tokenSaver.headroomEnable')}
-          details={
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <CmdLine cmd={t('tokenSaver.headroomStepInstall')} />
               <CmdLine cmd={t('tokenSaver.headroomStepRun')} />
               <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
@@ -169,9 +174,6 @@ export const TokenSaverPage: React.FC = () => {
                 {t('tokenSaver.headroomDocs')} ↗
               </a>
             </div>
-          }
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div>
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('tokenSaver.headroomUrl')}

@@ -120,8 +120,12 @@ export const YamlPage: React.FC = () => {
             minHeight: 0,
           }}
         >
+          {/* `height="100%"` lands on .cm-editor; the wrapper div this component
+              renders defaults to height:auto, so it must be pinned to 100% too,
+              otherwise the editor collapses to content height and never scrolls. */}
           <CodeMirror
             value={yamlContent}
+            style={{ height: '100%' }}
             height="100%"
             theme={appTheme === 'light' ? [appChrome] : [oneDark, appChrome]}
             extensions={[yaml()]}

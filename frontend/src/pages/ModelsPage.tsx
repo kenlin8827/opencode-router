@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, AudioLines, Video, Thermometer, Pencil, Zap, Loader2 } from 'lucide-react';
+import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
+import { useToast } from '../components/ToastProvider';
 import { ModelEditDialog } from '../components/ModelEditDialog';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
@@ -16,9 +17,11 @@ const PAGE_SIZES = [10, 20, 50, 100, 200];
 
 /** 200000 → "200K", 1000000 → "1M" */
 const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string }> = {
-  builtin: { color: 'var(--accent)', bg: 'rgba(6,182,212,0.12)', labelKey: 'models.srcBuiltin' },
+  opencode: { color: 'var(--accent)', bg: 'rgba(6,182,212,0.12)', labelKey: 'models.srcOpencode' },
+  'models-dev': { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', labelKey: 'models.srcModelsDev' },
   openrouter: { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', labelKey: 'models.srcOpenrouter' },
-  config: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', labelKey: 'models.srcConfig' },
+  custom: { color: '#34d399', bg: 'rgba(52,211,153,0.12)', labelKey: 'models.srcCustom' },
+  mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
   'openai-compatible': { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcOpenaiCompatible' },
   service: { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcService' },
 };
@@ -89,6 +92,10 @@ export const ModelsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [editTarget, setEditTarget] = useState<{ providerId: string; modelId: string } | null>(null);
   const { testingIds, testResults, testOne, isBusy } = useModelTest();
+  const toast = useToast();
+  // catalog.lockedModels — locally anchored ids whose maintained values remote
+  // sources must never overwrite (explicit zeros included).
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
 
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState(searchParams.get('provider') || '');
@@ -101,9 +108,13 @@ export const ModelsPage: React.FC = () => {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await opencodeApi.listModels();
+      const [res, lockRes] = await Promise.all([
+        opencodeApi.listModels(),
+        opencodeApi.lockedCatalogModels().catch(() => null),
+      ]);
       setModels(res.models);
       setSource(res.source);
+      if (lockRes) setLockedIds(new Set(lockRes.lockedModels));
       setError('');
     } catch (err: any) {
       setError(err.message);
@@ -116,6 +127,22 @@ export const ModelsPage: React.FC = () => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Lock key: fully-qualified `providerId||modelId` — same-named models on
+   *  different providers lock independently. */
+  const rowLockKey = (m: OpenCodeModelView): string => `${m.providerId}||${m.id}`;
+  const toggleLock = async (m: OpenCodeModelView) => {
+    const key = rowLockKey(m);
+    const locked = !lockedIds.has(key);
+    try {
+      const res = await opencodeApi.toggleCatalogModelLock(key, locked);
+      setLockedIds(new Set(res.lockedModels));
+      toast.success(locked ? t('models.lockedToast', { id: key }) : t('models.unlockedToast', { id: key }));
+      await load(); // aggregation changed — refresh the rendered prices
+    } catch (err: any) {
+      toast.error('Failed: ' + err.message);
+    }
+  };
 
   const providerOptions = useMemo(() => {
     const map = new Map<string, { id: string; name?: string; connected: boolean; count: number }>();
@@ -293,10 +320,39 @@ export const ModelsPage: React.FC = () => {
                           <Pencil size={11} />
                         </button>
                       )}
+                      {m.source === 'config' ? (
+                        <button
+                          title={lockedIds.has(rowLockKey(m)) ? t('models.unlockHint') : t('models.lockHint')}
+                          onClick={() => void toggleLock(m)}
+                          style={{
+                            color: lockedIds.has(rowLockKey(m)) ? 'var(--accent-amber)' : 'var(--text-dim)',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: 0,
+                            marginLeft: 6,
+                            display: 'inline-flex',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {lockedIds.has(rowLockKey(m)) ? <Lock size={11} /> : <LockOpen size={11} />}
+                        </button>
+                      ) : (
+                        <button
+                          title={t('models.lockNeedLocal')}
+                          onClick={() => toast.info(t('models.lockNeedLocal'))}
+                          style={{ color: 'var(--text-dim)', opacity: 0.55, background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                        >
+                          <LockOpen size={11} />
+                        </button>
+                      )}
                     </div>
-                    {m.name && m.name !== m.id && (
-                      <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 2 }}>{m.name}</div>
-                    )}
+                    {(() => {
+                      const displayName = m.name || m.id.split('/').pop();
+                      return displayName && displayName !== m.id ? (
+                        <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 2 }}>{displayName}</div>
+                      ) : null;
+                    })()}
                   </td>
                   <td style={{ ...tdStyle, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
                     {m.providerId}
