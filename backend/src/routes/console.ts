@@ -88,6 +88,7 @@ export const SPA_ROUTES = [
   '/api-keys',
   '/models',
   '/proxy',
+  '/token-saver',
   '/clients',
   '/guardrails',
   '/usage',

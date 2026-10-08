@@ -7,6 +7,7 @@ import { RulesPage } from './pages/RulesPage';
 import { KeysPage } from './pages/KeysPage';
 import { ModelsPage } from './pages/ModelsPage';
 import { ProxyPage } from './pages/ProxyPage';
+import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
 import { TracesPage } from './pages/TracesPage';
@@ -34,6 +35,7 @@ export const App: React.FC = () => {
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="proxy" element={<ProxyPage />} />
+        <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
         <Route path="usage" element={<Navigate to="/traces" replace />} />

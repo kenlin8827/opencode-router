@@ -37,6 +37,26 @@ opencode:
 #   blacklist:                        # matches force direct (checked before whitelist)
 #     - "deepseek/*"
 
+# Token Saver compression (Optional) — three independent engines (rtk /
+# headroom / caveman), all fail-open (on any error the original request
+# flows upstream unchanged). Restart required.
+# compression:
+#   enabled: true                     # master switch (default true; per-engine flags apply)
+#   rtk:
+#     enabled: false                  # compress tool-result text (git/grep/ls/tree/logs/build
+#                                     #   output) via local deterministic compressors;
+#                                     #   byte-stable across turns → upstream prefix cache safe
+#   headroom:
+#     enabled: false                  # whole-context compression via headroom sidecar /v1/compress
+#     url: "http://127.0.0.1:8787"    # install: pip install "headroom-ai[all]" (PyPI only; npm pkg is SDK-only),
+#                                     #   then run `headroom proxy --port 8787` yourself; loopback-only by default
+#                                     #   docs: https://docs.headroomlabs.ai/docs/quickstart
+#     timeoutMs: 3000                 # on timeout/error → original messages go upstream
+#     compressUserMessages: false     # also compress user-role text (ignored in session mode)
+#   caveman:
+#     enabled: false                  # terse-style system-prompt injection → fewer output tokens
+#     level: "full"                   # lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra
+
 # Dynamic domain rules extension (Optional)
 # The gateway has built-in language-agnostic structural, syntax, and statistical features.
 # You can extend custom routing regex rules for specific domain terms:

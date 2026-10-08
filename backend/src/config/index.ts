@@ -42,6 +42,12 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: false, // opt-in: proxying only when explicitly enabled
     url: 'http://127.0.0.1:7890',
   },
+  compression: {
+    enabled: true, // master switch; per-engine flags gate each engine
+    rtk: { enabled: false },
+    headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000 },
+    caveman: { enabled: false, level: 'full' },
+  },
   circuitBreaker: {
     enabled: true,
     failureThreshold: 3,
@@ -118,6 +124,13 @@ export function loadConfig(configPath?: string): RouterConfig {
         },
         flywheel: { ...DEFAULT_CONFIG.flywheel, ...parsed?.flywheel },
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
+        compression: {
+          ...DEFAULT_CONFIG.compression,
+          ...parsed?.compression,
+          rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...parsed?.compression?.rtk },
+          headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...parsed?.compression?.headroom },
+          caveman: { ...DEFAULT_CONFIG.compression?.caveman, ...parsed?.compression?.caveman },
+        },
         circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...parsed?.circuitBreaker },
         retry: {
           enabled: parsed?.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,
@@ -246,6 +259,15 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'proxy.url': '全局代理 URL，http(s)://[user:pass@]host:port —— 需要鉴权时把用户名:密码嵌在 @ 前（自动转为 Proxy-Authorization，含 HTTPS CONNECT 隧道；特殊字符需 URL 编码）；留空 = 直连',
   'proxy.whitelist': '白名单（glob）：非空时仅命中者走代理；pattern 匹配 provider/model 组合与模型 id —— anthropic/* 为 provider 级，*/claude-* 或 claude-* 为模型级',
   'proxy.blacklist': '黑名单（glob）：命中者强制直连；与 whitelist 同设时先执行（黑名单命中 = 直连，其余再按白名单过滤）',
+  compression: 'Token 压缩（rtk 工具输出压缩 + headroom 上下文压缩 + caveman 输出风格注入；全部失败时放行原文，重启网关生效）',
+  'compression.enabled': '压缩总开关（false 时下列引擎全部停用）',
+  'compression.rtk.enabled': 'rtk 工具输出压缩：git/grep/ls/tree/日志/构建输出等工具结果文本压缩 60-90%（本地确定性压缩器，不破坏上游前缀缓存）',
+  'compression.headroom.enabled': 'headroom 上下文压缩：转发前调用 headroom sidecar 的 /v1/compress（失败/超时自动放行原文；会话模式保上游前缀缓存）',
+  'compression.headroom.url': 'headroom sidecar 地址（需自行运行 headroom proxy，默认 127.0.0.1:8787，仅本机回环）',
+  'compression.headroom.timeoutMs': 'headroom 调用超时（毫秒，超时放行原文）',
+  'compression.headroom.compressUserMessages': '同时压缩 user 角色文本（会话模式下自动忽略）',
+  'compression.caveman.enabled': 'caveman 输出压缩：向 system 幂等注入简洁风格提示词，显著压缩输出 token（代码/路径/命令逐字保留）',
+  'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
   catalog: '模型目录远程源（价格/元数据自动同步）',
   session: '会话粘性（ADR-0006 棘轮：会话内模型不漂移）',
   'session.strategy': '会话策略：monotonic 单调棘轮 / sticky 粘性 / stateless 无状态',

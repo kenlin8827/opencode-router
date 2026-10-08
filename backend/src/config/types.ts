@@ -180,6 +180,29 @@ export const DEFAULT_CATALOG_SOURCES: CatalogSourceConfig[] = [
 ];
 
 /**
+ * Token Saver compression (rtk tool-output compression + headroom context
+ * compression + caveman output-style injection). Applied inside
+ * PipelineOrchestrator after prompt normalization & session resolution.
+ * All stages fail open; `enabled: false` disables the pipeline as a whole.
+ */
+export interface CompressionConfig {
+  enabled?: boolean; // master switch; default true (per-engine flags still apply)
+  rtk?: {
+    enabled?: boolean; // compress tool-result text (git/grep/ls/tree/logs/build output); default false
+  };
+  headroom?: {
+    enabled?: boolean; // whole-context compression via headroom sidecar POST /v1/compress; default false
+    url?: string; // headroom proxy base URL, e.g. http://127.0.0.1:8787 (loopback-only by default)
+    timeoutMs?: number; // default 3000; on timeout the original messages flow upstream unchanged
+    compressUserMessages?: boolean; // also compress user-role text (ignored in session mode)
+  };
+  caveman?: {
+    enabled?: boolean; // terse-style system-prompt injection to cut output tokens; default false
+    level?: 'lite' | 'full' | 'ultra' | 'wenyan-lite' | 'wenyan' | 'wenyan-ultra'; // default 'full'
+  };
+}
+
+/**
  * Daemon-process log rotation (size-based). Only applies when the gateway is
  * started via `ocr start` — a manual `bun backend/src/index.ts` logs to its
  * own console and bypasses rotation entirely.
@@ -199,6 +222,7 @@ export interface RouterConfig {
   apiKeys?: ApiKeyConfig[];
   opencode?: OpenCodeConfig;
   proxy?: ProxyConfig;
+  compression?: CompressionConfig;
   logging?: LoggingConfig;
   catalog?: CatalogConfig;
   tiers?: TiersConfig;

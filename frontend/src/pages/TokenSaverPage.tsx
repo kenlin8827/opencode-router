@@ -1,0 +1,184 @@
+import React, { useState, useEffect } from 'react';
+import { Zap, Save } from 'lucide-react';
+import { api } from '../lib/api';
+import { useI18n } from '../i18n/I18nContext';
+import { useToast } from '../components/ToastProvider';
+import { Switch } from '../components/Switch';
+import { Combobox } from '../components/Combobox';
+
+const CAVEMAN_LEVELS = ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan', 'wenyan-ultra'] as const;
+
+interface CompressionShape {
+  enabled?: boolean;
+  rtk?: { enabled?: boolean };
+  headroom?: {
+    enabled?: boolean;
+    url?: string;
+    timeoutMs?: number;
+    compressUserMessages?: boolean;
+  };
+  caveman?: { enabled?: boolean; level?: string };
+}
+
+const Section: React.FC<{
+  title: string;
+  desc: string;
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
+  enableLabel: string;
+  children?: React.ReactNode;
+}> = ({ title, desc, enabled, onToggle, enableLabel, children }) => (
+  <div style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+      <span style={{ fontSize: '14px', fontWeight: 600 }}>{title}</span>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+        <span style={{ color: 'var(--text-dim)' }}>{enableLabel}</span>
+        <Switch checked={enabled} onChange={onToggle} />
+      </label>
+    </div>
+    <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: children ? '12px' : 0 }}>
+      {desc}
+    </div>
+    {enabled && children}
+  </div>
+);
+
+export const TokenSaverPage: React.FC = () => {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [compression, setCompression] = useState<CompressionShape | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getConfig().then(cfg => {
+      setCompression(((cfg as any).compression as CompressionShape) || {});
+      setLoading(false);
+    }).catch(console.error);
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.saveConfig({ compression });
+      toast.success(t('tokenSaver.savedNotice'));
+    } catch (err: any) {
+      toast.error('Failed: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading || !compression) {
+    return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
+  }
+
+  const rtk = compression.rtk || {};
+  const headroom = compression.headroom || {};
+  const caveman = compression.caveman || {};
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div className="card-title">
+          <Zap size={18} color="var(--accent)" />
+          <span>{t('tokenSaver.title')}</span>
+        </div>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+          <Save size={14} />
+          <span>{t('tokenSaver.saveBtn')}</span>
+        </button>
+      </div>
+
+      <div style={{ fontSize: '13px', color: 'var(--text)', marginBottom: '6px' }}>
+        {t('tokenSaver.subtitle')}
+      </div>
+      <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '16px' }}>
+        {t('tokenSaver.hint')}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '720px' }}>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+          <span>{t('tokenSaver.enable')}</span>
+          <Switch
+            checked={compression.enabled ?? true}
+            onChange={v => setCompression({ ...compression, enabled: v })}
+          />
+        </label>
+
+        <Section
+          title={t('tokenSaver.rtkTitle')}
+          desc={t('tokenSaver.rtkDesc')}
+          enabled={rtk.enabled ?? false}
+          onToggle={v => setCompression({ ...compression, rtk: { ...rtk, enabled: v } })}
+          enableLabel={t('tokenSaver.rtkEnable')}
+        />
+
+        <Section
+          title={t('tokenSaver.headroomTitle')}
+          desc={t('tokenSaver.headroomDesc')}
+          enabled={headroom.enabled ?? false}
+          onToggle={v => setCompression({ ...compression, headroom: { ...headroom, enabled: v } })}
+          enableLabel={t('tokenSaver.headroomEnable')}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('tokenSaver.headroomUrl')}
+              </label>
+              <input
+                type="text"
+                placeholder="http://127.0.0.1:8787"
+                value={headroom.url || ''}
+                onChange={e => setCompression({ ...compression, headroom: { ...headroom, url: e.target.value } })}
+                className="input"
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <div style={{ width: '180px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  {t('tokenSaver.headroomTimeout')}
+                </label>
+                <input
+                  type="number"
+                  min={100}
+                  step={100}
+                  value={headroom.timeoutMs ?? 3000}
+                  onChange={e => setCompression({ ...compression, headroom: { ...headroom, timeoutMs: Number(e.target.value) || undefined } })}
+                  className="input"
+                />
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer', paddingBottom: '8px' }}>
+                <Switch
+                  size="sm"
+                  checked={headroom.compressUserMessages ?? false}
+                  onChange={v => setCompression({ ...compression, headroom: { ...headroom, compressUserMessages: v } })}
+                />
+                <span>{t('tokenSaver.headroomCompressUser')}</span>
+              </label>
+            </div>
+          </div>
+        </Section>
+
+        <Section
+          title={t('tokenSaver.cavemanTitle')}
+          desc={t('tokenSaver.cavemanDesc')}
+          enabled={caveman.enabled ?? false}
+          onToggle={v => setCompression({ ...compression, caveman: { ...caveman, enabled: v } })}
+          enableLabel={t('tokenSaver.cavemanEnable')}
+        >
+          <div style={{ width: '240px' }}>
+            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+              {t('tokenSaver.cavemanLevel')}
+            </label>
+            <Combobox
+              value={caveman.level || 'full'}
+              onChange={v => setCompression({ ...compression, caveman: { ...caveman, level: v } })}
+              options={CAVEMAN_LEVELS.map(lv => ({ value: lv, label: lv }))}
+            />
+          </div>
+        </Section>
+      </div>
+    </div>
+  );
+};

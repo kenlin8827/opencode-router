@@ -35,6 +35,7 @@ export interface TranslationDict {
     yaml: string;
     auto: string;
     proxy: string;
+    tokenSaver: string;
     grpOverview: string;
     grpTraffic: string;
     grpUpstream: string;
@@ -464,6 +465,27 @@ export interface TranslationDict {
     blacklist: string;
     pattern: string;
     addPattern: string;
+  };
+  tokenSaver: {
+    title: string;
+    subtitle: string;
+    saveBtn: string;
+    savedNotice: string;
+    hint: string;
+    enable: string;
+    rtkTitle: string;
+    rtkEnable: string;
+    rtkDesc: string;
+    headroomTitle: string;
+    headroomEnable: string;
+    headroomDesc: string;
+    headroomUrl: string;
+    headroomTimeout: string;
+    headroomCompressUser: string;
+    cavemanTitle: string;
+    cavemanEnable: string;
+    cavemanDesc: string;
+    cavemanLevel: string;
   };
   auto: {
     title: string;

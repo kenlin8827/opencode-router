@@ -87,6 +87,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
       { to: '/proxy', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+      { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
     ],
   },
   {
@@ -127,6 +128,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
   '/proxy': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
+  '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
   '/traces': { groupKey: 'nav.grpObservability', titleKey: 'nav.traces' },

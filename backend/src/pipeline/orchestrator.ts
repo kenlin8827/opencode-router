@@ -3,6 +3,7 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.j
 import { ExecutionResult, ModelPricing, RoutingDecision, TierLevel } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
+import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
@@ -153,6 +154,21 @@ export class PipelineOrchestrator {
     );
     const sessionId = sessionResolve.sessionId;
 
+    // 2B. Token-saver compression (toolOutput 工具输出压缩 → headroom sidecar →
+    // outputStyle 输出风格注入). All stages fail open. Snapshot the PRE-compression
+    // messages for the post-turn prefix fingerprint: the client always sends
+    // uncompressed bytes, so the session chain must be indexed on the original
+    // content — matching registerCompletedTurn below against compressed bytes
+    // would break zero-header session resolution from the next turn onward.
+    // (The upstream-facing compressed prefix stays byte-stable across turns
+    // because the tool-output compressors are deterministic and headroom
+    // runs in session mode.)
+    const fingerprintMessages = normalizedRequest.messages.map(m => ({
+      role: m.role,
+      content: Array.isArray(m.content) ? m.content.map(p => ({ ...p })) : m.content,
+    }));
+    await applyCompression(normalizedRequest, this.config.compression, sessionId);
+
     // 3. Multi-Layer Hierarchical Router (Layer 1 Local CPU -> Layer 2 Jev)
     const initialDecision = await RouterEngine.routeAsync(normalizedRequest, this.config.classifier);
 
@@ -285,10 +301,12 @@ export class PipelineOrchestrator {
     }
 
     // 6. Post-Turn Registration: Register completed turn prefix fingerprint for zero-header tracking
+    // Uses the PRE-compression snapshot (see 2B): clients always resend
+    // uncompressed bytes, so the chain must be indexed on original content.
     const assistantContent = finalResponse!.choices[0]?.message?.content || '';
     this.sessionManager.registerCompletedTurn(
       sessionId,
-      normalizedRequest.messages,
+      fingerprintMessages,
       assistantContent
     );
 
