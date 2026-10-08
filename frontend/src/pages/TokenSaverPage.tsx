@@ -9,7 +9,6 @@ import { Combobox } from '../components/Combobox';
 const CAVEMAN_LEVELS = ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan', 'wenyan-ultra'] as const;
 
 interface CompressionShape {
-  enabled?: boolean;
   rtk?: { enabled?: boolean };
   headroom?: {
     enabled?: boolean;
@@ -98,14 +97,6 @@ export const TokenSaverPage: React.FC = () => {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '720px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
-          <span>{t('tokenSaver.enable')}</span>
-          <Switch
-            checked={compression.enabled ?? true}
-            onChange={v => setCompression({ ...compression, enabled: v })}
-          />
-        </label>
-
         <Section
           title={t('tokenSaver.rtkTitle')}
           desc={t('tokenSaver.rtkDesc')}

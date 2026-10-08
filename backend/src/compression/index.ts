@@ -39,7 +39,7 @@ export async function applyCompression(
   sessionId?: string
 ): Promise<CompressionOutcome> {
   const outcome: CompressionOutcome = { rtk: null, headroom: null, cavemanInjected: false };
-  if (!config || config.enabled === false) return outcome;
+  if (!config) return outcome;
 
   // 1. rtk tool-output compression (sync, deterministic, in-process)
   outcome.rtk = compressToolOutputs(request, config.rtk?.enabled);

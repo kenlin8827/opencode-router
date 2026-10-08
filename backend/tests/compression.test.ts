@@ -388,14 +388,6 @@ describe('compressWithHeadroom', () => {
 // ── applyCompression orchestration ──────────────────────────────────────────
 
 describe('applyCompression', () => {
-  test('master switch off → no-op', async () => {
-    const req = reqWithToolContent('On branch main\n  modified:   a.ts\n'.repeat(40));
-    const before = JSON.stringify(req);
-    const outcome = await applyCompression(req, { enabled: false, rtk: { enabled: true } });
-    expect(outcome.rtk).toBeNull();
-    expect(JSON.stringify(req)).toBe(before);
-  });
-
   test('undefined config → no-op', async () => {
     const req = reqWithToolContent('x');
     const outcome = await applyCompression(req, undefined);
@@ -406,7 +398,6 @@ describe('applyCompression', () => {
 
   test('rtk + caveman run together; headroom skipped without url', async () => {
     const cfg: CompressionConfig = {
-      enabled: true,
       rtk: { enabled: true },
       headroom: { enabled: true }, // no url → fail-open skip
       caveman: { enabled: true, level: 'full' },
