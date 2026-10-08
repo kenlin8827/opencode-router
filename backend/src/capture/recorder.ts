@@ -349,12 +349,31 @@ export class CaptureRecorder {
    * Read the raw JSONL archive verbatim (for export/download). Unlike
    * readRecords this is NOT capped at MAX_READ_BYTES — exports should be
    * complete; per-line size is already bounded by maxBodyBytes at write time.
+   *
+   * When `exclude` is non-empty, those body fields (request / upstreamRequest
+   * / response / upstreamError) are stripped from each turn and the rest is
+   * re-serialized — metadata (ts/status/model/routing/usage) always survives.
+   * Corrupt lines are kept verbatim, same fail-open policy as every read.
    */
-  public readRawArchive(date: string, file: string): string | null {
+  public readRawArchive(date: string, file: string, exclude?: string[]): string | null {
     const filePath = this.resolveArchiveFile(date, file);
     if (!filePath) return null;
     try {
-      return fs.readFileSync(filePath, 'utf8');
+      const raw = fs.readFileSync(filePath, 'utf8');
+      if (!exclude || exclude.length === 0) return raw;
+      const drop = new Set(exclude);
+      const out: string[] = [];
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line) as Record<string, unknown>;
+          for (const f of drop) delete rec[f];
+          out.push(JSON.stringify(rec));
+        } catch {
+          out.push(line);
+        }
+      }
+      return out.length > 0 ? out.join('\n') + '\n' : '';
     } catch {
       return null;
     }
@@ -367,6 +386,22 @@ export class CaptureRecorder {
     if (!fs.existsSync(dir)) return false;
     try {
       fs.rmSync(dir, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Delete one session archive file inside a date directory. Returns true
+   * when it existed. resolveArchiveFile validates date/file (suffix,
+   * traversal) and existence, so this cannot escape the date dir.
+   */
+  public deleteSession(date: string, file: string): boolean {
+    const filePath = this.resolveArchiveFile(date, file);
+    if (!filePath) return false;
+    try {
+      fs.rmSync(filePath, { force: true });
       return true;
     } catch {
       return false;

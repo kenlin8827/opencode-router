@@ -239,6 +239,119 @@ const CaptureDrawer: React.FC<{
   );
 };
 
+/**
+ * Export options dialog: pick which bodies to include in the JSONL download.
+ * Metadata (time/status/model/routing/usage) is always kept — only the three
+ * body views are optional. All on = verbatim archive (previous behavior).
+ */
+const ExportDialog: React.FC<{
+  session: CaptureSessionRow;
+  onClose: () => void;
+  onConfirm: (exclude: string[]) => void;
+}> = ({ session, onClose, onConfirm }) => {
+  const { t } = useI18n();
+  const [keepReqIn, setKeepReqIn] = useState(true);
+  const [keepReqOut, setKeepReqOut] = useState(true);
+  const [keepResp, setKeepResp] = useState(true);
+  useBodyScrollLock(true);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const rows = [
+    { checked: keepReqIn, set: setKeepReqIn, label: t('captures.tabReqIn') },
+    { checked: keepReqOut, set: setKeepReqOut, label: t('captures.tabReqOut') },
+    { checked: keepResp, set: setKeepResp, label: t('captures.tabResp') },
+  ];
+  // The response tab shows response ?? upstreamError, so one toggle drops both.
+  const exclude: string[] = [];
+  if (!keepReqIn) exclude.push('request');
+  if (!keepReqOut) exclude.push('upstreamRequest');
+  if (!keepResp) exclude.push('response', 'upstreamError');
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 220,
+        background: 'rgba(0, 0, 0, 0.75)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '16px',
+        animation: 'ocr-fade-in 0.15s ease',
+      }}
+    >
+      <div
+        className="card"
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 380,
+          padding: '20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+          boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+          animation: 'ocr-pop-in 0.18s ease',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Download size={16} color="var(--accent)" />
+          <span style={{ fontSize: '14px', fontWeight: 700 }}>{t('captures.exportOptionsTitle')}</span>
+        </div>
+        <div
+          style={{
+            fontFamily: 'JetBrains Mono, monospace',
+            fontSize: '11px',
+            color: 'var(--text-dim)',
+            wordBreak: 'break-all',
+          }}
+        >
+          {session.sessionId}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {rows.map(r => (
+            <label
+              key={r.label}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                fontSize: '12.5px',
+                cursor: 'pointer',
+              }}
+            >
+              <span>{r.label}</span>
+              <Switch checked={r.checked} onChange={r.set} ariaLabel={r.label} />
+            </label>
+          ))}
+        </div>
+        <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+          {t('captures.exportOptionsHint')}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button className="btn" onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+          <button className="btn btn-primary" onClick={() => onConfirm(exclude)}>
+            {t('captures.exportBtn')}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
 export const CapturesPage: React.FC = () => {
   const { t } = useI18n();
   const confirmDialog = useConfirm();
@@ -255,6 +368,7 @@ export const CapturesPage: React.FC = () => {
   const [selectedRecord, setSelectedRecord] = useState<CaptureRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -352,10 +466,10 @@ export const CapturesPage: React.FC = () => {
     }
   };
 
-  const handleExport = async (s: CaptureSessionRow) => {
+  const handleExport = async (s: CaptureSessionRow, exclude: string[] = []) => {
     if (!selectedDate) return;
     try {
-      const blob = await api.exportCaptureArchive(selectedDate, s.file);
+      const blob = await api.exportCaptureArchive(selectedDate, s.file, exclude.length ? exclude : undefined);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -383,6 +497,34 @@ export const CapturesPage: React.FC = () => {
         toast.success(t('captures.deleted'));
         setSelectedFile('');
         setRecords([]);
+        await loadStatus();
+      } else {
+        toast.error(res.message || t('common.failed'));
+      }
+    } catch (err: any) {
+      toast.error(err.message || t('common.failed'));
+    }
+  };
+
+  const handleDeleteSession = async (s: CaptureSessionRow) => {
+    if (!selectedDate) return;
+    const ok = await confirmDialog({
+      title: t('captures.deleteSessionConfirm').replace('{sessionId}', s.sessionId),
+      danger: true,
+      confirmLabel: t('common.delete'),
+    });
+    if (!ok) return;
+    try {
+      const res = await api.deleteCaptureSession(selectedDate, s.file);
+      if (res.status === 'ok') {
+        toast.success(t('captures.sessionDeleted'));
+        // Drop the drawer + timeline if the deleted session was open.
+        if (selectedFile === s.file) {
+          setSelectedFile('');
+          setRecords([]);
+          setSelectedRecord(null);
+        }
+        await loadSessions(selectedDate);
         await loadStatus();
       } else {
         toast.error(res.message || t('common.failed'));
@@ -575,7 +717,7 @@ export const CapturesPage: React.FC = () => {
                         title={t('captures.exportTitle')}
                         onClick={e => {
                           e.stopPropagation();
-                          handleExport(s);
+                          setExportTarget(s);
                         }}
                         style={{
                           color: 'var(--text-dim)',
@@ -588,6 +730,26 @@ export const CapturesPage: React.FC = () => {
                         onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
                       >
                         <Download size={13} />
+                      </span>
+                      <span
+                        role="button"
+                        aria-label={t('captures.deleteSession')}
+                        title={t('captures.deleteSession')}
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleDeleteSession(s);
+                        }}
+                        style={{
+                          color: 'var(--text-dim)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          flexShrink: 0,
+                          cursor: 'pointer',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
+                      >
+                        <Trash2 size={13} />
                       </span>
                     </div>
                   ))}
@@ -742,6 +904,18 @@ export const CapturesPage: React.FC = () => {
 
       {selectedRecord && (
         <CaptureDrawer record={selectedRecord} onClose={() => setSelectedRecord(null)} />
+      )}
+
+      {exportTarget && (
+        <ExportDialog
+          session={exportTarget}
+          onClose={() => setExportTarget(null)}
+          onConfirm={exclude => {
+            const s = exportTarget;
+            setExportTarget(null);
+            handleExport(s, exclude);
+          }}
+        />
       )}
     </div>
   );

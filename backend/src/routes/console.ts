@@ -98,6 +98,7 @@ export const SPA_ROUTES = [
   '/captures',
   '/settings',
   '/yaml',
+  '/combos',
 ];
 
 /**
@@ -450,11 +451,13 @@ export function registerConsoleRoutes(
     }
     const result = saveConfig(body);
     if (!result.success) return reply.status(400).send(result);
-    // Hot-applied config sections: proxy policy (module singleton per call)
-    // and the capture recorder (enabled/toggles take effect immediately, no
-    // gateway restart needed). Everything else still requires a restart.
+    // Hot-applied config sections: proxy policy (module singleton per call),
+    // the capture recorder (enabled/toggles take effect immediately, no
+    // gateway restart needed) and custom model combos (registry re-reads the
+    // combo map per request). Everything else still requires a restart.
     initProxyConfig(loadConfig().proxy);
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture);
+    orchestrator.getRegistry().applyCombos(loadConfig().combos);
     return result;
   };
   app.post('/api/ui/config', handleSaveConfig);
@@ -473,6 +476,7 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture); // hot-apply capture too
+    orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     return result;
   };
   app.post('/api/ui/config/raw', handleSaveRawYaml);
@@ -508,6 +512,40 @@ export function registerConsoleRoutes(
   };
   app.get('/api/ui/tier-pools', handleTierPools);
   app.get('/api/console/tier-pools', handleTierPools);
+
+  // 6c. Custom model combos — resolved member view for the /combos console
+  // page. Reads the FRESH config (loadConfig) so a just-saved combo shows up
+  // without a restart; member health/breaker state comes from the live
+  // registry, and unregistered member ids are flagged via registered:false.
+  const handleCombos = async () => {
+    const cb = registry.getCircuitBreakerManager();
+    const combos = (loadConfig().combos || []).map(c => ({
+      id: c.id,
+      note: c.note,
+      // active=false ⇒ the gateway ignored this combo (reserved/colliding id
+      // or model-shadowed) — the UI badges it instead of diverging silently.
+      active: registry.isCombo(c.id),
+      selection: c.selection || 'priority',
+      members: (c.models || []).map((entry: any) => {
+        const ref =
+          typeof entry === 'string' ? { id: entry, weight: 1 } : { id: entry.id, weight: entry.weight ?? 1 };
+        const model = registry.getModel(ref.id);
+        return {
+          id: ref.id,
+          weight: ref.weight,
+          registered: Boolean(model),
+          provider: model?.provider,
+          tier: model?.tier,
+          inputPrice: model?.pricing?.input,
+          outputPrice: model?.pricing?.output,
+          breakerState: model ? cb.getBreaker(model.id)?.getState() ?? 'CLOSED' : undefined,
+        };
+      }),
+    }));
+    return { status: 'ok', combos };
+  };
+  app.get('/api/ui/combos', handleCombos);
+  app.get('/api/console/combos', handleCombos);
 
   // 7. OpenCode-native Provider Management (opencode.jsonc `provider` node + auth.json)
   //     - Definitions live in ~/.config/opencode/opencode.jsonc (JSONC, comment-preserving edits)
@@ -1085,8 +1123,15 @@ export function registerConsoleRoutes(
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
     // Raw export: verbatim JSONL download, no record parsing/cap.
+    // `exclude` (comma-separated, whitelisted body fields) strips those fields
+    // per turn — metadata (ts/status/model/routing/usage) always survives.
     if ((req.query as any)?.format === 'raw') {
-      const content = captureRecorder.readRawArchive(date, file);
+      const RAW_EXCLUDE_FIELDS = new Set(['request', 'upstreamRequest', 'response', 'upstreamError']);
+      const exclude = String((req.query as any)?.exclude || '')
+        .split(',')
+        .map(f => f.trim())
+        .filter(f => RAW_EXCLUDE_FIELDS.has(f));
+      const content = captureRecorder.readRawArchive(date, file, exclude.length ? exclude : undefined);
       if (content === null) {
         return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
       }
@@ -1100,6 +1145,18 @@ export function registerConsoleRoutes(
       return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
     }
     return { status: 'ok', date, file, ...result };
+  });
+
+  app.delete('/api/ui/capture/:date/:file', async (req: any, reply: any) => {
+    const { date, file } = req.params as { date: string; file: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    const deleted = captureRecorder.deleteSession(date, file);
+    if (!deleted) {
+      return reply.status(404).send({ status: 'error', message: `Capture session ${file} not found in ${date}` });
+    }
+    return { status: 'ok', message: `Capture session ${date}/${file} deleted` };
   });
 
   app.delete('/api/ui/capture/:date', async (req: any, reply: any) => {

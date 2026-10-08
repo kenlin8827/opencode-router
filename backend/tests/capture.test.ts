@@ -152,6 +152,84 @@ describe('CaptureRecorder', () => {
     assert.equal(recorder.deleteDate(date), false); // already gone
   });
 
+  it('deleteSession removes one session file and validates input', async () => {
+    const dir = makeTmpDir();
+    try {
+      const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
+      await rec.record({ sessionId: 'sess_a', status: 'ok', model: 'auto', request: {} });
+      await rec.record({ sessionId: 'sess_b', status: 'ok', model: 'auto', request: {} });
+      const date = rec.listDates()[0].date;
+      assert.equal(rec.listSessions(date).length, 2);
+
+      assert.equal(rec.deleteSession(date, 'sess_a.jsonl'), true);
+      assert.equal(rec.deleteSession(date, 'sess_a.jsonl'), false); // already gone
+      const left = rec.listSessions(date);
+      assert.equal(left.length, 1);
+      assert.equal(left[0].file, 'sess_b.jsonl');
+
+      // Validation: bad date / traversal / wrong suffix / unknown file
+      assert.equal(rec.deleteSession('not-a-date', 'sess_b.jsonl'), false);
+      assert.equal(rec.deleteSession(date, '../../etc/passwd.jsonl'), false);
+      assert.equal(rec.deleteSession(date, 'sess_b.txt'), false);
+      assert.equal(rec.deleteSession(date, 'sess_missing.jsonl'), false);
+
+      rec.stop();
+    } finally {
+      rmrf(dir);
+    }
+  });
+
+  it('readRawArchive filters excluded body fields for export', async () => {
+    const dir = makeTmpDir();
+    try {
+      const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
+      await rec.record({
+        sessionId: 'sess_f',
+        status: 'error',
+        model: 'auto',
+        request: { q: 1 },
+        upstreamRequest: { u: 1 },
+        upstreamError: { e: 1 },
+        error: 'boom',
+      });
+      await rec.record({
+        sessionId: 'sess_f',
+        status: 'ok',
+        model: 'auto',
+        request: { q: 2 },
+        upstreamRequest: { u: 2 },
+        response: { r: 2 },
+      });
+      const date = rec.listDates()[0].date;
+
+      // Default: verbatim, bodies intact
+      const full = rec.readRawArchive(date, 'sess_f.jsonl');
+      assert.ok(full!.includes('"request":{"q":1}'));
+      assert.ok(full!.includes('"response":{"r":2}'));
+
+      // Excluding all body fields keeps metadata only
+      const filtered = rec.readRawArchive(date, 'sess_f.jsonl', [
+        'request',
+        'upstreamRequest',
+        'response',
+        'upstreamError',
+      ])!;
+      const lines = filtered.trim().split('\n').map(l => JSON.parse(l));
+      assert.equal(lines.length, 2);
+      assert.equal(lines[0].request, undefined);
+      assert.equal(lines[0].upstreamRequest, undefined);
+      assert.equal(lines[0].upstreamError, undefined);
+      assert.equal(lines[0].status, 'error');
+      assert.equal(lines[0].error, 'boom'); // error message is metadata, kept
+      assert.equal(lines[1].response, undefined);
+      assert.equal(lines[1].status, 'ok');
+
+      rec.stop();
+    } finally {
+      rmrf(dir);
+    }
+  });
+
   it('applyConfig hot-toggles recording without a restart', async () => {
     const dir3 = makeTmpDir();
     try {
