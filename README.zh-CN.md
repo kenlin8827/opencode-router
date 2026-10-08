@@ -176,6 +176,19 @@ OpenCode Router (OCR) 在暴露上游全部原生模型的同时，提供了开�
 | **`auto-flagship`** | **强制指定中坚全能旗舰层**：针对常规系统架构设计、长代码生成与严谨业务分析。 | 约 $2.00 ~ $10.00 / M Tokens |
 | **`auto-reasoning`** | **强制指定高阶推理专家层**：针对高难度形式化逻辑证明、深思考难题与高复杂度数学演算。 | 约 $5.00 ~ $60.00 / M Tokens |
 | *上游物理模型名* | 直接透传调用上游的具体物理模型（如 `kimi-k2.7-code`, `deepseek-chat`）。 | 按上游标准定价实报实销 |
+| *自定义模型组合* | **用户自由编排的虚拟模型**（`config.combos`）：直接以 combo id 作为 model 调用，网关按主选策略（priority / weighted / round_robin）选首选，故障转移严格限制在配置成员内。每个成员独立享有熔断/重试语义；不参与会话棘轮，绝不跨组合扩员。 | 成员定价加总 |
+
+组合在 `config.yaml` 中定义（也可在控制台 `/combos` 页可视化编辑，保存后即时生效）：
+
+```yaml
+combos:
+  - id: my-combo            # 客户端可见的虚拟模型名
+    selection: weighted     # priority 配置顺序 | weighted 加权随机 | round_robin 轮询
+    models:
+      - kimi-k2.7-code      # 简写字符串 = weight 1
+      - id: deepseek-chat
+        weight: 3           # weighted/round_robin 份额
+```
 
 ---
 

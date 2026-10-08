@@ -176,6 +176,19 @@ In addition to exposing all registered upstream physical models, OpenCode Router
 | **`auto-flagship`** | **Forced Flagship Workhorse**: General flagship models for architecture design, refactoring, and code generation. | ~$2.00 ~ $10.00 / M Tokens |
 | **`auto-reasoning`** | **Forced Reasoning Specialist**: Deep thinking models for mathematical proofs and complex algorithms. | ~$5.00 ~ $60.00 / M Tokens |
 | *Upstream Models* | Direct pass-through to any physical model (e.g., `kimi-k2.7-code`, `deepseek-chat`). | Upstream standard rates |
+| *Custom Combos* | **User-composed virtual models** (`config.combos`): call the combo id as `model` — the gateway picks the leader via the configured strategy (priority / weighted / round_robin) and fails over strictly within the configured members. Each member keeps its own circuit breaker & retry semantics; no session ratchet, no cross-combo escalation. | Sum of member rates |
+
+Custom combos are defined in `config.yaml` (and editable visually on the console `/combos` page, hot-applied on save):
+
+```yaml
+combos:
+  - id: my-combo            # client-visible virtual model name
+    selection: weighted     # priority (config order) | weighted | round_robin
+    models:
+      - kimi-k2.7-code      # bare string = weight 1
+      - id: deepseek-chat
+        weight: 3           # weighted/round_robin share
+```
 
 ---
 
