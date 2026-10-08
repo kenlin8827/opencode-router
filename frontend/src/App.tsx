@@ -17,6 +17,7 @@ import { CapturesPage } from './pages/CapturesPage';
 import { ClientsPage } from './pages/ClientsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AutoPage } from './pages/AutoPage';
+import { CombosPage } from './pages/CombosPage';
 import { YamlPage } from './pages/YamlPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
@@ -30,6 +31,7 @@ export const App: React.FC = () => {
         <Route index element={<OverviewPage />} />
         <Route path="tiers" element={<RulesPage />} />
         <Route path="auto" element={<AutoPage />} />
+        <Route path="combos" element={<CombosPage />} />
         <Route path="rules" element={<Navigate to="/tiers" replace />} />
         <Route path="cache" element={<CachePage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />

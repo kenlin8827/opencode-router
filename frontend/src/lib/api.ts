@@ -269,6 +269,30 @@ export interface TierPoolsResponse {
   pools: Record<string, TierPoolInfo>;
 }
 
+export interface ComboMemberView {
+  id: string;
+  weight: number;
+  registered: boolean;
+  provider?: string;
+  tier?: string;
+  inputPrice?: number;
+  outputPrice?: number;
+  breakerState?: 'CLOSED' | 'OPEN' | 'HALF_OPEN' | string;
+}
+
+export interface ComboView {
+  id: string;
+  active?: boolean;
+  selection: 'priority' | 'weighted' | 'round_robin' | string;
+  members: ComboMemberView[];
+  note?: string;
+}
+
+export interface CombosResponse {
+  status: string;
+  combos: ComboView[];
+}
+
 export interface LogLine {
   raw: string;
   level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -317,6 +341,12 @@ export const api = {
 
   async getTierPools(): Promise<TierPoolsResponse> {
     const res = await fetch('/api/ui/tier-pools');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getCombos(): Promise<CombosResponse> {
+    const res = await fetch('/api/ui/combos');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -509,10 +539,12 @@ export const api = {
     return res.json();
   },
 
-  /** Verbatim JSONL download of one session archive. */
-  async exportCaptureArchive(date: string, file: string): Promise<Blob> {
+  /** JSONL download of one session archive; `exclude` strips body fields, metadata always kept. */
+  async exportCaptureArchive(date: string, file: string, exclude?: string[]): Promise<Blob> {
+    const params = new URLSearchParams({ format: 'raw' });
+    if (exclude && exclude.length > 0) params.set('exclude', exclude.join(','));
     const res = await fetch(
-      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?format=raw`
+      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
@@ -520,6 +552,14 @@ export const api = {
 
   async deleteCaptureDate(date: string): Promise<{ status: string; message?: string }> {
     const res = await fetch(`/api/ui/capture/${encodeURIComponent(date)}`, { method: 'DELETE' });
+    return res.json();
+  },
+
+  async deleteCaptureSession(date: string, file: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(
+      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}`,
+      { method: 'DELETE' }
+    );
     return res.json();
   },
 };

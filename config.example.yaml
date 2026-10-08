@@ -158,7 +158,7 @@ retry:
     maxAttempts: 1                  # Max in-place attempts (1 retry solves ~70% gateway blips & saves KV cache)
     backoffMs: 200                  # Initial backoff duration in ms
     jitterMs: 100                   # Random jitter in ms to avoid thundering herd
-    maxRateLimitWaitMs: 2000        # Max wait for short 429 bursts (<= 2s wait in-place saves KV cache; > 2s triggers immediate failover)
+    maxRateLimitWaitMs: 2000        # Max wait for short 429 bursts (<= 2s wait in-place saves KV cache; > 2s triggers immediate failover AND a hard circuit trip for exactly the Retry-After duration)
     # Whitelist of network failure causes eligible for in-place retry:
     retryOnCauses:
       - "connection_reset"          # ECONNRESET, ECONNABORTED, socket hang up, EPIPE
@@ -175,3 +175,19 @@ retry:
                                     # 'allow_escalate': exhaust same tier first, allow fast -> flagship escalation, strictly forbid downgrade
                                     # 'same_tier_only': strictly restrict failover to models within the same tier (prevents runaway costs)
 
+
+# ─── Custom Model Combos ────────────────────────────────────────────────────
+# Compose registered models into a virtual model name: clients send the combo
+# id as `model`. Leader is picked via `selection`; failover walks the config
+# order. Every member keeps its own circuit breaker / retry semantics. Combos
+# bypass intent classification, the session ratchet and cross-tier escalation
+# (the configured composition is authoritative). Hot-applied on console save.
+# Edit visually on the console /combos page.
+#
+# combos:
+#   - id: my-combo            # client-visible virtual model name (must not collide with 'auto*', 'default' or registered model ids)
+#     selection: weighted     # priority (config order, default) | weighted (weight-random) | round_robin (rotating slots)
+#     models:                 # ORDER = failover chain
+#       - kimi-k2.7-code      # bare string = weight 1
+#       - id: deepseek-chat   # or an object with an explicit weight:
+#         weight: 3           # weight for weighted/round_robin (>= 1, default 1)

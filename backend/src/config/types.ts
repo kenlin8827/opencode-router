@@ -26,6 +26,31 @@ export interface ModelRegistration {
   supportsPromptCaching?: boolean;
 }
 
+/**
+ * Combo member entry — bare string (config order = failover chain order,
+ * weight 1) or an object carrying an explicit weight for the weighted /
+ * round_robin selection strategies.
+ */
+export interface ComboModelRef {
+  id: string;
+  weight?: number; // >= 1, default 1
+}
+
+/**
+ * Custom model combo (user-composed virtual model): the client sends the
+ * combo id as `model` and the gateway executes against the member list.
+ * Routing/breaker semantics stay per member; `selection` only decides who
+ * leads the pool (priority = config order / weighted = weight-random /
+ * round_robin = rotating weighted slots) — failover always walks config
+ * order. No cross-tier escalation: the user's composition is authoritative.
+ */
+export interface ComboConfig {
+  id: string; // client-visible virtual model name, e.g. 'my-combo'
+  selection?: 'priority' | 'weighted' | 'round_robin'; // default 'priority'
+  models: (string | ComboModelRef)[]; // ordered: first = preferred leader
+  note?: string; // free-form remark, console-display only (never routed)
+}
+
 export interface FallbackConfig {
   enabled: boolean;
   maxRetries: number;
@@ -183,10 +208,9 @@ export const DEFAULT_CATALOG_SOURCES: CatalogSourceConfig[] = [
  * Token Saver compression (rtk tool-output compression + headroom context
  * compression + caveman output-style injection). Applied inside
  * PipelineOrchestrator after prompt normalization & session resolution.
- * All stages fail open; `enabled: false` disables the pipeline as a whole.
+ * All stages fail open; every engine has its own `enabled` flag.
  */
 export interface CompressionConfig {
-  enabled?: boolean; // master switch; default true (per-engine flags still apply)
   rtk?: {
     enabled?: boolean; // compress tool-result text (git/grep/ls/tree/logs/build output); default false
   };
@@ -254,6 +278,7 @@ export interface RouterConfig {
   retry?: RetryConfig;
   providers?: ProviderConfig[];
   models?: ModelRegistration[];
+  combos?: ComboConfig[];
   baselineModel: string; // Default flagship model id for calculating FinOps cost savings
 }
 

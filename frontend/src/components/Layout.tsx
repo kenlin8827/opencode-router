@@ -23,6 +23,7 @@ import {
   Activity,
   Shuffle,
   BrainCircuit,
+  Layers,
   Server,
   LogIn,
   ShieldCheck,
@@ -78,6 +79,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
       { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+      { to: '/combos', labelKey: 'nav.combos', icon: Layers },
     ],
   },
   {
@@ -126,6 +128,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/': { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' },
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
+  '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },

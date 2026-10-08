@@ -3,7 +3,7 @@ import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
-import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig } from '../config/types.js';
+import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig, ComboConfig, ComboModelRef } from '../config/types.js';
 import { TierLevel } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { CircuitBreakerManager, UpstreamError } from '../resilience/index.js';
@@ -16,6 +16,8 @@ export class ProviderRegistry {
   private circuitBreakerManager: CircuitBreakerManager;
   private tierPolicies: TiersConfig;
   private rrCursor = new Map<TierLevel, number>();
+  private combos = new Map<string, ComboConfig>();
+  private comboRrCursor = new Map<string, number>();
   private mockMode = false;
 
   constructor(config: RouterConfig, mockMode = false) {
@@ -40,6 +42,10 @@ export class ProviderRegistry {
     for (const mConfig of config.models || []) {
       this.registerModel(mConfig, mConfig.isDefaultInTier);
     }
+
+    // Initialize custom model combos (after models so member resolution at
+    // request time can find them; membership itself is resolved lazily)
+    this.applyCombos(config.combos);
 
     // In mock testing mode, if no models provided, populate mock tier models
     if (this.mockMode && this.models.size === 0) {
@@ -78,6 +84,9 @@ export class ProviderRegistry {
   }
 
   public registerModel(model: ModelRegistration, isDefault = false): void {
+    if (this.combos.has(model.id)) {
+      console.warn(`[Registry] Model id '${model.id}' shadows an existing combo id — the combo became unreachable.`);
+    }
     this.models.set(model.id, model);
     this.circuitBreakerManager.registerModel(model);
     if (isDefault || !this.tierDefaults.has(model.tier)) {
@@ -236,6 +245,112 @@ export class ProviderRegistry {
 
   public getAllModels(): ModelRegistration[] {
     return Array.from(this.models.values());
+  }
+
+  // ─── Custom model combos ────────────────────────────────────────────────
+
+  /** Virtual model ids that routing already owns — a combo must never shadow them. */
+  private static readonly RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
+
+  /** (Re)register combo definitions — used at boot and for hot-apply on console config saves. */
+  public applyCombos(combos?: ComboConfig[]): void {
+    this.combos.clear();
+    this.comboRrCursor.clear();
+    for (const combo of combos || []) {
+      if (!combo?.id || !Array.isArray(combo.models) || combo.models.length === 0) continue;
+      if (ProviderRegistry.RESERVED_COMBO_IDS.has(combo.id)) {
+        console.warn(`[Registry] Combo id '${combo.id}' is a reserved virtual model name — combo ignored.`);
+        continue;
+      }
+      if (this.models.has(combo.id)) {
+        console.warn(`[Registry] Combo id '${combo.id}' collides with a registered model id — combo ignored.`);
+        continue;
+      }
+      this.combos.set(combo.id, combo);
+    }
+  }
+
+  public isCombo(modelId: string): boolean {
+    return this.combos.has(modelId);
+  }
+
+  public getCombos(): ComboConfig[] {
+    // A model registered AFTER a combo (setDefaultTierModel / console flows)
+    // shadows the combo id — exclude those from exposure so /v1/models never
+    // lists a duplicate id that cannot route.
+    return Array.from(this.combos.values()).filter(c => !this.models.has(c.id));
+  }
+
+  /** Normalize a member entry (bare string | {id, weight}) to {id, weight>=1}. */
+  private comboMemberRef(entry: string | ComboModelRef): { id: string; weight: number } {
+    if (typeof entry === 'string') return { id: entry, weight: 1 };
+    return { id: entry.id, weight: Math.max(1, Number(entry.weight) || 1) };
+  }
+
+  /**
+   * Resolve a combo to its registered member models in config order.
+   * Unregistered ids are dropped and duplicates collapse to the first
+   * occurrence — resolved per call so late registrations join naturally.
+   */
+  public resolveCombo(comboId: string): ModelRegistration[] {
+    const combo = this.combos.get(comboId);
+    if (!combo) return [];
+    const seen = new Set<string>();
+    const members: ModelRegistration[] = [];
+    for (const entry of combo.models) {
+      const ref = this.comboMemberRef(entry);
+      if (seen.has(ref.id)) continue;
+      const model = this.models.get(ref.id);
+      if (model) {
+        members.push(model);
+        seen.add(ref.id);
+      }
+    }
+    return members;
+  }
+
+  /**
+   * Combo primary pick, mirroring the tier selection strategies:
+   * - priority (default): first healthy member in config order
+   * - weighted: weight-random draw over the healthy pool
+   * - round_robin: rotating weighted slots (combo-scoped cursor)
+   * Falls back to the full member list when every member is tripped.
+   */
+  public pickComboLeader(comboId: string, members: ModelRegistration[]): ModelRegistration {
+    if (members.length <= 1) return members[0];
+    const strategy = this.combos.get(comboId)?.selection ?? 'priority';
+    const healthy = members.filter(m => this.circuitBreakerManager.isAvailable(m.id));
+    const pool = healthy.length > 0 ? healthy : members;
+    const weights = new Map<string, number>();
+    for (const entry of this.combos.get(comboId)?.models || []) {
+      const ref = this.comboMemberRef(entry);
+      if (!weights.has(ref.id)) weights.set(ref.id, ref.weight);
+    }
+
+    if (strategy === 'round_robin') {
+      const slots: ModelRegistration[] = [];
+      for (const m of pool) {
+        const w = weights.get(m.id) ?? 1;
+        for (let i = 0; i < w; i++) slots.push(m);
+      }
+      if (slots.length === 0) return pool[0];
+      const prev = this.comboRrCursor.get(comboId) ?? 0;
+      this.comboRrCursor.set(comboId, prev + 1);
+      return slots[prev % slots.length];
+    }
+
+    if (strategy === 'weighted') {
+      const ws = pool.map(m => weights.get(m.id) ?? 1);
+      const total = ws.reduce((a, b) => a + b, 0);
+      let r = Math.random() * total;
+      for (let i = 0; i < pool.length; i++) {
+        r -= ws[i];
+        if (r < 0) return pool[i];
+      }
+      return pool[pool.length - 1];
+    }
+
+    return pool[0];
   }
 
   /**
