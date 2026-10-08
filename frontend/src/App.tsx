@@ -11,6 +11,7 @@ import { ApiKeysPage } from './pages/ApiKeysPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
 import { TracesPage } from './pages/TracesPage';
 import { SessionsPage } from './pages/SessionsPage';
+import { LogsPage } from './pages/LogsPage';
 import { ClientsPage } from './pages/ClientsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AutoPage } from './pages/AutoPage';
@@ -38,6 +39,7 @@ export const App: React.FC = () => {
         <Route path="usage" element={<Navigate to="/traces" replace />} />
         <Route path="traces" element={<TracesPage />} />
         <Route path="sessions" element={<SessionsPage />} />
+        <Route path="logs" element={<LogsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="yaml" element={<YamlPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

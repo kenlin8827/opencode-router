@@ -179,6 +179,19 @@ export const DEFAULT_CATALOG_SOURCES: CatalogSourceConfig[] = [
   { id: 'openrouter', type: 'model-list', url: 'https://openrouter.ai/api/v1/models', enabled: true, priority: 30 },
 ];
 
+/**
+ * Daemon-process log rotation (size-based). Only applies when the gateway is
+ * started via `ocr start` — a manual `bun backend/src/index.ts` logs to its
+ * own console and bypasses rotation entirely.
+ * Rotation runs once per daemon start (not per write): if `ocr.log` exceeds
+ * `maxSizeMB`, it is renamed to `ocr.log.1` (existing `.N` files shift up to
+ * `.N+1`), and archives beyond `keepArchives` are deleted.
+ */
+export interface LoggingConfig {
+  maxSizeMB?: number; // default 10
+  keepArchives?: number; // default 7
+}
+
 export interface RouterConfig {
   port: number;
   host: string;
@@ -186,6 +199,7 @@ export interface RouterConfig {
   apiKeys?: ApiKeyConfig[];
   opencode?: OpenCodeConfig;
   proxy?: ProxyConfig;
+  logging?: LoggingConfig;
   catalog?: CatalogConfig;
   tiers?: TiersConfig;
   routing?: RoutingConfig;

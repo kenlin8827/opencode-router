@@ -218,6 +218,23 @@ export interface TierPoolsResponse {
   pools: Record<string, TierPoolInfo>;
 }
 
+export interface LogLine {
+  raw: string;
+  level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+  levelNum?: number;
+  time?: number;
+  msg?: string;
+}
+
+export interface LogsResponse {
+  status: string;
+  file: string;
+  exists: boolean;
+  size: number;
+  mtimeMs: number;
+  lines: LogLine[];
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/ui/status');
@@ -355,6 +372,16 @@ export const api = {
     const json = await res.json();
     // /v1/sessions responds { object, total, limit?, offset, data }
     return { sessions: json.data || [], total: json.total || 0 };
+  },
+
+  async getLogs(tail = 500, level?: string, q?: string): Promise<LogsResponse> {
+    const qs = new URLSearchParams();
+    qs.set('tail', String(tail));
+    if (level) qs.set('level', level);
+    if (q) qs.set('q', q);
+    const res = await fetch(`/api/ui/logs?${qs.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   },
 
   async getApiKeys(): Promise<{ status: string; keys: ApiKeyItem[] }> {

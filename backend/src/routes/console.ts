@@ -18,6 +18,57 @@ import {
 
 export { validateApiKey };
 
+/* ------------------------------------------------------------------------ *
+ * Process-log tail helpers (for GET /api/ui/logs).
+ * Pino writes NDJSON with a numeric `level`; banner text is plain lines.
+ * ------------------------------------------------------------------------ */
+const PINO_LEVELS: Record<number, string> = {
+  10: 'trace',
+  20: 'debug',
+  30: 'info',
+  40: 'warn',
+  50: 'error',
+  60: 'fatal',
+};
+const LEVEL_NAME_TO_NUM: Record<string, number> = {
+  trace: 10,
+  debug: 20,
+  info: 30,
+  warn: 40,
+  error: 50,
+  fatal: 60,
+};
+
+function parseLogLevelParam(name?: string): number {
+  if (!name) return 0; // 0 = no filtering
+  return LEVEL_NAME_TO_NUM[name.toLowerCase()] ?? 0;
+}
+
+export interface ParsedLogLine {
+  raw: string;
+  level?: string;
+  levelNum?: number;
+  time?: number;
+  msg?: string;
+}
+
+function parseLogLine(raw: string): ParsedLogLine {
+  if (!raw.startsWith('{')) return { raw };
+  try {
+    const j = JSON.parse(raw);
+    const levelNum = typeof j.level === 'number' ? j.level : undefined;
+    return {
+      raw,
+      level: levelNum !== undefined ? PINO_LEVELS[levelNum] : undefined,
+      levelNum,
+      time: typeof j.time === 'number' ? j.time : undefined,
+      msg: typeof j.msg === 'string' ? j.msg : undefined,
+    };
+  } catch {
+    return { raw };
+  }
+}
+
 /**
  * All frontend SPA page paths served by handleHtml below. Single source of
  * truth — the auth preHandler hook in server.ts whitelists these exact
@@ -42,6 +93,7 @@ export const SPA_ROUTES = [
   '/usage',
   '/traces',
   '/sessions',
+  '/logs',
   '/settings',
   '/yaml',
 ];
@@ -954,6 +1006,52 @@ export function registerConsoleRoutes(
   };
   app.post('/api/ui/restart', handleRestart);
   app.post('/api/console/restart', handleRestart);
+
+  // 11. Process-log tail viewer — reads ~/.opencode-router/ocr.log (only
+  //     written when the gateway runs under `ocr start`; a manual `bun
+  //     backend/src/index.ts` writes to its own console instead).
+  //     Reads at most 1 MiB from the tail so huge files never blow up memory.
+  const handleGetLogs = async (req: any) => {
+    const { getLogFilePath } = await import('../cli/paths.js');
+    const query = req.query as { tail?: string; level?: string; q?: string };
+    const tail = Math.min(Math.max(parseInt(query.tail || '500', 10) || 500, 1), 5000);
+    const minLevel = parseLogLevelParam(query.level);
+    const needle = (query.q || '').toLowerCase();
+
+    const file = getLogFilePath();
+    if (!fs.existsSync(file)) {
+      return { status: 'ok', file, exists: false, size: 0, mtimeMs: 0, lines: [] };
+    }
+
+    const stat = fs.statSync(file);
+    const readSize = Math.min(stat.size, 1024 * 1024);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+      const text = buf.toString('utf8');
+      const allLines = text.split(/\r?\n/);
+      // Drop the first (likely partial) line when we sliced mid-line.
+      if (readSize < stat.size && allLines.length > 0) allLines.shift();
+
+      const parsed: ParsedLogLine[] = [];
+      for (const raw of allLines) {
+        if (!raw.trim()) continue;
+        const entry = parseLogLine(raw);
+        // Level filter only applies to parsed pino lines; banner text is
+        // always kept so startup output never silently disappears.
+        if (minLevel > 0 && entry.levelNum !== undefined && entry.levelNum < minLevel) continue;
+        if (needle && !raw.toLowerCase().includes(needle)) continue;
+        parsed.push(entry);
+      }
+      const lines = parsed.slice(-tail);
+      return { status: 'ok', file, exists: true, size: stat.size, mtimeMs: stat.mtimeMs, lines };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  app.get('/api/ui/logs', handleGetLogs);
+  app.get('/api/console/logs', handleGetLogs);
 }
 
 // Backwards compatibility export

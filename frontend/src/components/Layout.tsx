@@ -28,6 +28,7 @@ import {
   ShieldCheck,
   Waves,
   Settings,
+  ScrollText,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -96,6 +97,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/traces', labelKey: 'nav.traces', icon: BarChart3 },
       { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
       { to: '/cache', labelKey: 'nav.cache', icon: Database },
+      { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
     ],
   },
   {
@@ -130,6 +132,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/traces': { groupKey: 'nav.grpObservability', titleKey: 'nav.traces' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/cache': { groupKey: 'nav.grpObservability', titleKey: 'nav.cache' },
+  '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/settings': { groupKey: 'nav.grpSystem', titleKey: 'nav.settings' },
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };

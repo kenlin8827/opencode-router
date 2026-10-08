@@ -30,6 +30,7 @@ export interface TranslationDict {
     guardrails: string;
     traces: string;
     sessions: string;
+    logs: string;
     settings: string;
     yaml: string;
     auto: string;
@@ -399,6 +400,16 @@ export interface TranslationDict {
     emptySessions: string;
     copiedSessionId: string;
     copyFailed: string;
+  };
+  logs: {
+    title: string;
+    refresh: string;
+    levelAll: string;
+    tailLines: string;
+    searchPlaceholder: string;
+    autoScroll: string;
+    empty: string;
+    noFile: string;
   };
   clients: {
     title: string;

@@ -6,6 +6,7 @@ import { DaemonInfo } from './types.js';
 import { APP_VERSION } from '../version.js';
 import { getAllClientStatuses } from './clients/index.js';
 import { defaultGatewayPort } from './clients/base.js';
+import { loadConfig } from '../config/index.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const IS_MACOS = process.platform === 'darwin';
@@ -16,6 +17,32 @@ export function isProcessAlive(pid: number): boolean {
     return true;
   } catch (e: any) {
     return e.code === 'EPERM'; // Exists but no permission to signal
+  }
+}
+
+/**
+ * Size-based log rotation, run once per daemon start (not per write). If
+ * `logFile` exceeds `maxSizeMB`, it becomes `logFile.1`, existing `.N` shift
+ * up to `.N+1`, and archives beyond `keepArchives` are deleted.
+ */
+function rotateLogIfNeeded(logFile: string, maxSizeMB: number, keepArchives: number): void {
+  if (!fs.existsSync(logFile)) return;
+  try {
+    const stat = fs.statSync(logFile);
+    if (stat.size < maxSizeMB * 1024 * 1024) return;
+    if (keepArchives < 1) {
+      fs.unlinkSync(logFile);
+      return;
+    }
+    const oldest = `${logFile}.${keepArchives}`;
+    if (fs.existsSync(oldest)) fs.unlinkSync(oldest);
+    for (let i = keepArchives - 1; i >= 1; i--) {
+      const src = `${logFile}.${i}`;
+      if (fs.existsSync(src)) fs.renameSync(src, `${logFile}.${i + 1}`);
+    }
+    fs.renameSync(logFile, `${logFile}.1`);
+  } catch {
+    // Best-effort — never block daemon startup on rotation failure
   }
 }
 
@@ -118,13 +145,25 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
 
   const { bin, args } = resolveRuntimeBinary();
 
+  // Rotate before opening the log for append so the new daemon always starts
+  // on a fresh file when the previous one had grown past the threshold.
+  let logCfg: { maxSizeMB?: number; keepArchives?: number } = {};
+  try {
+    logCfg = loadConfig().logging ?? {};
+  } catch {
+    // config unreadable — fall through to defaults
+  }
+  rotateLogIfNeeded(logFile, logCfg.maxSizeMB ?? 10, logCfg.keepArchives ?? 7);
+
   let pid: number;
 
   if (IS_WINDOWS) {
-    // Windows: Use Win32_Process.Create via CIM with Base64 encoding to guarantee zero quote-escaping errors and true breakaway daemon
-    const commandLine = `"${bin}" ${args.map((a) => `"${a}"`).join(' ')}`;
-    const b64Cmd = Buffer.from(commandLine).toString('base64');
-    const psCmd = `$cmd = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Cmd}')); $res = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = '${repoDir.replace(/'/g, "''")}' }; $res.ProcessId`;
+    // Windows: launch through `cmd /c "<bin> <args> >> <log> 2>&1"` via
+    // Start-Process so stdout/stderr append to the daemon log file (the older
+    // Win32_Process.Create approach dropped them entirely). The returned PID
+    // is the cmd wrapper's; stopDaemon kills the whole tree via taskkill /T.
+    const cmdLine = `/c ""${bin}" ${args.map((a) => `"${a}"`).join(' ')} >> "${logFile}" 2>&1"`;
+    const psCmd = `$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '${cmdLine.replace(/'/g, "''")}' -WorkingDirectory '${repoDir.replace(/'/g, "''")}' -WindowStyle Hidden -PassThru; $p.Id`;
     const res = spawnSync('powershell', ['-NoProfile', '-Command', psCmd], {
       windowsHide: true,
       encoding: 'utf8',
@@ -203,15 +242,19 @@ export async function stopDaemon(): Promise<{ success: boolean; message: string 
   }
 
   try {
-    process.kill(pid, 'SIGTERM');
+    if (IS_WINDOWS) {
+      // Windows: the tracked PID is the cmd wrapper (Start-Process) and the
+      // gateway is its child — process.kill/TerminateProcess would kill ONLY
+      // the wrapper and orphan the gateway, so always kill the whole tree.
+      // spawnSync (not spawn) so the kill lands before the liveness polling.
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
   } catch (err: any) {
-    if (err.code !== 'ESRCH') {
+    if (err.code !== 'ESRCH' && !IS_WINDOWS) {
       try {
-        if (IS_WINDOWS) {
-          spawn('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true });
-        } else {
-          process.kill(pid, 'SIGKILL');
-        }
+        process.kill(pid, 'SIGKILL');
       } catch {
         // ignore
       }
@@ -229,7 +272,7 @@ export async function stopDaemon(): Promise<{ success: boolean; message: string 
   if (isProcessAlive(pid)) {
     try {
       if (IS_WINDOWS) {
-        spawn('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true });
+        spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true });
       } else {
         process.kill(pid, 'SIGKILL');
       }
