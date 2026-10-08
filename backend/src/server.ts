@@ -1,5 +1,7 @@
 import { registerConsoleRoutes, validateApiKey, SPA_ROUTES } from './routes/console.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
+import { registerResponsesRoutes } from './routes/responses.js';
+import { buildChatStreamChunks } from './utils/chat-sse.js';
 import fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { RouterConfig } from './config/types.js';
@@ -40,6 +42,7 @@ export function createServer(
 
   // Register Anthropic-protocol compatibility endpoint (POST /v1/messages)
   registerAnthropicRoutes(app, orchestrator);
+  registerResponsesRoutes(app, orchestrator);
 
   // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
   app.addHook('preHandler', async (req, reply) => {
@@ -183,9 +186,19 @@ export function createServer(
       },
     }));
 
+    // Custom model combos: user-composed virtual models (config.combos),
+    // routable exactly like the auto-* virtual models above.
+    const comboModels = registry.getCombos().map(c => ({
+      id: c.id,
+      object: 'model',
+      created: 1700000000,
+      owned_by: 'opencode-router',
+      description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
+    }));
+
     return {
       object: 'list',
-      data: [...virtualModels, ...registered],
+      data: [...virtualModels, ...comboModels, ...registered],
     };
   });
 
@@ -194,7 +207,8 @@ export function createServer(
     const { model } = req.params as { model: string };
     const all = registry.getAllModels();
     const found = all.find(m => m.id === model) ||
-      ['auto', 'auto-fast', 'auto-flagship', 'auto-reasoning'].includes(model);
+      ['auto', 'auto-fast', 'auto-flagship', 'auto-reasoning'].includes(model) ||
+      registry.isCombo(model);
 
     if (!found) {
       return reply.status(404).send({
@@ -388,6 +402,7 @@ export function createServer(
       const result = await orchestrator.process(body, {
         clientIp: req.ip,
         headers: req.headers,
+        wire: 'chat',
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
@@ -403,6 +418,7 @@ export function createServer(
       reply.header('X-OCR-Breaker-State', result.breakerState || 'CLOSED');
       reply.header('X-OCR-Session-ID', result.sessionId || '');
       reply.header('X-OCR-Session-Ratchet', result.sessionRatchetApplied ? 'true' : 'false');
+      reply.header('X-OCR-Session-Lookup', result.sessionLookupType || '');
       reply.header('X-OCR-Trace-ID', result.traceId || '');
       reply.header('X-OCR-Cost-USD', result.costUsd.toFixed(6));
       reply.header('X-OCR-Saved-USD', result.savedCostUsd.toFixed(6));
@@ -427,51 +443,16 @@ export function createServer(
           'X-OCR-Breaker-State': result.breakerState || 'CLOSED',
           'X-OCR-Session-ID': result.sessionId || '',
           'X-OCR-Session-Ratchet': result.sessionRatchetApplied ? 'true' : 'false',
+          'X-OCR-Session-Lookup': result.sessionLookupType || '',
           'X-OCR-Trace-ID': result.traceId || '',
           'X-OCR-Cost-USD': result.costUsd.toFixed(6),
           'X-OCR-Saved-USD': result.savedCostUsd.toFixed(6),
           'X-OCR-Latency-MS': result.latencyMs.toString(),
         });
 
-        const fullText = result.response.choices[0]?.message?.content || '';
-        const id = result.response.id || `chatcmpl-${Date.now()}`;
-        const created = result.response.created || Math.floor(Date.now() / 1000);
-        const model = result.modelUsed;
-
-        // 1. Initial role chunk
-        const roleChunk = {
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model,
-          choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
-        };
-        reply.raw.write(`data: ${JSON.stringify(roleChunk)}\n\n`);
-
-        // 2. Stream content deltas in chunks
-        const chunkSize = 4;
-        for (let i = 0; i < fullText.length; i += chunkSize) {
-          const chunkStr = fullText.slice(i, i + chunkSize);
-          const chunk = {
-            id,
-            object: 'chat.completion.chunk',
-            created,
-            model,
-            choices: [{ index: 0, delta: { content: chunkStr }, finish_reason: null }],
-          };
-          reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        for (const chunk of buildChatStreamChunks(result.response, result.modelUsed)) {
+          reply.raw.write(chunk);
         }
-
-        // 3. Final stop chunk
-        const stopChunk = {
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model,
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-          usage: result.response.usage,
-        };
-        reply.raw.write(`data: ${JSON.stringify(stopChunk)}\n\n`);
         reply.raw.write('data: [DONE]\n\n');
         reply.raw.end();
         return reply;
