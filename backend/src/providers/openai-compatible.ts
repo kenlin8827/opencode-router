@@ -35,6 +35,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
       stream: false,
     };
     delete payload.router_options;
+    // The gateway streams to clients by executing non-streaming upstream calls
+    // and re-chunking the result — a client-sent stream_options must never leak
+    // into a non-streaming payload (strict upstreams like Alibaba reject
+    // stream_options without stream: true with a 400).
+    delete payload.stream_options;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);

@@ -1,0 +1,114 @@
+import { describe, expect, test } from 'bun:test';
+import { serve } from 'bun';
+import { OpenAICompatibleProvider } from '../src/providers/openai-compatible.js';
+import { ModelRegistration, ProviderConfig } from '../src/config/types.js';
+import { ChatCompletionRequest } from '../src/types/openai.js';
+
+function makeModel(): ModelRegistration {
+  return {
+    id: 'test-provider/test-model',
+    provider: 'test-provider',
+    upstreamModel: 'upstream-model-id',
+    tier: 'flagship',
+    isDefaultInTier: false,
+    wire: 'openai',
+    pricing: { input: 1, output: 2, cacheRead: 0.25 },
+  };
+}
+
+/**
+ * Regression: the gateway streams to clients by executing non-streaming
+ * upstream calls and re-chunking, so a client-sent `stream_options` must be
+ * stripped in createCompletion — strict upstreams (e.g. Alibaba) reject
+ * stream_options without stream:true with a 400.
+ */
+describe('OpenAICompatibleProvider payload shaping', () => {
+  test('createCompletion strips stream_options from a non-streaming payload', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        return Response.json({
+          id: 'chatcmpl-test',
+          object: 'chat.completion',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+        stream_options: { include_usage: true },
+      } as ChatCompletionRequest;
+
+      const res = await provider.createCompletion(request, makeModel());
+      expect(res.object).toBe('chat.completion');
+      expect(received).not.toBeNull();
+      expect(received.stream).toBe(false);
+      expect(received.stream_options).toBeUndefined();
+      expect(received.router_options).toBeUndefined();
+      expect(received.model).toBe('upstream-model-id');
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('createStream sets stream and stream_options together', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        const body = `data: ${JSON.stringify({
+          id: 'chatcmpl-test',
+          object: 'chat.completion.chunk',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
+        })}\n\ndata: [DONE]\n\n`;
+        return new Response(body, {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+      };
+
+      const stream = await provider.createStream(request, makeModel());
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      expect(chunks.length).toBe(1);
+      expect(received.stream).toBe(true);
+      expect(received.stream_options).toEqual({ include_usage: true });
+    } finally {
+      server.stop(true);
+    }
+  });
+});
