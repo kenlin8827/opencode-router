@@ -31,6 +31,15 @@ export interface TierModelConfig {
   isDefaultInTier?: boolean;
 }
 
+export type SessionLookupType =
+  | 'explicit_header'   // client-supplied header / router_options
+  | 'embedded_user_id'  // session UUID embedded in metadata.user_id (Claude Code)
+  | 'request_user'      // raw OpenAI request.user field
+  | 'prefix_chain'      // exact head-prefix anchor of a completed chain
+  | 'tail_anchor'       // trailing-window anchor (survives history truncation)
+  | 'root_anchor'       // deterministic first-user-message key
+  | 'cold_start';       // fresh mint (random, collision-free by construction)
+
 export interface RoutingDecision {
   targetTier: TierLevel;
   confidence: number;
@@ -39,6 +48,7 @@ export interface RoutingDecision {
   needsSchemaValidation: boolean;
   sessionId?: string;
   sessionRatchetApplied?: boolean;
+  sessionLookupType?: SessionLookupType;
   pinnedModel?: string;
   features: {
     tokenCountEstimate: number;
@@ -59,6 +69,7 @@ export interface ExecutionResult {
   fallbackReason?: string;
   sessionId?: string;
   sessionRatchetApplied?: boolean;
+  sessionLookupType?: SessionLookupType;
   traceId?: string;
   costUsd: number;
   baselineCostUsd: number;

@@ -18,6 +18,7 @@ export interface ExecutionTrace {
     confidence: number;
     reason: string;
     sessionRatchetApplied: boolean;
+    sessionLookupType?: string;
   };
   execution: {
     modelUsed: string;

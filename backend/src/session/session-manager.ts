@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { ChatCompletionRequest } from '../types/openai.js';
-import { RoutingDecision, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
+import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
 import { SessionConfig } from '../config/types.js';
 
 export interface ConversationSession {
@@ -12,28 +12,78 @@ export interface ConversationSession {
   lastActiveAt: number;
   turnCount: number;
   historyTiers: TierLevel[];
+  /** Birth metadata — attached once on the first turn, immutable afterwards. */
+  origin?: {
+    wire?: string;
+    lookupType?: SessionLookupType;
+    clientIp?: string;
+  };
+  /** First ~200 chars of the first user message (UI identification aid). */
+  firstUserMessage?: string;
 }
 
 export interface SessionResolveResult {
   sessionId: string;
-  lookupType: 'explicit_header' | 'request_user' | 'prefix_chain' | 'root_anchor';
+  lookupType: SessionLookupType;
 }
+
+// Memory/safety bounds — intentionally NOT config-exposed: they tune memory,
+// not product behavior.
+const TAIL_WINDOW = 8;             // messages per registered tail window
+const MAX_CHAIN_PROBES = 32;       // assistant boundaries examined per resolve
+const MAX_TAIL_PROBES = 256;       // window probes examined per resolve
+const MAX_CHAIN_ENTRIES = 200_000; // global FIFO caps
+const MAX_TAIL_ENTRIES = 100_000;
+const MAX_ROOT_ENTRIES = 50_000;
+const ANCHOR_HEX = 20;             // anchor digest length
 
 /**
  * Session Monotonic Ratchet Manager
- * 
+ *
  * Core Objectives:
  * 1. Eliminate mid-conversation model downgrades caused by short follow-up questions
  *    ("thanks", "fix this line") to prevent intellectual degradation.
  * 2. Protect upstream Provider KV Prompt Caching from being invalidated due to model thrashing,
  *    maximizing FinOps cost savings (80%-95%).
- * 3. Support zero-header session tracking via Prefix Chain Hash + Root Anchor for standard
- *    OpenAI clients without sticky session headers.
+ * 3. Support zero-header session tracking for standard clients via layered
+ *    identity resolution (see resolveSessionId).
+ *
+ * Zero-header identity resolution (in priority order):
+ *   1. Explicit header / router_options.session_id
+ *   2. Embedded client session UUID — Claude Code sends
+ *      metadata.user_id = "user_{hash}_account_{uuid}_session_{uuid}";
+ *      the trailing UUID is a client-minted conversation id that survives
+ *      gateway restarts for free.
+ *   3. Raw request.user (OpenAI end-user field; NOTE: user-scoped, not
+ *      conversation-scoped — kept for backward compatibility).
+ *   4. Chain anchors — exact hash of the current history's head prefixes that
+ *      end at an assistant message (turn 2+ fast path; also matches branched /
+ *      regenerated histories sharing the head).
+ *   5. Tail anchors — hashes of trailing windows (length 3..TAIL_WINDOW, always
+ *      ending at an assistant message) of completed chains (clients that
+ *      truncate old turns to fit their context window resend a registered
+ *      suffix; the 3-message minimum keeps generic short exchanges from
+ *      cross-matching unrelated conversations — see probeTailAnchors).
+ *   6. Root anchor — deterministic hash of clientIp + FULL first user message;
+ *      re-anchors chains whose assistant bytes were rewritten in place.
+ *   7. Cold start — mint `sess_<24 random hex>`. Deterministic IDs would
+ *      collide across conversations that share a first message (a local
+ *      gateway sees 127.0.0.1 for everyone), so fresh entropy is minted once
+ *      and continuity is carried by the anchor maps instead.
+ *
+ * Known limits (documented, by design):
+ * - All anchor maps are in-memory: after a gateway restart, non-cooperating
+ *   clients get a fresh session (state was lost anyway; only trace grouping
+ *   splits). Clients sending embedded/explicit IDs are restart-proof.
+ * - Full summarization rewrites (compact replacing history with a summary
+ *   string) match no anchor — they intentionally start a new session.
  */
 export class SessionManager {
   private config: SessionConfig;
   private sessions = new Map<string, ConversationSession>();
-  private prefixToSession = new Map<string, string>(); // prefixHash -> sessionId
+  private chainAnchors = new Map<string, string>();  // 'C'-salted head-prefix hash -> sessionId
+  private tailAnchors = new Map<string, string>();   // 'T'-salted trailing-window hash -> sessionId
+  private rootToSession = new Map<string, string>(); // 'R'-salted first-user-message hash -> sessionId
   private readonly ttlMs: number;
   private readonly maxSessions: number;
 
@@ -49,30 +99,92 @@ export class SessionManager {
   }
 
   /**
-   * Generates a compact SHA-256 fingerprint for a sequence of messages.
+   * Canonical per-message serialization. MUST stay byte-stable: anchor keys
+   * are only ever compared against keys produced by this same function.
+   *
+   * FULL-FIDELITY on purpose: tool_calls, tool_call_id, name and non-text
+   * content parts are all hashed. A pure tool-call assistant turn (content
+   * null) must never serialize identically to a different one — lossy
+   * hashing here would give two distinct conversations identical anchor
+   * keys (false merge, the unrecoverable failure direction).
    */
-  public static hashMessages(messages: any[]): string {
-    const serialized = messages
-      .map(m => {
-        const role = m.role || 'user';
-        const content = typeof m.content === 'string'
-          ? m.content
-          : Array.isArray(m.content)
-            ? m.content.map((p: any) => p.text || '').join(' ')
-            : JSON.stringify(m.content || '');
-        return `${role}:${content}`;
-      })
-      .join('\n---\n');
-
-    return crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 20);
+  private static serializeMessage(m: any): string {
+    const role = m.role || 'user';
+    const content = typeof m.content === 'string'
+      ? m.content
+      : Array.isArray(m.content)
+        ? m.content.map((p: any) => {
+            if (p && typeof p === 'object') {
+              return typeof p.text === 'string'
+                ? `text:${p.text}`
+                : `${p.type || 'part'}:${JSON.stringify(p)}`;
+            }
+            return String(p ?? '');
+          }).join(' ')
+        : JSON.stringify(m.content ?? '');
+    let extra = '';
+    if (m.name) extra += `|name:${m.name}`;
+    if (m.tool_call_id) extra += `|tcid:${m.tool_call_id}`;
+    if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      extra += `|tcs:${JSON.stringify(m.tool_calls)}`;
+    }
+    return `${role}:${content}${extra}`;
   }
 
   /**
-   * Seamless Session Resolver:
-   * Priority 1: Explicit Header (x-session-id / x-conversation-id)
-   * Priority 2: OpenAI native request.user field
-   * Priority 3: Prefix Chain Hash -> For turn 2+, hashes all history excluding newest user prompt
-   * Priority 4: Root Anchor -> For turn 1 cold start, hashes client IP + first user message
+   * Salted hash of a message window. Salt isolates the anchor families from
+   * each other so the same message slice can never cross-match.
+   */
+  public static hashWindow(messages: any[], salt: string): string {
+    const h = crypto.createHash('sha256');
+    h.update(salt);
+    for (const m of messages) {
+      h.update(SessionManager.serializeMessage(m));
+      h.update('\n---\n');
+    }
+    return h.digest('hex').slice(0, ANCHOR_HEX);
+  }
+
+  private static assistantIndices(messages: any[]): number[] {
+    const idx: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i]?.role === 'assistant') idx.push(i);
+    }
+    return idx;
+  }
+
+  /**
+   * Deterministic root key: clientIp + FULL first user message (no truncation
+   * — 500-char prefixes of boilerplate first messages were the old collision
+   * source). clientIp adds nothing on a local gateway but is harmless.
+   */
+  private static rootHash(clientIp: string, messages: any[]): string {
+    const firstUser = messages.find(m => m?.role === 'user');
+    const content = firstUser ? SessionManager.serializeMessage(firstUser) : 'empty_root';
+    return crypto.createHash('sha256').update(`R\x00${clientIp}:${content}`).digest('hex').slice(0, 24);
+  }
+
+  /**
+   * Extract a client-embedded conversation id from a user identifier string.
+   * Recognizes the FULL Claude Code convention
+   *   user_{hex hash}_account_{uuid}_session_{uuid}
+   * (the same extraction peer gateways perform for observability tooling).
+   * The whole shape must match: a loose "_session_" suffix match would
+   * promote ordinary user-level ids that merely contain that marker to
+   * session level, falsely merging every conversation of that user. False
+   * exclusion is the safe direction — such ids fall through to the
+   * user-level layer and the chain anchors re-acquire the conversation from
+   * turn 2 (self-healing false split).
+   */
+  private static extractEmbeddedSessionId(user?: unknown): string | null {
+    if (!user || typeof user !== 'string') return null;
+    const m = /^user_[0-9a-f]{8,64}_account_[0-9a-f-]{8,64}_session_([0-9a-f-]{8,64})$/i.exec(user.trim());
+    if (!m) return null;
+    return `cc_${m[1]}`;
+  }
+
+  /**
+   * Seamless Session Resolver — see the class doc for the full priority list.
    */
   public resolveSessionId(
     request: ChatCompletionRequest,
@@ -91,51 +203,136 @@ export class SessionManager {
       return { sessionId: id.trim(), lookupType: 'explicit_header' };
     }
 
-    // 2. OpenAI Native request.user Probe
-    if (request.user && typeof request.user === 'string' && request.user.trim()) {
-      return { sessionId: request.user.trim(), lookupType: 'request_user' };
-    }
-
-    // Explicit router_options.session_id
+    // 2. Explicit router_options.session_id
     if (request.router_options?.session_id) {
       return { sessionId: request.router_options.session_id.trim(), lookupType: 'explicit_header' };
     }
 
-    const messages = request.messages || [];
-
-    // 3. Prefix Chain Hash Probe (Turn 2+, messages.length >= 2)
-    // Exclude current turn's prompt; history contains prior assistant response (globally collision-free)
-    if (messages.length >= 2) {
-      const priorHistory = messages.slice(0, -1);
-      const prefixHash = SessionManager.hashMessages(priorHistory);
-      const matchedSessionId = this.prefixToSession.get(prefixHash);
-      if (matchedSessionId) {
-        return { sessionId: matchedSessionId, lookupType: 'prefix_chain' };
-      }
+    // 3. Embedded client session UUID (Claude Code metadata.user_id)
+    const embedded = SessionManager.extractEmbeddedSessionId(request.user);
+    if (embedded) {
+      return { sessionId: embedded, lookupType: 'embedded_user_id' };
     }
 
-    // 4. Root Anchor Probe (Turn 1 cold start)
-    const firstUserMsg = messages.find(m => m.role === 'user');
-    const rootContent = firstUserMsg
-      ? (typeof firstUserMsg.content === 'string' ? firstUserMsg.content : JSON.stringify(firstUserMsg.content))
-      : 'empty_root';
-    
-    const rootCombined = `${clientIp}:${rootContent.slice(0, 500)}`;
-    const rootHash = 'sess_' + crypto.createHash('sha256').update(rootCombined).digest('hex').slice(0, 16);
+    // 4. OpenAI Native request.user Probe
+    if (request.user && typeof request.user === 'string' && request.user.trim()) {
+      return { sessionId: request.user.trim(), lookupType: 'request_user' };
+    }
 
-    return { sessionId: rootHash, lookupType: 'root_anchor' };
+    const messages = request.messages || [];
+
+    // Cold start: nothing to anchor on — either a literal turn 1 (single
+    // message) or harness turn 1 ([system, user]: no completed exchange yet).
+    const priorHistory = messages.slice(0, -1);
+    if (messages.length < 2 || !priorHistory.some(m => m?.role === 'assistant')) {
+      return this.mintColdStart(clientIp, messages);
+    }
+
+    // 5. Chain anchors (turn 2+ fast path; newest boundary first, so a live
+    // conversation hits on the first probe).
+    const chainHit = this.probeChainAnchors(priorHistory);
+    if (chainHit) return { sessionId: chainHit, lookupType: 'prefix_chain' };
+
+    // 6. Tail anchors (history truncated to fit a context window).
+    const tailHit = this.probeTailAnchors(priorHistory);
+    if (tailHit) return { sessionId: tailHit, lookupType: 'tail_anchor' };
+
+    // 7. Root anchor (first user message intact, assistant bytes rewritten).
+    // A tombstoned key ('' — two different sessions claimed the same first
+    // message) is falsy here and safely falls through to a fresh mint.
+    const rooted = this.rootToSession.get(SessionManager.rootHash(clientIp, messages));
+    if (rooted) {
+      return { sessionId: rooted, lookupType: 'root_anchor' };
+    }
+
+    // 8. Unknown / fully rewritten history: new session.
+    return this.mintColdStart(clientIp, messages);
+  }
+
+  private probeChainAnchors(priorHistory: any[]): string | null {
+    const boundaries = SessionManager.assistantIndices(priorHistory);
+    let probes = 0;
+    for (let b = boundaries.length - 1; b >= 0 && probes < MAX_CHAIN_PROBES; b--, probes++) {
+      const hash = SessionManager.hashWindow(priorHistory.slice(0, boundaries[b] + 1), 'C');
+      const hit = this.chainAnchors.get(hash);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  private probeTailAnchors(priorHistory: any[]): string | null {
+    const boundaries = SessionManager.assistantIndices(priorHistory);
+    let probes = 0;
+    for (let b = boundaries.length - 1; b >= 0 && probes < MAX_TAIL_PROBES; b--) {
+      const end = boundaries[b];
+      const startMin = Math.max(0, end - TAIL_WINDOW + 1);
+      // Windows are length >= 3 and always end at the boundary, so a probe
+      // key always carries an assistant message PLUS a distinguishing third
+      // message. Length-2 windows ([user, assistant]) are location-free keys
+      // whose content can be byte-identical across conversations of the same
+      // harness (generic exchanges like "继续"/"好的") — a false-merge vector.
+      // The extra message flips that failure into a self-healing false split.
+      for (let s = end - 2; s >= startMin && probes < MAX_TAIL_PROBES; s--, probes++) {
+        const hash = SessionManager.hashWindow(priorHistory.slice(s, end + 1), 'T');
+        const hit = this.tailAnchors.get(hash);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Mint a fresh session id with random entropy (collision-free by
+   * construction) and register its deterministic root key so later turns
+   * whose chain was rewritten in place can still re-anchor to it.
+   */
+  private mintColdStart(clientIp: string, messages: any[]): SessionResolveResult {
+    const sessionId = 'sess_' + crypto.randomBytes(12).toString('hex');
+    if (this.config.enabled && this.config.strategy !== 'stateless') {
+      this.registerRoot(SessionManager.rootHash(clientIp, messages), sessionId);
+    }
+    return { sessionId, lookupType: 'cold_start' };
+  }
+
+  /**
+   * Register a root key → sessionId claim. If a DIFFERENT session already
+   * claims the same first message, the key is ambiguous (two live
+   * conversations share it) and gets tombstoned to '': no session may
+   * re-anchor through it, because attaching to the wrong one would be a
+   * false merge — the exact failure class this design exists to prevent.
+   * Single-claim keys keep working normally.
+   */
+  private registerRoot(key: string, sessionId: string): void {
+    const existing = this.rootToSession.get(key);
+    if (existing === undefined) {
+      this.setBounded(this.rootToSession, key, sessionId, MAX_ROOT_ENTRIES);
+    } else if (existing !== sessionId && existing !== '') {
+      this.rootToSession.set(key, '');
+    }
+  }
+
+  /** FIFO-bounded map set (Map preserves insertion order). */
+  private setBounded(map: Map<string, string>, key: string, value: string, cap: number): void {
+    if (map.has(key)) map.delete(key); // refresh insertion order
+    map.set(key, value);
+    while (map.size > cap) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
   }
 
   /**
    * Applies the Monotonic Session Ratchet policy.
-   * 
+   *
    * - Upgrade (T_proposed > T_session): Allowed. Upgrades tier and pins new model instance.
    * - Downgrade (T_proposed <= T_session): Blocked. Enforces historical peak tier and reuses pinned model.
    */
   public applyRatchet(
     sessionId: string,
     proposedDecision: RoutingDecision,
-    resolveModelForTier: (tier: TierLevel) => TierModelConfig
+    resolveModelForTier: (tier: TierLevel) => TierModelConfig,
+    opts?: { allowIntercept?: boolean }
   ): {
     finalDecision: RoutingDecision;
     session: ConversationSession;
@@ -190,10 +387,20 @@ export class SessionManager {
     const currentMaxRank = TIER_RANK[session.maxTier] || 2;
     const proposedRank = TIER_RANK[proposedDecision.targetTier] || 2;
 
+    // Explicit-user-choice mode (allowIntercept=false): the turn is recorded
+    // and a higher proposed tier still escalates the ceiling, but the session
+    // NEVER rewrites the proposed tier (no sticky lock, no downgrade
+    // interception) — the client named exactly what to run.
+    const intercept = opts?.allowIntercept !== false;
+
     if (this.config.strategy === 'sticky') {
       session.turnCount++;
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
+
+      if (!intercept) {
+        return { finalDecision: proposedDecision, session, ratchetApplied: false };
+      }
 
       return {
         finalDecision: {
@@ -233,6 +440,10 @@ export class SessionManager {
       session.lastActiveAt = now;
       session.historyTiers.push(session.maxTier);
 
+      if (!intercept) {
+        return { finalDecision: proposedDecision, session, ratchetApplied: false };
+      }
+
       const ratchetReason = isDowngradeAttempt
         ? `[Session Monotonic Ratchet] Downgrade intercepted, preserved peak ${session.maxTier} (Pinned model: ${session.pinnedModel}, KV cache preserved); Single turn proposed ${proposedDecision.targetTier} (${proposedDecision.reason})`
         : `[Session Preserved] Maintained ${session.maxTier} (Pinned model: ${session.pinnedModel})`;
@@ -250,30 +461,85 @@ export class SessionManager {
   }
 
   /**
-   * Post-turn registration:
-   * Hashes the full conversation chain including assistant response as index for next turn.
+   * Post-turn registration. Builds two anchor families over the completed
+   * chain (requestMessages + assistant response; the orchestrator passes the
+   * PRE-compression fingerprint so keys are derived from original client
+   * bytes — see orchestrator step 2B):
+   *
+   * - Chain anchors: hash of every head prefix ending at an assistant
+   *   message. One chained-hashing pass (copy() per boundary).
+   * - Tail anchors: every length-2..TAIL_WINDOW window of the trailing
+   *   TAIL_WINDOW messages that ends at an assistant message. These are what
+   *   let a truncated history (client dropped old turns) find its way back.
+   *
+   * Also refreshes the deterministic root key (covers sessions born from
+   * explicit headers, whose cold start never minted one).
    */
   public registerCompletedTurn(
     sessionId: string,
     requestMessages: any[],
-    assistantResponseContent: string
+    assistantResponseContent: string,
+    clientIp = '127.0.0.1'
   ): void {
     if (!this.config.enabled || this.config.strategy === 'stateless') return;
 
     try {
-      const completedHistory = [
-        ...requestMessages,
+      const chain = [
+        ...(requestMessages || []),
         { role: 'assistant', content: assistantResponseContent },
       ];
-      const prefixHash = SessionManager.hashMessages(completedHistory);
-      this.prefixToSession.set(prefixHash, sessionId);
+
+      // Chain anchors — single pass with per-boundary copy().
+      const hasher = crypto.createHash('sha256');
+      hasher.update('C');
+      for (let i = 0; i < chain.length; i++) {
+        hasher.update(SessionManager.serializeMessage(chain[i]));
+        hasher.update('\n---\n');
+        if (chain[i]?.role === 'assistant') {
+          const digest = hasher.copy().digest('hex').slice(0, ANCHOR_HEX);
+          this.setBounded(this.chainAnchors, digest, sessionId, MAX_CHAIN_ENTRIES);
+        }
+      }
+
+      // Tail anchors — suffix windows (length 3..TAIL_WINDOW, always ending
+      // at an assistant boundary) of the trailing TAIL_WINDOW messages.
+      const tail = chain.slice(-TAIL_WINDOW);
+      for (const end of SessionManager.assistantIndices(tail)) {
+        const startMin = Math.max(0, end - TAIL_WINDOW + 1);
+        for (let s = end - 2; s >= startMin; s--) {
+          const hash = SessionManager.hashWindow(tail.slice(s, end + 1), 'T');
+          this.setBounded(this.tailAnchors, hash, sessionId, MAX_TAIL_ENTRIES);
+        }
+      }
+
+      // Root key refresh (ambiguity-guarded: see registerRoot).
+      this.registerRoot(SessionManager.rootHash(clientIp, requestMessages || []), sessionId);
 
       const session = this.sessions.get(sessionId);
       if (session) {
         session.lastActiveAt = Date.now();
       }
     } catch {
-      // Graceful error handling
+      // Graceful error handling: session tracking must never break routing.
+    }
+  }
+
+  /**
+   * Attach birth metadata to a session. First write wins — origin is
+   * immutable, exactly like the session id it describes. Later calls with
+   * different values are ignored (no metadata drift).
+   */
+  public attachOrigin(
+    sessionId: string,
+    origin: { wire?: string; lookupType?: SessionLookupType },
+    clientIp?: string,
+    firstUserMessage?: string
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.origin) return;
+    session.origin = { ...origin, ...(clientIp ? { clientIp } : {}) };
+    if (firstUserMessage && !session.firstUserMessage) {
+      session.firstUserMessage = firstUserMessage.slice(0, 200);
     }
   }
 
@@ -287,9 +553,11 @@ export class SessionManager {
 
   public deleteSession(sessionId: string): boolean {
     const existed = this.sessions.delete(sessionId);
-    for (const [hash, sessId] of this.prefixToSession.entries()) {
-      if (sessId === sessionId) {
-        this.prefixToSession.delete(hash);
+    // Purge anchor keys pointing at the deleted session. Scans are O(map) but
+    // deletes are rare (manual UI delete / eviction at maxSessions capacity).
+    for (const map of [this.chainAnchors, this.tailAnchors, this.rootToSession]) {
+      for (const [hash, sessId] of map.entries()) {
+        if (sessId === sessionId) map.delete(hash);
       }
     }
     return existed;
@@ -309,7 +577,9 @@ export class SessionManager {
 
   public clear(): void {
     this.sessions.clear();
-    this.prefixToSession.clear();
+    this.chainAnchors.clear();
+    this.tailAnchors.clear();
+    this.rootToSession.clear();
   }
 
   private cleanupExpiredSessions(): void {
