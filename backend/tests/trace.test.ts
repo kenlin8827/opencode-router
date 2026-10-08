@@ -4,6 +4,18 @@ import { FastifyInstance } from 'fastify';
 import { createServer } from '../src/server.js';
 import { loadConfig } from '../src/config/index.js';
 
+/**
+ * Auth mirror of server.ts preHandler key resolution: when the local
+ * config.yaml defines apiKeys, inference endpoints require a valid key even
+ * though the test config passes none (disk keys win over the test config by
+ * design). Reuse the first enabled disk key so the e2e cases run both on
+ * machines with a populated config.yaml and in clean CI checkouts.
+ */
+const authHeaders = (): Record<string, string> => {
+  const diskKeys = (loadConfig().apiKeys || []).filter(k => k.enabled !== false && k.key);
+  return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
+};
+
 describe('Session Details & Trajectory Trace Observability Endpoints', () => {
   let app: FastifyInstance;
 
@@ -20,11 +32,9 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
   it('POST /v1/chat/completions should attach X-OCR-Trace-ID and record execution trajectory', async () => {
     const res = await app.inject({
+      headers: { ...authHeaders(), 'x-session-id': 'sess_unit_test_trace_1' },
       method: 'POST',
       url: '/v1/chat/completions',
-      headers: {
-        'x-session-id': 'sess_unit_test_trace_1',
-      },
       payload: {
         model: 'auto',
         messages: [{ role: 'user', content: 'Hello, what is 2 + 2?' }],
@@ -42,6 +52,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
   it('GET /v1/sessions should list active sessions with traceCount', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions',
     });
@@ -60,6 +71,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
   it('GET /v1/sessions/:id should return single session details with recent traces', async () => {
     // 1. Success case
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions/sess_unit_test_trace_1',
     });
@@ -74,6 +86,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // 2. 404 Not Found case
     const notFoundRes = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions/non_existent_session_id',
     });
@@ -83,11 +96,9 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
   it('GET /v1/sessions/:id/traces should return chronological trajectory for the session', async () => {
     // Make a 2nd turn on the same session
     await app.inject({
+      headers: { ...authHeaders(), 'x-session-id': 'sess_unit_test_trace_1' },
       method: 'POST',
       url: '/v1/chat/completions',
-      headers: {
-        'x-session-id': 'sess_unit_test_trace_1',
-      },
       payload: {
         model: 'auto',
         messages: [
@@ -99,6 +110,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     });
 
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions/sess_unit_test_trace_1/traces',
     });
@@ -127,6 +139,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
   it('GET /v1/traces should list global traces and support filtering by session_id', async () => {
     // 1. Global list
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/traces?limit=10',
     });
@@ -138,6 +151,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // 2. Filtered by session_id
     const filterRes = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/traces?session_id=sess_unit_test_trace_1',
     });
@@ -150,6 +164,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
   it('GET /v1/traces/:id should return single trace or 404', async () => {
     // Get existing trace ID from session traces
     const listRes = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions/sess_unit_test_trace_1/traces',
     });
@@ -158,6 +173,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // 1. Success query
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: `/v1/traces/${sampleTraceId}`,
     });
@@ -169,6 +185,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // 2. 404 query
     const notFoundRes = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/traces/trace_non_existent_12345',
     });
@@ -177,6 +194,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
   it('DELETE /v1/sessions/:id should delete the session and its traces', async () => {
     const delRes = await app.inject({
+      headers: authHeaders(),
       method: 'DELETE',
       url: '/v1/sessions/sess_unit_test_trace_1',
     });
@@ -186,6 +204,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // Verify session is gone
     const checkRes = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions/sess_unit_test_trace_1',
     });
@@ -193,6 +212,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
 
     // Verify traces for this session are cleared
     const traceRes = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/sessions/sess_unit_test_trace_1/traces',
     });

@@ -3,12 +3,25 @@ import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 
+/**
+ * Auth mirror of server.ts preHandler key resolution: when the local
+ * config.yaml defines apiKeys, inference endpoints require a valid key even
+ * though the test config passes none (disk keys win over the test config by
+ * design). Reuse the first enabled disk key so the e2e cases run both on
+ * machines with a populated config.yaml and in clean CI checkouts.
+ */
+const authHeaders = (): Record<string, string> => {
+  const diskKeys = (loadConfig().apiKeys || []).filter(k => k.enabled !== false && k.key);
+  return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
+};
+
 describe('Fastify Gateway Server & OpenAI Endpoints', () => {
   const config = loadConfig();
   const { app } = createServer(config, true); // mockMode = true
 
   it('GET /health should return 200 and healthy status', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/health',
     });
@@ -21,6 +34,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('GET /v1/models should return virtual cascading models (auto) and physical models', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/models',
     });
@@ -43,6 +57,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('GET /v1/models/:model should return single model definition', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/models/auto',
     });
@@ -55,6 +70,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('POST /v1/chat/completions with model="auto" should auto-route and attach FinOps headers', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'POST',
       url: '/v1/chat/completions',
       payload: {
@@ -76,6 +92,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('POST /v1/chat/completions with stream=true should stream Server-Sent Events', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'POST',
       url: '/v1/chat/completions',
       payload: {
@@ -94,6 +111,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('POST /v1/messages (Anthropic protocol) should auto-route and return a message envelope', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'POST',
       url: '/v1/messages',
       payload: {
@@ -120,6 +138,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('POST /v1/messages with stream=true should emit Anthropic SSE event sequence', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'POST',
       url: '/v1/messages',
       payload: {
@@ -143,6 +162,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('POST /v1/messages without messages should return an Anthropic-style 400 error', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'POST',
       url: '/v1/messages',
       payload: { model: 'auto', max_tokens: 64 },
@@ -156,6 +176,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
   it('GET /v1/metrics should expose FinOps economics summary', async () => {
     const res = await app.inject({
+      headers: authHeaders(),
       method: 'GET',
       url: '/v1/metrics',
     });
