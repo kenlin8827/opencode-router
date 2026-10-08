@@ -53,7 +53,7 @@ export class PipelineOrchestrator {
     this.tracker = tracker;
     this.flywheel = new FlywheelCollector(config.flywheel);
     this.sessionManager = sessionManager || new SessionManager(config.session);
-    this.traceTracker = new TraceTracker();
+    this.traceTracker = new TraceTracker(5000, config.tracePersist);
     this.captureRecorder = new CaptureRecorder(config.capture);
 
     // Lookup baseline pricing for FinOps dollar calculation

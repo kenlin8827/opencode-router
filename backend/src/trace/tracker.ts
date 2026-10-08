@@ -1,4 +1,8 @@
+import path from 'node:path';
 import { TierLevel } from '../types/router.js';
+import { getOcrHomeDir } from '../cli/paths.js';
+import type { TracePersistConfig } from '../config/types.js';
+import { openTraceStore, type TraceStore } from './persist.js';
 
 export interface ExecutionTrace {
   traceId: string;
@@ -79,15 +83,55 @@ export class TraceTracker {
   private sessionTraceIndex = new Map<string, string[]>(); // sessionId -> traceId[]
   private traceOrder: string[] = []; // Ring buffer order for LRU eviction
   private readonly maxTraces: number;
+  // Durable layer (optional): write-through SQLite + boot replay + aged sweep.
+  private store?: TraceStore;
+  private storeWanted = false;
+  private retentionDays = 7;
+  private maxTotalBytes = 100 * 1024 * 1024;
+  private pending: ExecutionTrace[] = []; // recorded before the store finished opening
+  private sweepTimer?: ReturnType<typeof setInterval>;
+  /** Resolves once the persistent store is open and boot-replayed (or skipped). */
+  readonly whenReady: Promise<void>;
 
-  constructor(maxTraces = 5000) {
+  constructor(maxTraces = 5000, persist?: TracePersistConfig) {
     this.maxTraces = maxTraces;
+    this.storeWanted = Boolean(persist?.enabled);
+    this.retentionDays = persist?.retentionDays ?? 7;
+    this.maxTotalBytes = (persist?.maxTotalMB ?? 100) * 1024 * 1024;
+    this.whenReady = this.initPersist(persist).catch(() => {});
+  }
+
+  private async initPersist(persist?: TracePersistConfig): Promise<void> {
+    if (!this.storeWanted) return;
+    const dir = persist?.dir || path.join(getOcrHomeDir(), 'traces');
+    const store = await openTraceStore(dir);
+    if (!store) return; // runtime lacks bun:sqlite — memory-only mode
+    this.store = store;
+    // Boot replay: newest-last so the LRU ring keeps the most recent window.
+    for (const t of store.loadRecent(this.maxTraces)) this.insertMemory(t);
+    for (const t of this.pending.splice(0)) store.insert(t);
+    this.sweep();
+    this.sweepTimer = setInterval(() => this.sweep(), 3_600_000);
+    this.sweepTimer.unref?.();
   }
 
   /**
-   * Record a new request trajectory entry
+   * Record a new request trajectory entry (write-through to the durable
+   * store when persistence is enabled).
    */
   public record(trace: ExecutionTrace): void {
+    this.insertMemory(trace);
+    if (this.store) {
+      this.store.insert(trace);
+    } else if (this.storeWanted) {
+      // Store still opening — buffer and flush on ready (bounded like the ring).
+      this.pending.push(trace);
+      if (this.pending.length > this.maxTraces) this.pending.shift();
+    }
+  }
+
+  /** Memory-only insert: LRU ring eviction + indexes. Used for boot replay. */
+  private insertMemory(trace: ExecutionTrace): void {
     // 1. If buffer reached max capacity, evict oldest
     while (this.traceOrder.length >= this.maxTraces) {
       const oldestId = this.traceOrder.shift();
@@ -237,14 +281,33 @@ export class TraceTracker {
   }
 
   /**
-   * Count total recorded traces for a session
+   * Per-session aggregates for the console's session table, computed in one
+   * pass over the session's chronological traces: request count, model
+   * switches (adjacent modelUsed changes), cache hits and cumulative saved
+   * cost.
    */
-  public getTraceCountForSession(sessionId: string): number {
-    return (this.sessionTraceIndex.get(sessionId) || []).length;
+  public getSessionAggregates(sessionId: string): {
+    traceCount: number;
+    switchCount: number;
+    cacheHits: number;
+    savedCostUsd: number;
+  } {
+    const traces = this.getTracesBySession(sessionId);
+    let switchCount = 0;
+    let cacheHits = 0;
+    let savedCostUsd = 0;
+    let prevModel: string | null = null;
+    for (const t of traces) {
+      if (prevModel !== null && t.execution.modelUsed !== prevModel) switchCount++;
+      prevModel = t.execution.modelUsed;
+      if (t.finops.cachedPromptTokens > 0) cacheHits++;
+      savedCostUsd += t.finops.savedCostUsd;
+    }
+    return { traceCount: traces.length, switchCount, cacheHits, savedCostUsd };
   }
 
   /**
-   * Remove traces for a specific session
+   * Remove traces for a specific session (memory + durable store)
    */
   public deleteBySession(sessionId: string): void {
     const traceIds = this.sessionTraceIndex.get(sessionId) || [];
@@ -254,6 +317,30 @@ export class TraceTracker {
       if (idx !== -1) this.traceOrder.splice(idx, 1);
     }
     this.sessionTraceIndex.delete(sessionId);
+    this.store?.deleteBySession(sessionId);
+  }
+
+  /** Distinct session ids known to the tracker (live + boot-replayed). */
+  public getSessionIds(): string[] {
+    return [...this.sessionTraceIndex.keys()];
+  }
+
+  public isPersisted(): boolean {
+    return Boolean(this.store);
+  }
+
+  /** Aged retention sweep: delete-by-age first, then oldest-first size trim. */
+  private sweep(): void {
+    this.store?.sweep(this.retentionDays * 86_400_000, this.maxTotalBytes);
+  }
+
+  public close(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = undefined;
+    }
+    this.store?.close();
+    this.store = undefined;
   }
 
   /**

@@ -53,6 +53,11 @@ const DEFAULT_CONFIG: RouterConfig = {
     maxTotalMB: 512,
     maxBodyBytes: 65536,
   },
+  tracePersist: {
+    enabled: true, // default on: console history survives restarts (pure observability data)
+    retentionDays: 7,
+    maxTotalMB: 100,
+  },
   circuitBreaker: {
     enabled: true,
     failureThreshold: 3,
@@ -135,6 +140,7 @@ export function loadConfig(configPath?: string): RouterConfig {
           caveman: { ...DEFAULT_CONFIG.compression?.caveman, ...parsed?.compression?.caveman },
         },
         capture: { ...DEFAULT_CONFIG.capture, ...parsed?.capture },
+        tracePersist: { ...DEFAULT_CONFIG.tracePersist, ...parsed?.tracePersist },
         circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...parsed?.circuitBreaker },
         retry: {
           enabled: parsed?.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,

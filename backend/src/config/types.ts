@@ -240,8 +240,15 @@ export interface CaptureConfig {
   enabled?: boolean; // master switch; default false
   dir?: string; // default: ~/.opencode-router/capture
   retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
-  maxTotalMB?: number; // default 512; oldest date dirs are deleted first when exceeded
-  maxBodyBytes?: number; // default 65536; truncation budget applied to request and response separately
+  maxTotalMB?: number; // default 2048; oldest date dirs are deleted first when exceeded
+  maxBodyBytes?: number; // default 524288 (512 KB); truncation budget applied to request and response separately
+}
+
+export interface TracePersistConfig {
+  enabled?: boolean; // default true
+  dir?: string; // default: ~/.opencode-router/traces (traces.db)
+  retentionDays?: number; // default 7; rows older than now-N are deleted (at boot + hourly)
+  maxTotalMB?: number; // default 100; oldest rows deleted first when the db exceeds the budget
 }
 
 /**
@@ -266,6 +273,7 @@ export interface RouterConfig {
   proxy?: ProxyConfig;
   compression?: CompressionConfig;
   capture?: CaptureConfig;
+  tracePersist?: TracePersistConfig;
   logging?: LoggingConfig;
   catalog?: CatalogConfig;
   tiers?: TiersConfig;
