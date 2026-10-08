@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
 import { LLMProvider } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
-import { ChatCompletionRequest, ChatCompletionResponse, ChatMessageContentPart } from '../types/openai.js';
+import { ChatCompletionRequest, ChatCompletionResponse, ChatMessageContentPart, ToolCall } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch } from '../utils/proxy.js';
 
@@ -8,7 +9,129 @@ import { proxiedFetch } from '../utils/proxy.js';
  * ADR-0011: OpenAI Responses API wire (`@ai-sdk/openai`) — POST {base}/responses.
  * Serves providers (or single models, via model-level npm override) that reject
  * chat/completions with `ModelProtocolUnsupported` — e.g. Zen's gpt-6-luna.
+ *
+ * Tools are fully mapped both directions (2026-10): request.tools → payload
+ * tools (identical flat function shape), assistant tool_calls in history →
+ * function_call items, tool role messages → function_call_output items, and
+ * upstream function_call output items → chat tool_calls. Without this, a
+ * /v1/responses tool-loop client routed here would silently lose tool calling.
  */
+
+/** Parse tool arguments into an object; never throws (tool loops must survive). */
+function parseArgs(raw: unknown): Record<string, any> {
+  if (raw && typeof raw === 'object') return raw as Record<string, any>;
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? v : { result: v };
+  } catch {
+    return { result: raw };
+  }
+}
+
+/** Pure payload builder: chat-completions request → OpenAI Responses payload. */
+export function buildResponsesPayload(request: ChatCompletionRequest, model: ModelRegistration): Record<string, any> {
+  const instructions: string[] = [];
+  const input: any[] = [];
+  for (const msg of request.messages) {
+    if (msg.role === 'system' || msg.role === 'developer') {
+      instructions.push(typeof msg.content === 'string' ? msg.content : textOf(msg.content));
+      continue;
+    }
+    if (msg.role === 'tool') {
+      input.push({
+        type: 'function_call_output',
+        call_id: msg.tool_call_id || '',
+        output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+      });
+      continue;
+    }
+    const role = msg.role === 'assistant' ? 'assistant' : 'user';
+    if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      const text = typeof msg.content === 'string' ? msg.content : textOf(msg.content);
+      if (text) input.push({ role, content: text });
+      for (const tc of msg.tool_calls) {
+        input.push({ type: 'function_call', call_id: tc.id, name: tc.function.name, arguments: tc.function.arguments });
+      }
+      continue;
+    }
+    if (typeof msg.content === 'string') {
+      input.push({ role, content: msg.content });
+    } else {
+      input.push({
+        role,
+        content: msg.content.map((p) =>
+          p.type === 'text'
+            ? { type: 'input_text', text: p.text || '' }
+            : { type: 'input_image', image_url: (p as any).image_url?.url }
+        ),
+      });
+    }
+  }
+  const payload: Record<string, any> = {
+    model: model.upstreamModel,
+    input,
+    stream: false,
+  };
+  const joined = instructions.filter(Boolean).join('\n\n');
+  if (joined) payload.instructions = joined;
+  if (request.max_tokens != null) payload.max_output_tokens = request.max_tokens;
+  else if (request.max_completion_tokens != null) payload.max_output_tokens = request.max_completion_tokens;
+  if (request.temperature != null) payload.temperature = request.temperature;
+  if (request.top_p != null) payload.top_p = request.top_p;
+  if (request.tools?.length) payload.tools = request.tools;
+  if (request.reasoning_effort) payload.reasoning = { effort: request.reasoning_effort };
+  return payload;
+}
+
+/** Pure response mapper: OpenAI Responses payload → chat-completions response. */
+export function responsesToChatCompletion(data: any, model: ModelRegistration): ChatCompletionResponse {
+  let text = '';
+  const toolCalls: ToolCall[] = [];
+  for (const o of data.output || []) {
+    if (o.type === 'message') {
+      text += (o.content || [])
+        .filter((c: any) => c.type === 'output_text')
+        .map((c: any) => c.text)
+        .join('');
+    } else if (o.type === 'function_call') {
+      toolCalls.push({
+        id: o.call_id || o.id || `call_${crypto.randomBytes(8).toString('hex')}`,
+        type: 'function',
+        function: {
+          name: o.name,
+          arguments: typeof o.arguments === 'string' ? o.arguments : JSON.stringify(o.arguments ?? {}),
+        },
+      });
+    }
+  }
+  const cached = data.usage?.input_tokens_details?.cached_tokens || 0;
+
+  return {
+    id: data.id || `resp-${Date.now()}`,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: model.id,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: text,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: toolCalls.length ? 'tool_calls' : data.status === 'incomplete' ? 'length' : 'stop',
+      },
+    ],
+    usage: {
+      prompt_tokens: data.usage?.input_tokens ?? 0,
+      completion_tokens: data.usage?.output_tokens ?? 0,
+      total_tokens: data.usage?.total_tokens ?? (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0),
+      prompt_tokens_details: { cached_tokens: cached },
+    },
+  };
+}
+
 export class ResponsesProvider implements LLMProvider {
   public name: string;
   private config: ProviderConfig;
@@ -16,44 +139,6 @@ export class ResponsesProvider implements LLMProvider {
   constructor(config: ProviderConfig) {
     this.name = config.name;
     this.config = config;
-  }
-
-  /** OpenAI messages → Responses input items; system/developer → instructions. */
-  private buildPayload(request: ChatCompletionRequest, model: ModelRegistration): Record<string, any> {
-    const instructions: string[] = [];
-    const input: any[] = [];
-    for (const msg of request.messages) {
-      if (msg.role === 'system' || msg.role === 'developer') {
-        instructions.push(typeof msg.content === 'string' ? msg.content : textOf(msg.content));
-        continue;
-      }
-      const role = msg.role === 'assistant' ? 'assistant' : 'user';
-      if (typeof msg.content === 'string') {
-        input.push({ role, content: msg.content });
-      } else {
-        input.push({
-          role,
-          content: msg.content.map((p) =>
-            p.type === 'text'
-              ? { type: 'input_text', text: p.text || '' }
-              : { type: 'input_image', image_url: (p as any).image_url?.url }
-          ),
-        });
-      }
-    }
-    const payload: Record<string, any> = {
-      model: model.upstreamModel,
-      input,
-      stream: false,
-    };
-    const joined = instructions.filter(Boolean).join('\n\n');
-    if (joined) payload.instructions = joined;
-    if (request.max_tokens != null) payload.max_output_tokens = request.max_tokens;
-    else if (request.max_completion_tokens != null) payload.max_output_tokens = request.max_completion_tokens;
-    if (request.temperature != null) payload.temperature = request.temperature;
-    if (request.top_p != null) payload.top_p = request.top_p;
-    if (request.stop?.length) payload.text = { format: { type: 'text' } };
-    return payload;
   }
 
   public async createCompletion(
@@ -76,7 +161,7 @@ export class ResponsesProvider implements LLMProvider {
         {
           method: 'POST',
           headers,
-          body: JSON.stringify(this.buildPayload(request, model)),
+          body: JSON.stringify(buildResponsesPayload(request, model)),
           signal: controller.signal,
         },
         { provider: this.config.name, model: model.id }
@@ -97,33 +182,7 @@ export class ResponsesProvider implements LLMProvider {
       }
 
       const data = (await res.json()) as any;
-      const text = (data.output || [])
-        .filter((o: any) => o.type === 'message')
-        .flatMap((o: any) => o.content || [])
-        .filter((c: any) => c.type === 'output_text')
-        .map((c: any) => c.text)
-        .join('');
-      const cached = data.usage?.input_tokens_details?.cached_tokens || 0;
-
-      return {
-        id: data.id || `resp-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: model.id,
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: text },
-            finish_reason: data.status === 'incomplete' ? 'length' : 'stop',
-          },
-        ],
-        usage: {
-          prompt_tokens: data.usage?.input_tokens ?? 0,
-          completion_tokens: data.usage?.output_tokens ?? 0,
-          total_tokens: data.usage?.total_tokens ?? (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0),
-          prompt_tokens_details: { cached_tokens: cached },
-        },
-      };
+      return responsesToChatCompletion(data, model);
     } finally {
       clearTimeout(timeout);
     }

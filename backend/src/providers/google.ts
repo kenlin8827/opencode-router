@@ -1,13 +1,176 @@
+import crypto from 'node:crypto';
 import { LLMProvider } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
-import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
+import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch } from '../utils/proxy.js';
 
 /**
  * ADR-0011: Google Generative Language wire (`@ai-sdk/google`) —
  * POST {base}/models/{model}:generateContent with x-goog-api-key.
+ *
+ * Tools are fully mapped both directions (2026-10): request.tools →
+ * functionDeclarations, assistant tool_calls in history → functionCall parts,
+ * tool role messages → functionResponse parts (call_id resolved to function
+ * name via a first-pass scan), and upstream functionCall parts → chat
+ * tool_calls. Without this, tool-driving clients routed to Gemini upstreams
+ * silently lose tools.
  */
+
+/** Parse tool arguments into an object; never throws (tool loops must survive). */
+function parseArgs(raw: unknown): Record<string, any> {
+  if (raw && typeof raw === 'object') return raw as Record<string, any>;
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? v : { result: v };
+  } catch {
+    return { result: raw };
+  }
+}
+
+function wrapResponse(v: Record<string, any>): Record<string, any> {
+  // Gemini functionResponse.response must be a structured object.
+  return Object.keys(v).length ? v : { result: 'ok' };
+}
+
+const DATA_URL_RE = /^data:(.+?);base64,(.*)$/;
+
+/** Pure payload builder: chat-completions request → Gemini generateContent payload. */
+export function buildGooglePayload(request: ChatCompletionRequest, model: ModelRegistration): Record<string, any> {
+  // Gemini's functionResponse parts require the FUNCTION NAME (not call_id);
+  // resolve call ids by scanning assistant tool_calls first.
+  const nameByCall = new Map<string, string>();
+  for (const m of request.messages) {
+    for (const tc of m.tool_calls || []) nameByCall.set(tc.id, tc.function.name);
+  }
+
+  const systemText = request.messages
+    .filter((m) => m.role === 'system' || m.role === 'developer')
+    .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+    .join('\n\n');
+
+  const contents = request.messages
+    .filter((m) => m.role !== 'system' && m.role !== 'developer')
+    .map((m) => {
+      if (m.role === 'tool') {
+        return {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: nameByCall.get(m.tool_call_id || '') || 'unknown_function',
+                response: wrapResponse(parseArgs(m.content as any)),
+              },
+            },
+          ],
+        };
+      }
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        const parts: any[] = [];
+        const text = typeof m.content === 'string' ? m.content : '';
+        if (text) parts.push({ text });
+        for (const tc of m.tool_calls) {
+          parts.push({ functionCall: { name: tc.function.name, args: parseArgs(tc.function.arguments) } });
+        }
+        return { role: 'model', parts };
+      }
+      return {
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts:
+          typeof m.content === 'string'
+            ? [{ text: m.content }]
+            : m.content
+                .map((p) => {
+                  if (p.type === 'text') return { text: p.text || '' };
+                  // Gemini inlineData requires base64; parse the data-URL so the
+                  // real MIME type rides along. HTTP(S) URLs would need a
+                  // Files-API upload — documented known loss (rare path).
+                  const m2 = DATA_URL_RE.exec(String((p as any).image_url?.url || ''));
+                  if (m2) return { inlineData: { mimeType: m2[1], data: m2[2] } };
+                  return { text: `[unsupported image reference]` };
+                })
+                .filter(Boolean),
+      };
+    });
+
+  const generationConfig: Record<string, any> = {};
+  if (request.max_tokens != null) generationConfig.maxOutputTokens = request.max_tokens;
+  else if (request.max_completion_tokens != null) generationConfig.maxOutputTokens = request.max_completion_tokens;
+  if (request.temperature != null) generationConfig.temperature = request.temperature;
+  if (request.top_p != null) generationConfig.topP = request.top_p;
+  if (request.stop?.length) generationConfig.stopSequences = request.stop;
+
+  const payload: Record<string, any> = { contents, ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}) };
+  if (Object.keys(generationConfig).length) payload.generationConfig = generationConfig;
+  if (request.tools?.length) {
+    payload.tools = [
+      {
+        functionDeclarations: request.tools.map((t) => ({
+          name: t.function.name,
+          description: t.function.description,
+          parameters: t.function.parameters,
+        })),
+      },
+    ];
+  }
+  if (request.tool_choice === 'none') {
+    payload.toolConfig = { functionCallingConfig: { mode: 'NONE' } };
+  } else if (request.tool_choice === 'required') {
+    payload.toolConfig = { functionCallingConfig: { mode: 'ANY' } };
+  } else if (request.tool_choice === 'auto') {
+    payload.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+  }
+  return payload;
+}
+
+/** Pure response mapper: Gemini generateContent payload → chat-completions response. */
+export function googleToChatCompletion(data: any, model: ModelRegistration): ChatCompletionResponse {
+  const parts = data.candidates?.[0]?.content?.parts || [];
+  let text = '';
+  const toolCalls: ToolCall[] = [];
+  for (const p of parts) {
+    if (p.text) text += p.text;
+    if (p.functionCall) {
+      toolCalls.push({
+        id: `call_${crypto.randomBytes(8).toString('hex')}`,
+        type: 'function',
+        function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args ?? {}) },
+      });
+    }
+  }
+  const finishRaw = data.candidates?.[0]?.finishReason;
+
+  return {
+    id: `google-${Date.now()}`,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: model.id,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: text,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: toolCalls.length
+          ? 'tool_calls'
+          : finishRaw === 'MAX_TOKENS'
+            ? 'length'
+            : finishRaw === 'SAFETY'
+              ? 'content_filter'
+              : 'stop',
+      },
+    ],
+    usage: {
+      prompt_tokens: data.usageMetadata?.promptTokenCount ?? 0,
+      completion_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+      total_tokens: data.usageMetadata?.totalTokenCount ?? 0,
+    },
+  };
+}
+
 export class GoogleProvider implements LLMProvider {
   public name: string;
   private config: ProviderConfig;
@@ -23,36 +186,7 @@ export class GoogleProvider implements LLMProvider {
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/models/${encodeURIComponent(model.upstreamModel)}:generateContent`;
 
-    const systemText = request.messages
-      .filter((m) => m.role === 'system' || m.role === 'developer')
-      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
-      .join('\n\n');
-
-    const contents = request.messages
-      .filter((m) => m.role !== 'system' && m.role !== 'developer')
-      .map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts:
-          typeof m.content === 'string'
-            ? [{ text: m.content }]
-            : m.content
-                .map((p) =>
-                  p.type === 'text'
-                    ? { text: p.text || '' }
-                    : { inlineData: { mimeType: 'image/*', data: String((p as any).image_url?.url || '').split(',').pop() } }
-                )
-                .filter(Boolean),
-      }));
-
-    const generationConfig: Record<string, any> = {};
-    if (request.max_tokens != null) generationConfig.maxOutputTokens = request.max_tokens;
-    else if (request.max_completion_tokens != null) generationConfig.maxOutputTokens = request.max_completion_tokens;
-    if (request.temperature != null) generationConfig.temperature = request.temperature;
-    if (request.top_p != null) generationConfig.topP = request.top_p;
-    if (request.stop?.length) generationConfig.stopSequences = request.stop;
-
-    const payload: Record<string, any> = { contents, ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}) };
-    if (Object.keys(generationConfig).length) payload.generationConfig = generationConfig;
+    const payload = buildGooglePayload(request, model);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
@@ -79,35 +213,13 @@ export class GoogleProvider implements LLMProvider {
           message: `Upstream ${this.name} [google] returned status ${res.status}: ${errorText}`,
           status: res.status,
           errorBody: errorText,
-          provider: this.name,
+          provider: this.config.name,
           modelId: model.id,
         });
       }
 
       const data = (await res.json()) as any;
-      const text = (data.candidates?.[0]?.content?.parts || [])
-        .map((p: any) => p.text || '')
-        .join('');
-      const finishRaw = data.candidates?.[0]?.finishReason;
-
-      return {
-        id: `google-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: model.id,
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: text },
-            finish_reason: finishRaw === 'MAX_TOKENS' ? 'length' : finishRaw === 'SAFETY' ? 'content_filter' : 'stop',
-          },
-        ],
-        usage: {
-          prompt_tokens: data.usageMetadata?.promptTokenCount ?? 0,
-          completion_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
-          total_tokens: data.usageMetadata?.totalTokenCount ?? 0,
-        },
-      };
+      return googleToChatCompletion(data, model);
     } finally {
       clearTimeout(timeout);
     }
