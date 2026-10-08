@@ -11,6 +11,37 @@ import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { ChatCompletionRequest } from './types/openai.js';
 import { APP_VERSION } from './version.js';
+import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
+
+const TIER_RANK: Record<string, number> = { fast: 0, flagship: 1, reasoning: 2 };
+
+/**
+ * Rebuild a console session row from persisted traces alone (seen after a
+ * gateway restart, when the live session-manager state is gone but the trace
+ * store survived). Derived values are observability reconstructions — the
+ * routing state itself (pin/ratchet) starts fresh by design.
+ */
+function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
+  const traces = traceTracker.getTracesBySession(id);
+  const first = traces[0];
+  const last = traces[traces.length - 1];
+  const maxTier = traces.reduce<ExecutionTrace['routing']['targetTier']>(
+    (acc, t) => ((TIER_RANK[t.routing.targetTier] ?? 0) > (TIER_RANK[acc] ?? 0) ? t.routing.targetTier : acc),
+    'fast'
+  );
+  return {
+    id,
+    maxTier,
+    pinnedModel: last?.execution.modelUsed ?? '',
+    pinnedProvider: last?.execution.provider ?? '',
+    createdAt: first?.timestamp ?? 0,
+    lastActiveAt: last?.timestamp ?? 0,
+    turnCount: traces.length,
+    historyTiers: traces.map(t => t.routing.targetTier),
+    firstUserMessage: first?.request.userPromptSummary,
+    ...traceTracker.getSessionAggregates(id),
+  };
+}
 
 export function createServer(
   config: RouterConfig,
@@ -242,18 +273,41 @@ export function createServer(
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
   app.get('/v1/sessions', async (req) => {
-    const query = req.query as { limit?: string; offset?: string };
+    const query = req.query as { limit?: string; offset?: string; q?: string };
     const limit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
+    const q = (query.q || '').trim().toLowerCase();
 
     const traceTracker = orchestrator.getTraceTracker();
-    // Most recently active first — stable ordering for pagination
-    const all = (orchestrator.getSessionManager()?.getAllSessions() || [])
-      .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
-      .map(s => ({
-        ...s,
-        traceCount: traceTracker.getTraceCountForSession(s.id),
-      }));
+    // Live sessions carry the authoritative routing state (pin/ratchet);
+    // sessions that only exist in the persisted trace store (e.g. after a
+    // gateway restart) are reconstructed from their traces so console
+    // history survives. Live wins on id collision.
+    const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map(s => ({
+      ...s,
+      ...traceTracker.getSessionAggregates(s.id),
+    }));
+    const liveIds = new Set(live.map(s => s.id));
+    const reconstructed = traceTracker
+      .getSessionIds()
+      .filter(id => !liveIds.has(id))
+      .map(id => reconstructSessionFromTraces(traceTracker, id));
+    // Most recently active first — stable ordering for pagination. `q`
+    // filters (case-insensitive substring) across session id, pinned model
+    // and first user message, applied BEFORE pagination.
+    const all = [...live, ...reconstructed]
+      .filter(
+        s =>
+          !q ||
+          s.id.toLowerCase().includes(q) ||
+          String(s.pinnedModel || '')
+            .toLowerCase()
+            .includes(q) ||
+          String(s.firstUserMessage || '')
+            .toLowerCase()
+            .includes(q)
+      )
+      .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
     const data = limit === undefined ? all.slice(offset) : all.slice(offset, offset + limit);
 
     return {

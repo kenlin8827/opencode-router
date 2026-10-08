@@ -1109,6 +1109,17 @@ export function registerConsoleRoutes(
   const handleCaptureDates = async () => ({ status: 'ok', dates: captureRecorder.listDates() });
   app.get('/api/ui/capture/dates', handleCaptureDates);
 
+  // Locate a session's archive(s) across all dates by raw session id.
+  // Query param (not path segment) — client-supplied ids may contain "/", '"'
+  // or even be whole JSON blobs; encodeURIComponent round-trips them safely.
+  app.get('/api/ui/capture/find-session', async (req: any, reply: any) => {
+    const id = String((req.query as any)?.id || '').trim();
+    if (!id) {
+      return reply.status(400).send({ status: 'error', message: 'query param "id" (session id) is required' });
+    }
+    return { status: 'ok', matches: captureRecorder.findBySession(id) };
+  });
+
   app.get('/api/ui/capture/:date/sessions', async (req: any, reply: any) => {
     const { date } = req.params as { date: string };
     if (!CAPTURE_DATE_RE.test(date)) {

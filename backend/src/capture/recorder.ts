@@ -52,6 +52,13 @@ export interface CaptureSessionRow {
   turns: number; // total captured turns
   failed: number; // turns with status === 'error'
   lastStatus?: 'ok' | 'error'; // status of the most recent turn (badge dot)
+  /** First user-message text of the session (single line, capped) so the console list is human-identifiable. */
+  preview?: string;
+}
+
+/** One archive hit for a session id, across all date directories. */
+export interface CaptureSessionMatch extends CaptureSessionRow {
+  date: string; // YYYY-MM-DD directory the archive lives in
 }
 
 export interface CaptureStatus {
@@ -70,6 +77,7 @@ const DATE_DIR_RE = /^\d{4}-\d{2}-\d{2}$/;
 // falls back to a stable content hash.
 const SAFE_SESSION_RE = /^[\w.@:-]{1,80}$/;
 const JSONL_SUFFIX = '.jsonl';
+const TRUNCATION_SUFFIX = '...[TRUNCATED]';
 // Read cap for a single archive file — a turn is bounded by maxBodyBytes, so
 // this only trips on pathologically long sessions; the tail is what matters.
 const MAX_READ_BYTES = 8 * 1024 * 1024;
@@ -98,8 +106,8 @@ export class CaptureRecorder {
   constructor(config?: CaptureConfig) {
     this.enabled = config?.enabled ?? false;
     this.retentionDays = config?.retentionDays ?? 7;
-    this.maxTotalBytes = (config?.maxTotalMB ?? 512) * 1024 * 1024;
-    this.maxBodyBytes = config?.maxBodyBytes ?? 65536;
+    this.maxTotalBytes = (config?.maxTotalMB ?? 2048) * 1024 * 1024;
+    this.maxBodyBytes = config?.maxBodyBytes ?? 524288;
     this.rootDir = path.resolve(config?.dir || path.join(getOcrHomeDir(), 'capture'));
 
     if (this.enabled) {
@@ -268,15 +276,22 @@ export class CaptureRecorder {
         let turns = 0;
         let failed = 0;
         let lastStatus: 'ok' | 'error' | undefined;
+        let preview: string | undefined;
         try {
           const content = fs.readFileSync(filePath, 'utf8');
           for (const line of content.split(/\r?\n/)) {
             if (!line.trim()) continue;
             turns++;
             try {
-              const status = JSON.parse(line).status;
+              const rec = JSON.parse(line);
+              const status = rec.status;
               if (status === 'error') failed++;
               if (status === 'ok' || status === 'error') lastStatus = status;
+              // Files are append-only, so the first line with a request body
+              // is the session's opening turn — capture its user text once.
+              if (preview === undefined && rec.request !== undefined) {
+                preview = CaptureRecorder.extractSessionPreview(rec.request);
+              }
             } catch {
               // Corrupt line — counts as a turn but not a failure.
             }
@@ -292,6 +307,7 @@ export class CaptureRecorder {
           turns,
           failed,
           lastStatus,
+          preview,
         });
       } catch {
         // Vanished mid-listing — skip.
@@ -379,8 +395,27 @@ export class CaptureRecorder {
     }
   }
 
+  /**
+   * Find archive files for one session id across ALL date directories.
+   * The raw client-supplied id is re-sanitized with sessionFileName() so
+   * hashed archives (h_<hash>.jsonl) match their original id. Name-only
+   * readdir scan — no body reads. Newest archive first.
+   */
+  public findBySession(sessionId: string): CaptureSessionMatch[] {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!id || id.length > 512) return [];
+    const fileName = CaptureRecorder.sessionFileName(id);
+    const matches: CaptureSessionMatch[] = [];
+    for (const d of this.listDates()) {
+      const row = this.listSessions(d.date).find(s => s.file === fileName);
+      if (row) matches.push({ ...row, date: d.date });
+    }
+    return matches;
+  }
+
   /** Delete one whole date directory. Returns true when it existed. */
-  public deleteDate(date: string): boolean {    if (!DATE_DIR_RE.test(date)) return false;
+  public deleteDate(date: string): boolean {
+    if (!DATE_DIR_RE.test(date)) return false;
     const dir = path.join(this.rootDir, date);
     if (!path.resolve(dir).startsWith(path.resolve(this.rootDir) + path.sep)) return false;
     if (!fs.existsSync(dir)) return false;
@@ -490,6 +525,113 @@ export class CaptureRecorder {
     if (SAFE_SESSION_RE.test(sessionId)) return sessionId + JSONL_SUFFIX;
     const hash = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 16);
     return `h_${hash}${JSONL_SUFFIX}`;
+  }
+
+  /**
+   * First user-message text from a captured request body — what makes a
+   * session recognizable in the console list. Handles the shapes that reach
+   * the archive: OpenAI/Anthropic chat (`messages`, content as string or
+   * text-part array), Responses API (`input`), and the truncated-string
+   * form stored when a body exceeded maxBodyBytes. Fails open to undefined.
+   */
+  public static extractSessionPreview(request: unknown, cap = 120): string | undefined {
+    const text = CaptureRecorder.firstUserText(request);
+    if (!text) return undefined;
+    const flat = text.replace(/\s+/g, ' ').trim();
+    if (!flat) return undefined;
+    return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
+  }
+
+  private static firstUserText(request: unknown, depth = 0): string | undefined {
+    if (request === null || request === undefined || depth > 2) return undefined;
+    if (typeof request === 'string') {
+      // Truncated bodies are stored as `JSON.slice(0, cap) + '...[TRUNCATED]'`
+      // — strip the suffix, then try verbatim parse, then a bracket-repair
+      // pass (long sessions exceed maxBodyBytes often, and their opening
+      // user message is usually inside the intact prefix).
+      const trimmed = request.endsWith(TRUNCATION_SUFFIX)
+        ? request.slice(0, -TRUNCATION_SUFFIX.length)
+        : request;
+      try {
+        return CaptureRecorder.firstUserText(JSON.parse(trimmed), depth + 1);
+      } catch {
+        const repaired = CaptureRecorder.repairTruncatedJson(trimmed);
+        if (repaired !== null) return CaptureRecorder.firstUserText(repaired, depth + 1);
+        return trimmed.slice(0, 300);
+      }
+    }
+    if (typeof request !== 'object') return undefined;
+    const body = request as Record<string, unknown>;
+    if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages);
+    if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input);
+    if (typeof body.input === 'string') return body.input;
+    return undefined;
+  }
+
+  /**
+   * Best-effort recovery of the largest well-formed prefix of a truncated
+   * JSON document: walk once tracking string state and the brace stack,
+   * recording every position where the structure was balanced, then try
+   * candidates newest-first — cut there and close the remaining open
+   * containers. Newest-first matters: the newest balanced prefix may end on
+   * a value-less key (e.g. `{"a":1,"more"`), which is unparseable, while an
+   * older candidate closes cleanly. Returns null when nothing parseable can
+   * be salvaged.
+   */
+  private static repairTruncatedJson(s: string): string | null {
+    const stack: string[] = [];
+    const cuts: { end: number; stack: string[] }[] = [];
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') {
+          inStr = false;
+          cuts.push({ end: i, stack: [...stack] });
+        }
+      } else if (c === '"') {
+        inStr = true;
+      } else if (c === '{' || c === '[') {
+        stack.push(c === '{' ? '}' : ']');
+      } else if (c === '}' || c === ']') {
+        stack.pop();
+        cuts.push({ end: i, stack: [...stack] });
+      }
+    }
+    for (let k = cuts.length - 1; k >= 0 && k >= cuts.length - 16; k--) {
+      const { end, stack: open } = cuts[k];
+      const repaired = s.slice(0, end + 1) + open.slice().reverse().join('');
+      try {
+        JSON.parse(repaired);
+        return repaired;
+      } catch {
+        // Try the next-older balanced prefix.
+      }
+    }
+    return null;
+  }
+
+  /** First role === 'user' entry; content as string or text-part array. */
+  private static userTextFromMessages(messages: unknown[]): string | undefined {
+    for (const m of messages) {
+      if (!m || typeof m !== 'object') continue;
+      const msg = m as Record<string, unknown>;
+      if (msg.role !== 'user') continue;
+      const content = msg.content;
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        const parts = content
+          .map(p => (p && typeof p === 'object' && typeof (p as any).text === 'string' ? (p as any).text : ''))
+          .filter(Boolean);
+        if (parts.length > 0) return parts.join(' ');
+        continue; // non-text parts only (images etc.) — try the next user message
+      }
+      continue; // missing/non-text content (tool calls etc.) — try the next user message
+    }
+    return undefined;
   }
 
   /** Local-timezone YYYY-MM-DD — retention is by calendar day as users see it. */

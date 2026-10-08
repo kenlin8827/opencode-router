@@ -289,4 +289,78 @@ describe('CaptureRecorder', () => {
       rmrf(dir2);
     }
   });
+
+  it('extractSessionPreview reads the first user message across body shapes', () => {
+    const E = CaptureRecorder.extractSessionPreview;
+    // OpenAI chat, string content
+    assert.equal(E({ messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: '帮我写个爬虫' }] }), '帮我写个爬虫');
+    // Text-part array content
+    assert.equal(E({ messages: [{ role: 'user', content: [{ type: 'text', text: 'part one' }, { type: 'text', text: 'part two' }] }] }), 'part one part two');
+    // Responses API input (string + parts array)
+    assert.equal(E({ input: 'plain input' }), 'plain input');
+    assert.equal(E({ input: [{ role: 'user', content: [{ type: 'input_text', text: 'responses text' }] }] }), 'responses text');
+    // Truncated-string body: strip suffix, repair the cut JSON, recover text
+    assert.equal(E('{"messages":[{"role":"user","content":"from truncated"}],"more":...[TRUNCATED]'), 'from truncated');
+    assert.equal(
+      E('{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"帮我修复登录bug"}],"tools":[{"na...[TRUNCATED]'),
+      '帮我修复登录bug'
+    );
+    // Raw non-JSON string body — falls back to the string head
+    assert.equal(E('not json at all'), 'not json at all');
+    // Newlines flattened, capped with ellipsis
+    assert.equal(E({ messages: [{ role: 'user', content: 'line1\n\nline2' }] }), 'line1 line2');
+    const long = 'x'.repeat(300);
+    const capped = E({ messages: [{ role: 'user', content: long }] })!;
+    assert.equal(capped.length, 120);
+    assert.ok(capped.endsWith('…'));
+    // No previewable text
+    assert.equal(E({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: {} }] }, { role: 'user', content: [{ type: 'image_url', image_url: {} }] }] }), undefined);
+    assert.equal(E({}), undefined);
+    assert.equal(E(undefined), undefined);
+  });
+
+  it('listSessions surfaces the session preview', async () => {
+    const dir = makeTmpDir();
+    try {
+      const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
+      await rec.record({ sessionId: 'sess_p', status: 'ok', model: 'auto', request: { model: 'auto', messages: [{ role: 'user', content: '第一条用户消息' }] } });
+      await rec.record({ sessionId: 'sess_p', status: 'ok', model: 'auto', request: { messages: [{ role: 'user', content: '第二条不覆盖预览' }] } });
+      const row = rec.listSessions(rec.listDates()[0].date)[0];
+      assert.equal(row.preview, '第一条用户消息');
+      rec.stop();
+    } finally {
+      rmrf(dir);
+    }
+  });
+
+  it('findBySession matches safe and hashed ids across dates', async () => {
+    const dir = makeTmpDir();
+    try {
+      const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 365, maxTotalMB: 512, maxBodyBytes: 1024 });
+      await rec.record({ sessionId: 'sess_find', status: 'ok', model: 'auto', request: {} });
+      // Same session id on a previous local day (hand-made extra date dir)
+      const today = rec.listDates()[0].date;
+      const yesterday = new Date(new Date().getTime() - 86_400_000).toISOString().slice(0, 10);
+      fs.mkdirSync(path.join(dir, yesterday), { recursive: true });
+      fs.writeFileSync(path.join(dir, yesterday, 'sess_find.jsonl'), '{"status":"ok"}\n');
+      // Unsafe id → hashed file name must still match the raw id
+      const evil = '{"device_id":"x","session_id":"<uuid>"}';
+      await rec.record({ sessionId: evil, status: 'ok', model: 'auto', request: {} });
+
+      const safe = rec.findBySession('sess_find');
+      assert.equal(safe.length, 2);
+      assert.deepEqual(safe.map(m => m.date).sort(), [today, yesterday].sort());
+      assert.ok(safe.every(m => m.file === 'sess_find.jsonl'));
+
+      const hashed = rec.findBySession(evil);
+      assert.equal(hashed.length, 1);
+      assert.ok(hashed[0].file.startsWith('h_'), `expected hashed archive, got ${hashed[0].file}`);
+
+      assert.deepEqual(rec.findBySession('sess_missing'), []);
+      assert.deepEqual(rec.findBySession(''), []);
+      rec.stop();
+    } finally {
+      rmrf(dir);
+    }
+  });
 });

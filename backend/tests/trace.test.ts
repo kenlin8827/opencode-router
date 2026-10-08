@@ -66,6 +66,27 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.ok(found, 'Session sess_unit_test_trace_1 should be listed');
     assert.ok(found.traceCount >= 1, 'Session should have traceCount >= 1');
     assert.ok(found.maxTier);
+    assert.ok(typeof found.switchCount === 'number', 'switchCount must be reported');
+    assert.ok(typeof found.cacheHits === 'number', 'cacheHits must be reported');
+    assert.ok(typeof found.savedCostUsd === 'number', 'savedCostUsd must be reported');
+
+    // q filter: substring match over session id, applied before pagination
+    const filtered = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/v1/sessions?q=sess_unit_test',
+    });
+    assert.strictEqual(filtered.statusCode, 200);
+    const fb = JSON.parse(filtered.body);
+    assert.ok(fb.total >= 1, 'q filter should match the test session');
+    assert.ok(fb.data.every((s: any) => String(s.id).includes('sess_unit_test')));
+
+    const noMatch = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/v1/sessions?q=zzz_no_such_session_zzz',
+    });
+    assert.strictEqual(JSON.parse(noMatch.body).total, 0, 'q filter with no hit must return empty');
   });
 
   it('GET /v1/sessions/:id should return single session details with recent traces', async () => {
