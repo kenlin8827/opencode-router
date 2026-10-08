@@ -105,6 +105,13 @@ export const GuardrailsPage: React.FC = () => {
     }
   };
 
+  const stateLabel = (state: string) =>
+    state === 'OPEN'
+      ? t('guardrails.stateTripped')
+      : state === 'HALF_OPEN'
+        ? t('guardrails.stateHalfOpen')
+        : t('guardrails.stateHealthy');
+
   const formatCooldown = (ms: number) =>
     ms >= 3600 * 1000
       ? t('guardrails.cooldownH', { h: (ms / (3600 * 1000)).toFixed(1) })
@@ -118,7 +125,7 @@ export const GuardrailsPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
       {/* Top Summary Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
         <div className="card">
@@ -144,7 +151,7 @@ export const GuardrailsPage: React.FC = () => {
       </div>
 
       {/* Circuit Breaker Matrix */}
-      <div className="card">
+      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="card-header">
           <div className="card-title">
             <ShieldAlert size={18} color="var(--accent-rose)" />
@@ -190,7 +197,7 @@ export const GuardrailsPage: React.FC = () => {
         </div>
 
         {/* Matrix Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px', maxHeight: '560px', overflowY: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start' }}>
           {pagedBreakers.length > 0 ? (
             pagedBreakers.map(b => {
               const isClosed = b.state === 'CLOSED';
@@ -217,8 +224,11 @@ export const GuardrailsPage: React.FC = () => {
                     <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: 'JetBrains Mono, monospace', overflowWrap: 'anywhere' }}>
                       {b.modelId}
                     </span>
-                    <span className={`badge ${isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}>
-                      {b.state}
+                    <span
+                      className={`badge ${isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}
+                      style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                    >
+                      {stateLabel(b.state)}
                     </span>
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{b.provider}</div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
@@ -369,6 +370,10 @@ export const CapturesPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
+  const [query, setQuery] = useState('');
+  const [pendingFile, setPendingFile] = useState<string>('');
+  const [searchParams] = useSearchParams();
+  const sessionParam = searchParams.get('session') || '';
 
   const loadStatus = useCallback(async () => {
     try {
@@ -427,6 +432,43 @@ export const CapturesPage: React.FC = () => {
   useEffect(() => {
     loadRecords(selectedDate, selectedFile);
   }, [selectedDate, selectedFile, loadRecords]);
+
+  /**
+   * Deep link from other pages: /captures?session=<raw sessionId>.
+   * The backend re-sanitizes the id (hashed archives match), so even whole
+   * JSON-blob client ids resolve. Hit → select the newest archive date and
+   * stage the file; the effect below expands it once the list has loaded.
+   */
+  useEffect(() => {
+    if (!sessionParam) return;
+    let alive = true;
+    (async () => {
+      try {
+        const matches = await api.findCaptureSessions(sessionParam);
+        if (!alive) return;
+        if (matches.length > 0) {
+          setSelectedDate(matches[0].date);
+          setPendingFile(matches[0].file);
+        } else {
+          toast.error(t('captures.sessionNotFound'));
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [sessionParam, toast, t]);
+
+  // Expand the deep-linked session once its date's list is in place.
+  useEffect(() => {
+    if (!pendingFile || sessions.length === 0) return;
+    if (sessions.some(s => s.file === pendingFile)) {
+      setSelectedFile(pendingFile);
+    }
+    setPendingFile('');
+  }, [pendingFile, sessions]);
 
   const handleToggle = async (next: boolean) => {
     if (toggling) return;
@@ -533,6 +575,12 @@ export const CapturesPage: React.FC = () => {
       toast.error(err.message || t('common.failed'));
     }
   };
+
+  // Session filter: id substring OR first-message preview, case-insensitive.
+  const q = query.trim().toLowerCase();
+  const visibleSessions = q
+    ? sessions.filter(s => s.sessionId.toLowerCase().includes(q) || (s.preview || '').toLowerCase().includes(q))
+    : sessions;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
@@ -646,21 +694,33 @@ export const CapturesPage: React.FC = () => {
               </div>
 
               <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-                {/* Left rail: session list of the selected day */}
+                {/* Left rail: filter + session list of the selected day */}
                 <div
                   style={{
                     width: 320,
                     flexShrink: 0,
                     borderRight: '1px solid var(--card-border)',
-                    overflowY: 'auto',
-                    padding: '4px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0,
                   }}
                 >
-                  {sessions.map(s => (
+                  <div style={{ padding: '8px 10px 4px', flexShrink: 0 }}>
+                    <input
+                      type="text"
+                      className="input"
+                      value={query}
+                      onChange={e => setQuery(e.target.value)}
+                      placeholder={t('captures.searchPlaceholder')}
+                      style={{ width: '100%', fontSize: '12px', padding: '6px 10px' }}
+                    />
+                  </div>
+                  <div style={{ overflowY: 'auto', padding: '0 4px 4px', flex: 1, minHeight: 0 }}>
+                  {visibleSessions.map(s => (
                     <div
                       key={s.file}
                       onClick={() => setSelectedFile(s.file)}
-                      title={`${s.sessionId}\n${fmtBytes(s.bytes)}`}
+                      title={s.preview ? `${s.sessionId}\n${s.preview}\n${fmtBytes(s.bytes)}` : `${s.sessionId}\n${fmtBytes(s.bytes)}`}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -689,18 +749,32 @@ export const CapturesPage: React.FC = () => {
                           }}
                         />
                       )}
-                      <span
-                        style={{
-                          fontFamily: 'JetBrains Mono, monospace',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          flex: 1,
-                          minWidth: 0,
-                        }}
-                      >
-                        {s.sessionId}
-                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontFamily: 'JetBrains Mono, monospace',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {s.sessionId}
+                        </div>
+                        {s.preview && (
+                          <div
+                            style={{
+                              fontSize: '11px',
+                              color: 'var(--text-dim)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              marginTop: '1px',
+                            }}
+                          >
+                            {s.preview}
+                          </div>
+                        )}
+                      </div>
                       <span
                         style={{
                           color: 'var(--text-dim)',
@@ -753,11 +827,12 @@ export const CapturesPage: React.FC = () => {
                       </span>
                     </div>
                   ))}
-                  {sessions.length === 0 && (
+                  {visibleSessions.length === 0 && (
                     <div style={{ padding: '8px', fontSize: '11px', color: 'var(--text-dim)' }}>
-                      {t('captures.emptySessions')}
+                      {q ? t('captures.noMatchSessions') : t('captures.emptySessions')}
                     </div>
                   )}
+                  </div>
                 </div>
 
                 {/* Main pane: session timeline */}

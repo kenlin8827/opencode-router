@@ -234,16 +234,19 @@ body {
   background-image: var(--bg-gradient);
   color: var(--text-main);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, 'PingFang SC', 'HarmonyOS Sans SC', 'MiSans', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-  min-height: 100vh;
+  /* App-shell: definite height so `height: 100%` resolves down the chain and
+     pages with internal scroll regions (logs/captures) can constrain them.
+     Scrolling happens inside <main>, never on the document. */
+  height: 100vh;
   display: flex;
-  overflow-x: hidden;
+  overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
 #root {
   display: flex;
   width: 100%;
-  min-height: 100vh;
+  height: 100%;
 }
 
 /* Tables: tabular numerals so digits align in columns */

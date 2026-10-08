@@ -67,6 +67,10 @@ const thStyle: React.CSSProperties = {
   letterSpacing: '0.04em',
   borderBottom: '1px solid var(--card-border)',
   whiteSpace: 'nowrap',
+  position: 'sticky',
+  top: 0,
+  background: 'var(--card-bg)',
+  zIndex: 1,
 };
 
 const tdStyle: React.CSSProperties = {
@@ -166,8 +170,8 @@ export const ModelsPage: React.FC = () => {
   const pagedModels = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div className="card">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
+      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <Cpu size={18} color="var(--accent)" />
           <span style={{ fontWeight: 700, fontSize: 15 }}>{t('models.title')}</span>
@@ -236,7 +240,7 @@ export const ModelsPage: React.FC = () => {
         </div>
 
         {/* ---- Table ---- */}
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
             <thead>
               <tr>

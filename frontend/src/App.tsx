@@ -10,8 +10,7 @@ import { ProxyPage } from './pages/ProxyPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
-import { TracesPage } from './pages/TracesPage';
-import { SessionsPage } from './pages/SessionsPage';
+import { UsagePage } from './pages/UsagePage';
 import { LogsPage } from './pages/LogsPage';
 import { CapturesPage } from './pages/CapturesPage';
 import { ClientsPage } from './pages/ClientsPage';
@@ -41,9 +40,9 @@ export const App: React.FC = () => {
         <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
-        <Route path="usage" element={<Navigate to="/traces" replace />} />
-        <Route path="traces" element={<TracesPage />} />
-        <Route path="sessions" element={<SessionsPage />} />
+        <Route path="usage" element={<Navigate to="/sessions" replace />} />
+        <Route path="traces" element={<Navigate to="/sessions" replace />} />
+        <Route path="sessions" element={<UsagePage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />
         <Route path="settings" element={<SettingsPage />} />

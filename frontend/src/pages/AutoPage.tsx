@@ -197,7 +197,7 @@ export const AutoPage: React.FC = () => {
             {([
               { to: '/tiers', label: t('auto.linkTiers') },
               { to: '/cache', label: t('auto.linkCache') },
-              { to: '/traces', label: t('auto.linkTraces') },
+              { to: '/sessions', label: t('auto.linkSessions') },
             ]).map(l => (
               <Link key={l.to} to={l.to} className="btn" style={{ fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span>{l.label}</span>

@@ -68,8 +68,8 @@ export const YamlPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div className="card">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
+      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="card-header">
           <div className="card-title">
             <FileCode2 size={18} color="var(--accent)" />
@@ -116,11 +116,13 @@ export const YamlPage: React.FC = () => {
             border: '1px solid var(--card-border)',
             borderRadius: '10px',
             overflow: 'hidden',
+            flex: 1,
+            minHeight: 0,
           }}
         >
           <CodeMirror
             value={yamlContent}
-            height="560px"
+            height="100%"
             theme={appTheme === 'light' ? [appChrome] : [oneDark, appChrome]}
             extensions={[yaml()]}
             onChange={setYamlContent}

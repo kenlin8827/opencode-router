@@ -154,7 +154,16 @@ export interface CaptureSessionRow {
   sessionId: string;
   bytes: number;
   mtimeMs: number;
+  turns: number;
+  failed: number;
   lastStatus?: 'ok' | 'error';
+  /** First user-message text of the session (backend-extracted, capped) */
+  preview?: string;
+}
+
+/** One archive hit for a session id, across all date directories */
+export interface CaptureSessionMatch extends CaptureSessionRow {
+  date: string;
 }
 
 export interface CaptureRecord {
@@ -194,6 +203,15 @@ export interface SessionRecord {
   turnCount: number;
   historyTiers: string[];
   traceCount: number;
+  /** Requests whose model differs from the previous request (chronological).
+   *  Optional: absent when the frontend is served by a pre-aggregates backend. */
+  switchCount?: number;
+  /** Requests with a prompt-cache hit (cachedPromptTokens > 0). Optional as above. */
+  cacheHits?: number;
+  /** Cumulative saved cost across the session's traces (USD). Optional as above. */
+  savedCostUsd?: number;
+  /** First user prompt of the session (backend-capped summary). */
+  firstUserMessage?: string;
 }
 
 // Mirrors backend CacheStatsSummary (backend/src/trace/tracker.ts getCacheStats)
@@ -436,23 +454,25 @@ export const api = {
     return res.json();
   },
 
-  async getTraces(limit = 50, offset = 0): Promise<{ traces: TraceRecord[]; total: number }> {
-    const res = await fetch(`/v1/traces?limit=${limit}&offset=${offset}`);
-    if (!res.ok) return { traces: [], total: 0 };
-    const json = await res.json();
-    // /v1/traces responds { object, total, limit, offset, data }
-    return { traces: json.data || [], total: json.total || 0 };
-  },
-
-  async getSessions(limit?: number, offset = 0): Promise<{ sessions: SessionRecord[]; total: number }> {
+  async getSessions(limit?: number, offset = 0, q?: string): Promise<{ sessions: SessionRecord[]; total: number }> {
     const qs = new URLSearchParams();
     if (limit !== undefined) qs.set('limit', String(limit));
     qs.set('offset', String(offset));
+    if (q) qs.set('q', q);
     const res = await fetch(`/v1/sessions?${qs.toString()}`);
     if (!res.ok) return { sessions: [], total: 0 };
     const json = await res.json();
     // /v1/sessions responds { object, total, limit?, offset, data }
     return { sessions: json.data || [], total: json.total || 0 };
+  },
+
+  /** Full chronological trajectory of one session — source for the switch timeline. */
+  async getSessionTraces(sessionId: string): Promise<TraceRecord[]> {
+    const res = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/traces`);
+    if (!res.ok) return [];
+    const json = await res.json();
+    // /v1/sessions/:id/traces responds { object, sessionId, total, data }
+    return json.data || [];
   },
 
   async getLogs(tail = 500, level?: string, q?: string): Promise<LogsResponse> {
@@ -525,6 +545,15 @@ export const api = {
     if (!res.ok) return [];
     const json = await res.json();
     return json.sessions || [];
+  },
+
+  /** Locate a session's archive(s) across all dates by raw session id. */
+  async findCaptureSessions(sessionId: string): Promise<CaptureSessionMatch[]> {
+    const qs = new URLSearchParams({ id: sessionId });
+    const res = await fetch(`/api/ui/capture/find-session?${qs.toString()}`);
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.matches || [];
   },
 
   async getCaptureRecords(

@@ -353,40 +353,6 @@ export const RulesPage: React.FC = () => {
                 <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.priceHint')}</div>
               </div>
 
-              {/* Blacklist / whitelist — mutually exclusive */}
-              <div>
-                <label style={labelStyle}>{t('tierPolicy.filterMode')}</label>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: f.filterMode !== 'none' ? '8px' : '0' }}>
-                  {(['none', 'blacklist', 'whitelist'] as FilterMode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={f.filterMode === mode ? 'btn btn-primary' : 'btn'}
-                      style={{ fontSize: '12px', flex: 1 }}
-                      onClick={() => updateForm(tier, { filterMode: mode })}
-                    >
-                      {t(mode === 'none' ? 'tierPolicy.filterNone' : mode === 'blacklist' ? 'tierPolicy.filterBlacklist' : 'tierPolicy.filterWhitelist')}
-                    </button>
-                  ))}
-                </div>
-                {f.filterMode !== 'none' && (
-                  <>
-                    <label style={labelStyle}>
-                      {t(f.filterMode === 'blacklist' ? 'tierPolicy.blacklist' : 'tierPolicy.whitelist')}
-                    </label>
-                    <textarea
-                      rows={3}
-                      className="input"
-                      style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
-                      placeholder={t('tierPolicy.patternsPlaceholder')}
-                      value={f.filterPatterns}
-                      onChange={(e) => updateForm(tier, { filterPatterns: e.target.value })}
-                    />
-                  </>
-                )}
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.patternHint')}</div>
-              </div>
-
               {/* Selection strategy + weights */}
               <div>
                 <label style={labelStyle}>{t('tierPolicy.selection')}</label>
@@ -454,6 +420,40 @@ export const RulesPage: React.FC = () => {
                   </div>
                 </div>
                 <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
+              </div>
+
+              {/* Blacklist / whitelist — mutually exclusive */}
+              <div>
+                <label style={labelStyle}>{t('tierPolicy.filterMode')}</label>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: f.filterMode !== 'none' ? '8px' : '0' }}>
+                  {(['none', 'blacklist', 'whitelist'] as FilterMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={f.filterMode === mode ? 'btn btn-primary' : 'btn'}
+                      style={{ fontSize: '12px', flex: 1 }}
+                      onClick={() => updateForm(tier, { filterMode: mode })}
+                    >
+                      {t(mode === 'none' ? 'tierPolicy.filterNone' : mode === 'blacklist' ? 'tierPolicy.filterBlacklist' : 'tierPolicy.filterWhitelist')}
+                    </button>
+                  ))}
+                </div>
+                {f.filterMode !== 'none' && (
+                  <>
+                    <label style={labelStyle}>
+                      {t(f.filterMode === 'blacklist' ? 'tierPolicy.blacklist' : 'tierPolicy.whitelist')}
+                    </label>
+                    <textarea
+                      rows={3}
+                      className="input"
+                      style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
+                      placeholder={t('tierPolicy.patternsPlaceholder')}
+                      value={f.filterPatterns}
+                      onChange={(e) => updateForm(tier, { filterPatterns: e.target.value })}
+                    />
+                  </>
+                )}
+                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.patternHint')}</div>
               </div>
 
               {/* Candidate pool summary → opens the detail modal */}

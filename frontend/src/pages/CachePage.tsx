@@ -1,6 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Database, RefreshCw, Zap, Coins, PiggyBank, Activity, GitBranch } from 'lucide-react';
 import { api, type CacheStatsResponse } from '../lib/api';
+
+// Sticky column header inside the scrollable per-model table.
+const TH_STYLE: React.CSSProperties = {
+  padding: '10px 14px',
+  position: 'sticky',
+  top: 0,
+  background: 'var(--card-bg)',
+  zIndex: 1,
+};
 import { useI18n } from '../i18n/I18nContext';
 
 const REFRESH_INTERVAL_MS = 10_000;
@@ -45,7 +54,7 @@ export const CachePage: React.FC = () => {
   const maxHourlyTokens = Math.max(1, ...hourly.map(h => h.promptTokens));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
       {/* Header */}
       <div className="card">
         <div className="card-header">
@@ -198,23 +207,23 @@ export const CachePage: React.FC = () => {
       </div>
 
       {/* Per-model breakdown */}
-      <div className="card">
+      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="card-header">
           <div className="card-title">
             <Database size={16} color="var(--accent-violet)" />
             <span>{t('cachePage.modelsTitle')}</span>
           </div>
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--card-border)', color: 'var(--text-dim)' }}>
-                <th style={{ padding: '10px 14px' }}>{t('cachePage.thModel')}</th>
-                <th style={{ padding: '10px 14px' }}>{t('cachePage.thRequests')}</th>
-                <th style={{ padding: '10px 14px' }}>{t('cachePage.thHitRate')}</th>
-                <th style={{ padding: '10px 14px' }}>{t('cachePage.thPromptTokens')}</th>
-                <th style={{ padding: '10px 14px' }}>{t('cachePage.thCachedTokens')}</th>
-                <th style={{ padding: '10px 14px' }}>{t('cachePage.thSavedCost')}</th>
+                <th style={TH_STYLE}>{t('cachePage.thModel')}</th>
+                <th style={TH_STYLE}>{t('cachePage.thRequests')}</th>
+                <th style={TH_STYLE}>{t('cachePage.thHitRate')}</th>
+                <th style={TH_STYLE}>{t('cachePage.thPromptTokens')}</th>
+                <th style={TH_STYLE}>{t('cachePage.thCachedTokens')}</th>
+                <th style={TH_STYLE}>{t('cachePage.thSavedCost')}</th>
               </tr>
             </thead>
             <tbody>

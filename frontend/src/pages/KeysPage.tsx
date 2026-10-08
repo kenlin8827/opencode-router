@@ -22,6 +22,8 @@ const cardStyle: React.CSSProperties = {
 };
 
 const CATALOG_PAGE_SIZE = 20;
+const CONNECTED_PAGE_SIZE = 12;
+const CONNECTED_PAGE_SIZES = [12, 24, 48];
 const CATALOG_PAGE_SIZES = [10, 20, 50, 100, 200];
 
 /** Fallback npm packages when the models.dev catalog is unavailable. */
@@ -124,6 +126,8 @@ export const KeysPage: React.FC = () => {
   const [connectedQuery, setConnectedQuery] = useState('');
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(CATALOG_PAGE_SIZE);
+  const [connectedPage, setConnectedPage] = useState(1);
+  const [connectedPageSize, setConnectedPageSize] = useState(CONNECTED_PAGE_SIZE);
 
   // npm dropdown options: aggregate from models.dev catalog (usage-sorted),
   // always led by the openai-compatible default; offline → curated fallback.
@@ -150,6 +154,10 @@ export const KeysPage: React.FC = () => {
         p.models.some((m) => m.toLowerCase().includes(q))
     );
   }, [ocProviders, connectedQuery]);
+  const pagedConnected = useMemo(() => {
+    const start = (connectedPage - 1) * connectedPageSize;
+    return connectedResults.slice(start, start + connectedPageSize);
+  }, [connectedResults, connectedPage, connectedPageSize]);
 
   const catalogResults = useMemo(() => {
     const q = catalogQuery.trim().toLowerCase();
@@ -309,8 +317,8 @@ export const KeysPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div className="card">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
+      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
         <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <Plug size={18} color="var(--accent)" />
           <span style={{ fontWeight: 700, fontSize: 15 }}>{t('op.title')}</span>
@@ -342,6 +350,8 @@ export const KeysPage: React.FC = () => {
           </button>
         </div>
 
+        {/* Scrollable tab content: the tab bars stay fixed, long lists scroll here. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {activeTab === 'connected' && (<>
         {/* ---- Connected providers (opencode.jsonc provider node ∪ auth.json) ---- */}
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{t('op.connectedTitle')}</div>
@@ -354,7 +364,7 @@ export const KeysPage: React.FC = () => {
             style={{ fontSize: 12, maxWidth: 420, flex: 1, minWidth: 200 }}
             placeholder={t('op.searchConnected')}
             value={connectedQuery}
-            onChange={e => setConnectedQuery(e.target.value)}
+            onChange={e => { setConnectedQuery(e.target.value); setConnectedPage(1); }}
           />
           <button
             className="btn btn-sm"
@@ -367,7 +377,7 @@ export const KeysPage: React.FC = () => {
           </button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '14px' }}>
-          {connectedResults.map(p => (
+          {pagedConnected.map(p => (
             <div key={p.id} style={cardStyle}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <ProviderLogo id={p.id} logo={p.logo} size={44} />
@@ -502,7 +512,7 @@ export const KeysPage: React.FC = () => {
               )}
             </div>
           ))}
-          {ocProviders.length === 0 && !ocError && (
+          {connectedResults.length === 0 && !ocError && (
             <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.emptyConnected')}</div>
           )}
         </div>
@@ -583,15 +593,6 @@ export const KeysPage: React.FC = () => {
             <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.catalogEmpty')}</div>
           )}
         </div>
-        <Pagination
-          page={catalogPage}
-          pageSize={catalogPageSize}
-          total={catalogResults.length}
-          onChange={setCatalogPage}
-          showSummary
-          pageSizeOptions={CATALOG_PAGE_SIZES}
-          onPageSizeChange={(s) => { setCatalogPageSize(s); setCatalogPage(1); }}
-        />
 
         </>)}
 
@@ -639,6 +640,31 @@ export const KeysPage: React.FC = () => {
           </button>
         </div>
         </>)}
+        </div>
+
+        {/* Tab-scoped pagination pinned below the scroll area (never scrolls away). */}
+        {activeTab === 'connected' && connectedResults.length > 0 && (
+          <Pagination
+            page={connectedPage}
+            pageSize={connectedPageSize}
+            total={connectedResults.length}
+            onChange={setConnectedPage}
+            showSummary
+            pageSizeOptions={CONNECTED_PAGE_SIZES}
+            onPageSizeChange={(s) => { setConnectedPageSize(s); setConnectedPage(1); }}
+          />
+        )}
+        {activeTab === 'catalog' && catalogResults.length > 0 && (
+          <Pagination
+            page={catalogPage}
+            pageSize={catalogPageSize}
+            total={catalogResults.length}
+            onChange={setCatalogPage}
+            showSummary
+            pageSizeOptions={CATALOG_PAGE_SIZES}
+            onPageSizeChange={(s) => { setCatalogPageSize(s); setCatalogPage(1); }}
+          />
+        )}
       </div>
     </div>
   );

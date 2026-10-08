@@ -7,7 +7,6 @@ import {
   KeyRound,
   MonitorSmartphone,
   ShieldAlert,
-  BarChart3,
   Users,
   Sliders,
   FileCode2,
@@ -98,7 +97,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     headingKey: 'nav.grpObservability',
     icon: Waves,
     items: [
-      { to: '/traces', labelKey: 'nav.traces', icon: BarChart3 },
       { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
       { to: '/cache', labelKey: 'nav.cache', icon: Database },
       { to: '/captures', labelKey: 'nav.captures', icon: Archive },
@@ -136,7 +134,6 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
-  '/traces': { groupKey: 'nav.grpObservability', titleKey: 'nav.traces' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/cache': { groupKey: 'nav.grpObservability', titleKey: 'nav.cache' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
@@ -211,7 +208,7 @@ export const Layout: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', width: '100%', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', width: '100%', height: '100%', minHeight: 0 }}>
       {/* Sidebar Navigation */}
       <aside
         style={{
@@ -396,7 +393,7 @@ export const Layout: React.FC = () => {
       </aside>
 
       {/* Main Content Area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
         {/* Top Header */}
         <header
           style={{
@@ -488,8 +485,10 @@ export const Layout: React.FC = () => {
           </div>
         </header>
 
-        {/* Page Content Container */}
-        <main style={{ padding: '28px', flex: 1, minWidth: 0 }}>
+        {/* Page Content Container — scrolls for long pages so the sidebar and
+            header stay fixed; fixed-viewport pages (logs/captures) get their
+            own internal scrollbars because this box has a definite height. */}
+        <main style={{ padding: '28px', flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto' }}>
           <Outlet context={{ status, statusError }} />
         </main>
       </div>

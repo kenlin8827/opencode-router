@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Layers, Plus, Trash2, ArrowUp, ArrowDown, AlertTriangle, Pencil, X, Wand2 } from 'lucide-react';
+import { Layers, Plus, Trash2, ArrowUp, ArrowDown, AlertTriangle, Pencil, X, Wand2, GripVertical } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { api, opencodeApi, type ComboView, type ComboMemberView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
@@ -7,11 +7,14 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Combobox } from '../components/Combobox';
+import { Pagination } from '../components/Pagination';
 
 type Selection = 'priority' | 'weighted' | 'round_robin';
 
 /** Virtual model ids routing owns — a combo must never shadow them. */
 const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
+const COMBOS_PAGE_SIZE = 12;
+const COMBOS_PAGE_SIZES = [12, 24, 48];
 
 interface MemberDraft {
   id: string;
@@ -93,6 +96,12 @@ const ComboDialog: React.FC<{
   const [work, setWork] = useState<ComboDraft>(draft);
   const [pattern, setPattern] = useState('');
   const [saving, setSaving] = useState(false);
+  // Native HTML5 drag-and-drop for member rows. A row is only draggable while
+  // its grip handle is held (armedIdx), so text selection inside the member
+  // Combobox inputs keeps working.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const [armedIdx, setArmedIdx] = useState<number | null>(null);
   useBodyScrollLock(true);
 
   useEffect(() => {
@@ -113,6 +122,14 @@ const ComboDialog: React.FC<{
       const target = idx + dir;
       if (target < 0 || target >= next.length) return prev;
       [next[idx], next[target]] = [next[target], next[idx]];
+      return { ...prev, models: next };
+    });
+  /** Drag-and-drop reorder: move the member at `from` to position `to`. */
+  const reorderMember = (from: number, to: number) =>
+    setWork(prev => {
+      const next = [...prev.models];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
       return { ...prev, models: next };
     });
 
@@ -162,6 +179,7 @@ const ComboDialog: React.FC<{
         mouseDownOnOverlay.current = e.target === e.currentTarget;
       }}
       onMouseUp={e => {
+        setArmedIdx(null); // disarm even if the pointer left the grip handle
         if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose();
       }}
     >
@@ -241,7 +259,50 @@ const ComboDialog: React.FC<{
               {work.models.map((member, mIdx) => {
                 const known = registeredIds.has(member.id);
                 return (
-                  <div key={mIdx} style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div
+                    key={mIdx}
+                    draggable={armedIdx === mIdx}
+                    onDragStart={e => {
+                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', String(mIdx)); // Firefox requires data to start a drag
+                      setDragIdx(mIdx);
+                    }}
+                    onDragOver={e => {
+                      if (dragIdx === null) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (overIdx !== mIdx) setOverIdx(mIdx);
+                    }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      if (dragIdx !== null && dragIdx !== mIdx) reorderMember(dragIdx, mIdx);
+                      setDragIdx(null);
+                      setOverIdx(null);
+                      setArmedIdx(null);
+                    }}
+                    onDragEnd={() => {
+                      setDragIdx(null);
+                      setOverIdx(null);
+                      setArmedIdx(null);
+                    }}
+                    style={{
+                      display: 'flex',
+                      gap: '6px',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      borderRadius: '6px',
+                      border: dragIdx !== null && overIdx === mIdx && dragIdx !== mIdx ? '1px dashed var(--accent)' : '1px solid transparent',
+                      opacity: dragIdx === mIdx ? 0.4 : 1,
+                    }}
+                  >
+                    <span
+                      title={t('combos.dragSort')}
+                      onMouseDown={() => setArmedIdx(mIdx)}
+                      onMouseUp={() => setArmedIdx(null)}
+                      style={{ cursor: 'grab', color: 'var(--text-dim)', display: 'inline-flex', flexShrink: 0 }}
+                    >
+                      <GripVertical size={13} />
+                    </span>
                     <span style={{ fontSize: '11px', color: 'var(--text-dim)', width: '18px', textAlign: 'right' }}>
                       {mIdx + 1}.
                     </span>
@@ -398,6 +459,8 @@ export const CombosPage: React.FC = () => {
   const [registeredIds, setRegisteredIds] = useState<ReadonlySet<string>>(new Set());
   const [editing, setEditing] = useState<{ draft: ComboDraft; index: number } | null>(null); // index -1 = new
   const [saving, setSaving] = useState(false);
+  const [combosPage, setCombosPage] = useState(1);
+  const [combosPageSize, setCombosPageSize] = useState(COMBOS_PAGE_SIZE);
 
   const refreshMeta = useCallback(() => {
     api
@@ -488,7 +551,7 @@ export const CombosPage: React.FC = () => {
   }
 
   return (
-    <div className="card">
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div className="card-header">
         <div className="card-title">
           <Layers size={18} color="var(--accent)" />
@@ -510,8 +573,12 @@ export const CombosPage: React.FC = () => {
       {combos.length === 0 ? (
         <div style={{ fontSize: '13px', color: 'var(--text-dim)', padding: '16px 0' }}>{t('combos.empty')}</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '14px' }}>
-          {combos.map((combo, idx) => {
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '14px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start' }}>
+          {combos
+            .slice((combosPage - 1) * combosPageSize, combosPage * combosPageSize)
+            .map((combo, rel) => {
+            // idx must stay the ABSOLUTE index into `combos` — edit/delete address by it.
+            const idx = (combosPage - 1) * combosPageSize + rel;
             const comboMeta = meta[combo.id.trim()];
             const membersMeta = comboMeta?.members || [];
             const inactive = comboMeta ? comboMeta.active === false : false;
@@ -640,6 +707,18 @@ export const CombosPage: React.FC = () => {
             );
           })}
         </div>
+      )}
+
+      {combos !== null && combos.length > 0 && (
+        <Pagination
+          page={combosPage}
+          pageSize={combosPageSize}
+          total={combos.length}
+          onChange={setCombosPage}
+          showSummary
+          pageSizeOptions={COMBOS_PAGE_SIZES}
+          onPageSizeChange={(s) => { setCombosPageSize(s); setCombosPage(1); }}
+        />
       )}
 
       {editing && (

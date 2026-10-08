@@ -28,7 +28,6 @@ export interface TranslationDict {
     apiKeys: string;
     clients: string;
     guardrails: string;
-    traces: string;
     sessions: string;
     logs: string;
     captures: string;
@@ -378,28 +377,33 @@ export interface TranslationDict {
     catUnknown: string;
   };
   usage: {
-    title: string;
-    tracesTitle: string;
     sessionsTitle: string;
     sessionsDesc: string;
     refresh: string;
-    thTraceId: string;
-    thTime: string;
-    thModel: string;
     thCache: string;
-    thTokens: string;
     thCostSaved: string;
-    thLatency: string;
     thSessionId: string;
     thPinned: string;
     thTier: string;
     tierNameFast: string;
     tierNameFlagship: string;
     tierNameReasoning: string;
+    thSwitches: string;
     thTurns: string;
     thRequests: string;
     thActive: string;
-    emptyTraces: string;
+    thCapture: string;
+    jumpToCapture: string;
+    switchTitle: string;
+    switchHint: string;
+    switchFirst: string;
+    switchRatchet: string;
+    switchFallback: string;
+    switchPlain: string;
+    switchEmpty: string;
+    switchLoadFailed: string;
+    filterPlaceholder: string;
+    filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;
     copyFailed: string;
@@ -457,6 +461,9 @@ export interface TranslationDict {
     exportBtn: string;
     lastOkTitle: string;
     lastErrorTitle: string;
+    searchPlaceholder: string;
+    noMatchSessions: string;
+    sessionNotFound: string;
   };
   clients: {
     title: string;
@@ -548,6 +555,7 @@ export interface TranslationDict {
     weight: string;
     moveUp: string;
     moveDown: string;
+    dragSort: string;
     unregisteredWarn: string;
     inactiveBadge: string;
     inactiveWarn: string;
@@ -603,7 +611,7 @@ export interface TranslationDict {
     linksTitle: string;
     linkTiers: string;
     linkCache: string;
-    linkTraces: string;
+    linkSessions: string;
   };
   yaml: {
     title: string;
