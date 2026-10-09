@@ -572,7 +572,7 @@ export const CombosPage: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '16px' }}>
+      <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: '16px', whiteSpace: 'pre-line' }}>
         {t('combos.hint')}
       </div>
 
