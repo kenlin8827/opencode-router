@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
   type CaptureDateRow,
   type CaptureSessionRow,
-  type CaptureRecord,
+  type HttpExchangeEvent,
+  type CaptureTurn,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -25,30 +26,106 @@ function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString();
 }
 
+/**
+ * Wire-content block with a small toolbar: copy-to-clipboard (with textarea
+ * fallback for non-secure contexts) and a JSON pretty/raw toggle offered
+ * only when the content actually parses as JSON. Defaults to RAW — this is
+ * a wire capture, so the bytes as actually sent/received are the source of
+ * truth; pretty-printing is an opt-in reading aid.
+ */
 function JsonBlock({ value }: { value: unknown }) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [copied, setCopied] = useState(false);
+  const [formatted, setFormatted] = useState(false);
+  const rawText =
+    value === undefined || value === null
+      ? ''
+      : typeof value === 'string'
+        ? value
+        : JSON.stringify(value, null, 2);
+  const pretty = useMemo(() => {
+    if (!rawText) return null;
+    try {
+      return JSON.stringify(JSON.parse(rawText), null, 2);
+    } catch {
+      return null;
+    }
+  }, [rawText]);
+
   if (value === undefined || value === null) return null;
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const text = formatted && pretty !== null ? pretty : rawText;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for non-secure contexts (http://, older browsers).
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    toast.success(t('captures.copied'));
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const btnStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    background: 'rgba(255,255,255,0.05)',
+    border: '1px solid var(--card-border)',
+    borderRadius: '4px',
+    color: 'var(--text-dim)',
+    fontSize: '11px',
+    padding: '3px 8px',
+    cursor: 'pointer',
+    fontFamily: 'JetBrains Mono, monospace',
+  };
+
   return (
-    <pre
-      style={{
-        margin: 0,
-        padding: '12px 14px',
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid var(--card-border)',
-        borderRadius: '6px',
-        fontSize: '11px',
-        lineHeight: 1.55,
-        overflow: 'auto',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-      }}
-    >
-      {text}
-    </pre>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 4 }}>
+        {pretty !== null && (
+          <button
+            style={btnStyle}
+            onClick={() => setFormatted(f => !f)}
+            title={formatted ? t('captures.showRaw') : t('captures.formatJson')}
+          >
+            <Braces size={12} />
+            {formatted ? t('captures.showRaw') : t('captures.formatJson')}
+          </button>
+        )}
+        <button style={btnStyle} onClick={handleCopy} title={t('captures.copy')}>
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? t('captures.copied') : t('captures.copy')}
+        </button>
+      </div>
+      <pre
+        style={{
+          margin: 0,
+          padding: '12px 14px',
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid var(--card-border)',
+          borderRadius: '6px',
+          fontSize: '11px',
+          lineHeight: 1.55,
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {text}
+      </pre>
+    </div>
   );
 }
 
-type DrawerTab = 'reqIn' | 'reqOut' | 'resp';
+type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upstreamResponse';
 
 /**
  * Right-side detail drawer for one captured turn (portal, Esc/overlay close).
@@ -57,11 +134,11 @@ type DrawerTab = 'reqIn' | 'reqOut' | 'resp';
  * when debugging compression/wire behavior, so it defaults to the inbound view.
  */
 const CaptureDrawer: React.FC<{
-  record: CaptureRecord;
+  turn: CaptureTurn;
   onClose: () => void;
-}> = ({ record, onClose }) => {
+}> = ({ turn, onClose }) => {
   const { t } = useI18n();
-  const [tab, setTab] = useState<DrawerTab>('reqIn');
+  const [tab, setTab] = useState<DrawerTab>('clientRequest');
   useBodyScrollLock(true);
 
   useEffect(() => {
@@ -73,17 +150,34 @@ const CaptureDrawer: React.FC<{
   }, [onClose]);
 
   useEffect(() => {
-    setTab('reqIn'); // reset when switching turns
-  }, [record.id]);
+    setTab('clientRequest');
+    // Keyed by the client-request event id, not the traceId: a client that
+    // reuses one traceId produces multiple turns sharing it.
+  }, [turn.clientRequest?.id ?? turn.traceId]);
 
-  const tabs: { key: DrawerTab; label: string; value: unknown }[] = [
-    { key: 'reqIn', label: t('captures.tabReqIn'), value: record.request },
-    { key: 'reqOut', label: t('captures.tabReqOut'), value: record.upstreamRequest },
-    // Error turns have no success payload — show the verbatim upstream error
-    // response (status + body) under the response tab instead.
-    { key: 'resp', label: t('captures.tabResp'), value: record.response ?? record.upstreamError },
+  // 4 wire-side tabs, one per HTTP exchange phase. The naming is symmetric:
+  // direction (client | upstream) × phase (request | response) — the same
+  // shape as the W3C / OpenTelemetry span model. Clicking a tab shows the
+  // full wire dump (request line + headers + body OR response line + headers
+  // + body) of that side. Empty tab = the corresponding exchange never
+  // fired (e.g. gateway-response is missing when the gateway times out
+  // before sending a reply).
+  const tabs: { key: DrawerTab; label: string; ev?: HttpExchangeEvent }[] = [
+    { key: 'clientRequest',    label: t('captures.tabClientRequest'),    ev: turn.clientRequest },
+    { key: 'gatewayResponse',  label: t('captures.tabGatewayResponse'),  ev: turn.gatewayResponse },
+    { key: 'upstreamRequest',  label: t('captures.tabUpstreamRequest'),  ev: turn.upstreamRequest },
+    { key: 'upstreamResponse', label: t('captures.tabUpstreamResponse'), ev: turn.upstreamResponse },
   ];
   const active = tabs.find(x => x.key === tab)!;
+
+  // The single timestamp the drawer shows in the header: pick the EARLIEST
+  // event ts (client-request fires synchronously, upstream events may
+  // arrive later — earliest is the turn's t0).
+  const headerTs = turn.clientRequest?.ts
+    ?? turn.upstreamRequest?.ts
+    ?? turn.gatewayResponse?.ts
+    ?? turn.upstreamResponse?.ts;
+  const hasError = turn.error || active.ev?.status === 'error';
 
   return createPortal(
     <div
@@ -102,7 +196,7 @@ const CaptureDrawer: React.FC<{
         className="card"
         onClick={e => e.stopPropagation()}
         style={{
-          width: 'min(760px, 92vw)',
+          width: 'min(820px, 92vw)',
           height: '100vh',
           maxHeight: '100vh',
           borderRadius: 0,
@@ -114,7 +208,7 @@ const CaptureDrawer: React.FC<{
           animation: 'ocr-slide-in-right 0.18s ease',
         }}
       >
-        {/* Header: meta + close */}
+        {/* Header */}
         <div
           style={{
             display: 'flex',
@@ -128,57 +222,83 @@ const CaptureDrawer: React.FC<{
           <span
             className="badge"
             style={
-              record.status === 'ok'
-                ? { background: 'rgba(16,185,129,0.12)', color: 'var(--accent-emerald)' }
-                : { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
+              hasError
+                ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
+                : { background: 'rgba(16,185,129,0.12)', color: 'var(--accent-emerald)' }
             }
           >
-            {record.status === 'ok' ? t('captures.statusOk') : t('captures.statusError')}
+            {hasError ? t('captures.statusError') : t('captures.statusOk')}
           </span>
-          <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
-            {new Date(record.ts).toLocaleString()}
-          </span>
+          {headerTs !== undefined && (
+            <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
+              {new Date(headerTs).toLocaleString()}
+            </span>
+          )}
           <span
             style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
             title={t('captures.inboundModel')}
           >
-            {record.model}
+            {turn.model}
           </span>
-          <span style={{ color: 'var(--text-dim)', flexShrink: 0 }}>→</span>
+          {/* Upstream model actually executed (from the upstream exchange
+              events) — shown as `inbound → upstream` when known and
+              different, e.g. `auto → gpt-4o`. */}
+          {(() => {
+            const upstreamModel = turn.upstreamRequest?.model ?? turn.upstreamResponse?.model;
+            if (!upstreamModel || upstreamModel === turn.model) return null;
+            return (
+              <span
+                style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
+                title={t('captures.outboundModel')}
+              >
+                → {upstreamModel}
+              </span>
+            );
+          })()}
+          {/* TraceId — the linkable key for joining this turn
+              across capture events and the trace record. */}
           <span
-            style={{ fontSize: '12px', fontWeight: 600 }}
-            title={t('captures.outboundModel')}
+            title={t('captures.traceId')}
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-dim)',
+              fontFamily: 'JetBrains Mono, monospace',
+              background: 'rgba(255,255,255,0.04)',
+              padding: '2px 6px',
+              borderRadius: '4px',
+              maxWidth: '160px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
           >
-            {record.routing?.provider ? <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>[{record.routing.provider}] </span> : null}
-            {record.routing?.modelUsed || record.model}
+            trace:{turn.traceId.slice(0, 16)}
           </span>
-          {record.routing?.tierUsed && (
-            <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-dim)' }}>
-              {record.routing.tierUsed}
+          {/* Per-direction latency: gateway = client cycle, upstream =
+              upstream cycle. Missing when one side never fired. */}
+          {turn.gatewayLatencyMs !== undefined && (
+            <span
+              title={t('captures.gatewayLatency')}
+              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              ↳ {turn.gatewayLatencyMs} ms
             </span>
           )}
-          {record.truncated && (
-            <span className="badge" style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b' }}>
-              {t('captures.truncatedBadge')}
+          {turn.upstreamLatencyMs !== undefined && (
+            <span
+              title={t('captures.upstreamLatency')}
+              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              ↗ {turn.upstreamLatencyMs} ms
             </span>
           )}
-          {record.latencyMs !== undefined && (
-            <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
-              {record.latencyMs} ms
-            </span>
-          )}
-          <button
-            className="btn btn-sm"
-            style={{ marginLeft: 'auto' }}
-            onClick={onClose}
-            aria-label="Close"
-          >
+          <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label="Close">
             <X size={14} />
           </button>
         </div>
 
         {/* Error banner */}
-        {record.error && (
+        {turn.error && (
           <div
             style={{
               margin: '12px 16px 0',
@@ -194,14 +314,14 @@ const CaptureDrawer: React.FC<{
             }}
           >
             <AlertTriangle size={14} />
-            <span>{record.error}</span>
+            <span>{turn.error}</span>
           </div>
         )}
 
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: '4px', padding: '12px 16px 0', borderBottom: '1px solid var(--card-border)' }}>
+        {/* Tabs — 4 wire-side views */}
+        <div style={{ display: 'flex', gap: '4px', padding: '12px 16px 0', borderBottom: '1px solid var(--card-border)', flexWrap: 'wrap' }}>
           {tabs.map(x => {
-            const empty = x.value === undefined || x.value === null;
+            const empty = !x.ev;
             return (
               <button
                 key={x.key}
@@ -212,26 +332,55 @@ const CaptureDrawer: React.FC<{
                   border: 'none',
                   borderBottom: tab === x.key ? '2px solid var(--accent)' : '2px solid transparent',
                   color: tab === x.key ? 'var(--accent)' : 'var(--text-dim)',
-                  opacity: empty ? 0.55 : 1,
+                  opacity: empty ? 0.5 : 1,
                   fontSize: '12px',
                   padding: '8px 12px',
                   cursor: 'pointer',
+                  fontFamily: 'JetBrains Mono, monospace',
                 }}
               >
                 {x.label}
+                {!empty && x.ev && x.ev.phase === 'response' && (
+                  <span
+                    style={{
+                      marginLeft: 6,
+                      fontSize: '11px',
+                      color: x.ev.status === 'error' ? '#ef4444' : 'var(--text-dim)',
+                    }}
+                  >
+                    {x.ev.wire.status || 'ERR'}
+                  </span>
+                )}
               </button>
             );
           })}
         </div>
 
-        {/* Body */}
+        {/* Body: one wire dump (request line + headers + body) OR (response line + status + headers + body) */}
         <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px', minHeight: 0 }}>
-          {active.value === undefined || active.value === null ? (
+          {!active.ev ? (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
               {t('captures.tabEmpty')}
             </div>
           ) : (
-            <JsonBlock value={active.value} />
+            <>
+              <WireBlock event={active.ev} />
+              {active.ev.truncated && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    background: 'rgba(245,158,11,0.08)',
+                    border: '1px solid rgba(245,158,11,0.3)',
+                    color: '#f59e0b',
+                    fontSize: '11px',
+                  }}
+                >
+                  {t('captures.truncatedBadge')}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -240,10 +389,54 @@ const CaptureDrawer: React.FC<{
   );
 };
 
+/** Render one wire dump: line + headers + body, in that order, with status
+ *  for the response side. Mirrors the standard HTTP wire format so a
+ *  support engineer can paste it directly into a curl / netcat replay. */
+const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
+  const isResponse = event.phase === 'response';
+  const statusLine = isResponse
+    ? event.wire.responseLine || `HTTP/1.1 ${event.wire.status} ${event.wire.status === 0 ? 'NETWORK_ERROR' : ''}`.trim()
+    : event.wire.requestLine;
+  return (
+    <div>
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6, fontFamily: 'JetBrains Mono, monospace' }}>
+        {isResponse ? '← status line' : '→ request line'}
+      </div>
+      <pre
+        style={{
+          margin: 0,
+          padding: '10px 12px',
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid var(--card-border)',
+          borderRadius: '6px',
+          fontSize: '12px',
+          fontFamily: 'JetBrains Mono, monospace',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          color: 'var(--text)',
+        }}
+      >
+        {statusLine || '(no status line)'}
+      </pre>
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: 'JetBrains Mono, monospace' }}>
+        {isResponse ? '← response headers' : '→ request headers'}
+      </div>
+      <JsonBlock value={isResponse ? event.wire.responseHeaders : event.wire.requestHeaders} />
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: 'JetBrains Mono, monospace' }}>
+        {isResponse ? '← response body' : '→ request body'}
+      </div>
+      <JsonBlock value={isResponse ? event.wire.responseBody : event.wire.requestBody} />
+    </div>
+  );
+};
+
 /**
  * Export options dialog: pick which bodies to include in the JSONL download.
  * Metadata (time/status/model/routing/usage) is always kept — only the three
- * body views are optional. All on = verbatim archive (previous behavior).
+ * body views (request / upstreamRequest / response) are optional. The HTTP-
+ * level observation (`upstreamHttp`) rides along with the upstream wire
+ * body: stripping `upstreamRequest` strips both — they describe the same
+ * outbound transaction.
  */
 const ExportDialog: React.FC<{
   session: CaptureSessionRow;
@@ -272,7 +465,7 @@ const ExportDialog: React.FC<{
   // The response tab shows response ?? upstreamError, so one toggle drops both.
   const exclude: string[] = [];
   if (!keepReqIn) exclude.push('request');
-  if (!keepReqOut) exclude.push('upstreamRequest');
+  if (!keepReqOut) exclude.push('upstreamRequest', 'upstreamHttp');
   if (!keepResp) exclude.push('response', 'upstreamError');
 
   return createPortal(
@@ -363,10 +556,11 @@ export const CapturesPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [sessions, setSessions] = useState<CaptureSessionRow[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>('');
-  const [records, setRecords] = useState<CaptureRecord[]>([]);
+  const [turns, setTurns] = useState<CaptureTurn[]>([]);
+  const [events, setEvents] = useState<HttpExchangeEvent[]>([]);
   const [totalLines, setTotalLines] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
-  const [selectedRecord, setSelectedRecord] = useState<CaptureRecord | null>(null);
+  const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
@@ -402,16 +596,18 @@ export const CapturesPage: React.FC = () => {
 
   const loadRecords = useCallback(async (date: string, file: string) => {
     if (!date || !file) {
-      setRecords([]);
+      setTurns([]);
+      setEvents([]);
       return;
     }
     setLoading(true);
     try {
-      const res = await api.getCaptureRecords(date, file);
-      setRecords(res.records);
+      const res = await api.getCaptureEvents(date, file);
+      setTurns(res.turns);
+      setEvents(res.events);
       setTotalLines(res.totalLines);
       setFileTruncated(res.fileTruncated);
-      setSelectedRecord(null);
+      setSelectedTurnIdx(null);
     } catch (err) {
       console.error(err);
     } finally {
@@ -426,7 +622,8 @@ export const CapturesPage: React.FC = () => {
   useEffect(() => {
     loadSessions(selectedDate);
     setSelectedFile('');
-    setRecords([]);
+    setTurns([]);
+    setEvents([]);
   }, [selectedDate, loadSessions]);
 
   useEffect(() => {
@@ -538,7 +735,8 @@ export const CapturesPage: React.FC = () => {
       if (res.status === 'ok') {
         toast.success(t('captures.deleted'));
         setSelectedFile('');
-        setRecords([]);
+        setTurns([]);
+        setEvents([]);
         await loadStatus();
       } else {
         toast.error(res.message || t('common.failed'));
@@ -563,8 +761,9 @@ export const CapturesPage: React.FC = () => {
         // Drop the drawer + timeline if the deleted session was open.
         if (selectedFile === s.file) {
           setSelectedFile('');
-          setRecords([]);
-          setSelectedRecord(null);
+          setTurns([]);
+          setEvents([]);
+          setSelectedTurnIdx(null);
         }
         await loadSessions(selectedDate);
         await loadStatus();
@@ -887,85 +1086,100 @@ export const CapturesPage: React.FC = () => {
                               borderRadius: 1,
                             }}
                           />
-                          {records.length === 0 && (
+                          {turns.length === 0 && (
                             <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
                               {t('captures.emptyRecords')}
                             </div>
                           )}
-                          {records.map(r => (
-                            <div
-                              key={r.id}
-                              onClick={() => setSelectedRecord(r)}
-                              style={{
-                                position: 'relative',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '10px',
-                                padding: '7px 10px',
-                                marginBottom: '2px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                              }}
-                              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
-                              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                            >
-                              {/* Node dot */}
-                              <span
+                          {turns.map((turn, idx) => {
+                            const turnStart = turn.clientRequest?.ts
+                              ?? turn.upstreamRequest?.ts
+                              ?? turn.gatewayResponse?.ts
+                              ?? turn.upstreamResponse?.ts;
+                            const errEvent = turn.upstreamResponse?.status === 'error'
+                              || turn.gatewayResponse?.status === 'error'
+                              || !!turn.error;
+                            return (
+                              <div
+                                key={`${turn.traceId}-${idx}`}
+                                onClick={() => setSelectedTurnIdx(idx)}
                                 style={{
-                                  position: 'absolute',
-                                  left: -22,
-                                  top: 13,
-                                  width: 8,
-                                  height: 8,
-                                  borderRadius: '50%',
-                                  background:
-                                    r.status === 'ok'
-                                      ? 'var(--accent-emerald)'
-                                      : '#ef4444',
-                                  boxShadow: '0 0 0 2px var(--card-bg)',
+                                  position: 'relative',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                  padding: '7px 10px',
+                                  marginBottom: '2px',
+                                  borderRadius: '6px',
+                                  cursor: 'pointer',
+                                  fontSize: '12px',
                                 }}
-                              />
-                              <span style={{ color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace', flexShrink: 0 }}>
-                                {fmtTime(r.ts)}
-                              </span>
-                              <span
-                                className="badge"
-                                style={
-                                  r.status === 'ok'
-                                    ? { background: 'rgba(16,185,129,0.12)', color: 'var(--accent-emerald)' }
-                                    : { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
-                                }
+                                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+                                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                               >
-                                {r.status === 'ok' ? t('captures.statusOk') : t('captures.statusError')}
-                              </span>
-                              <span
-                                style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                                title={`${r.model} → ${r.routing?.provider ? r.routing.provider + '/' : ''}${r.routing?.modelUsed || r.model}`}
-                              >
-                                {r.routing?.modelUsed && r.routing.modelUsed !== r.model
-                                  ? `${r.model} → `
-                                  : null}
-                                {r.routing?.provider ? <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>[{r.routing.provider}] </span> : null}
-                                {r.routing?.modelUsed || r.model}
-                              </span>
-                              {r.truncated && (
-                                <span className="badge" style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b', flexShrink: 0 }}>
-                                  {t('captures.truncatedBadge')}
+                                <span
+                                  style={{
+                                    position: 'absolute',
+                                    left: -22,
+                                    top: 13,
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    background: errEvent ? '#ef4444' : 'var(--accent-emerald)',
+                                    boxShadow: '0 0 0 2px var(--card-bg)',
+                                  }}
+                                />
+                                <span style={{ color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace', flexShrink: 0 }}>
+                                  {turnStart !== undefined ? fmtTime(turnStart) : ''}
                                 </span>
-                              )}
-                              <span
-                                style={{
-                                  marginLeft: 'auto',
-                                  color: 'var(--text-dim)',
-                                  fontFamily: 'JetBrains Mono, monospace',
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {r.latencyMs !== undefined ? `${r.latencyMs} ms` : ''}
-                              </span>
-                            </div>
-                          ))}
+                                <span
+                                  className="badge"
+                                  style={
+                                    errEvent
+                                      ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
+                                      : { background: 'rgba(16,185,129,0.12)', color: 'var(--accent-emerald)' }
+                                  }
+                                >
+                                  {errEvent ? t('captures.statusError') : t('captures.statusOk')}
+                                </span>
+                                <span style={{ fontWeight: 600 }}>
+                                  {turn.model}
+                                  {(() => {
+                                    const upstreamModel = turn.upstreamRequest?.model ?? turn.upstreamResponse?.model;
+                                    if (!upstreamModel || upstreamModel === turn.model) return null;
+                                    return (
+                                      <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>
+                                        {' '}→ {upstreamModel}
+                                      </span>
+                                    );
+                                  })()}
+                                </span>
+                                <span
+                                  title={`traceId=${turn.traceId}`}
+                                  style={{
+                                    fontSize: '11px',
+                                    color: 'var(--text-dim)',
+                                    fontFamily: 'JetBrains Mono, monospace',
+                                    background: 'rgba(255,255,255,0.04)',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                  }}
+                                >
+                                  trace:{turn.traceId.slice(0, 12)}…
+                                </span>
+                                {turn.gatewayLatencyMs !== undefined && (
+                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                                    ↳ {turn.gatewayLatencyMs} ms
+                                  </span>
+                                )}
+                                {turn.upstreamLatencyMs !== undefined && (
+                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                                    ↗ {turn.upstreamLatencyMs} ms
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     </>
@@ -977,8 +1191,8 @@ export const CapturesPage: React.FC = () => {
         </div>
       )}
 
-      {selectedRecord && (
-        <CaptureDrawer record={selectedRecord} onClose={() => setSelectedRecord(null)} />
+      {selectedTurnIdx !== null && turns[selectedTurnIdx] && (
+        <CaptureDrawer turn={turns[selectedTurnIdx]} onClose={() => setSelectedTurnIdx(null)} />
       )}
 
       {exportTarget && (

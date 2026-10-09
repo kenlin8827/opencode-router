@@ -15,6 +15,23 @@ export interface ExecutionTrace {
     messageCount: number;
     hasSystemPrompt: boolean;
     hasToolsOrSchema: boolean;
+    /**
+     * Non-sensitive subset of inbound request headers. Three categories:
+     *   - userAgent / acceptLanguage: client fingerprint.
+     *   - requestId: cross-service correlation id (x-request-id /
+     *     x-trace-id / x-correlation-id / request-id / traceparent), lets
+     *     console traces be joined with upstream logs / reverse proxies.
+     * Authorization / x-api-key / cookies / any other credential-bearing
+     * header are intentionally omitted. `undefined` when the inbound wire
+     * did not expose headers (e.g. internal calls). Forgiving forward-
+     * compat: traces replayed from disk before this field existed
+     * deserialize with `clientHeaders === undefined`.
+     */
+    clientHeaders?: {
+      userAgent?: string;
+      acceptLanguage?: string;
+      requestId?: string;
+    };
   };
   routing: {
     layerUsed: 'layer0' | 'layer1' | 'layer2';

@@ -1,7 +1,14 @@
-import { LLMProvider } from './base.js';
+import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { OpenCodeServiceConfig } from '../opencode/sync.js';
+import { proxiedFetch } from '../utils/proxy.js';
+import {
+  emitUpstreamRequestOnce,
+  emitUpstreamResponseOnce,
+  emitUpstreamFailureOnce,
+  withUpstreamFailureGuard,
+} from '../observability/upstream-events.js';
 
 export class OpenCodeProxyProvider implements LLMProvider {
   public name = 'opencode-proxy';
@@ -13,7 +20,8 @@ export class OpenCodeProxyProvider implements LLMProvider {
 
   public async createCompletion(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/api/experimental/generate`;
 
@@ -37,21 +45,103 @@ export class OpenCodeProxyProvider implements LLMProvider {
       },
     };
 
-    const res = await fetch(url, {
+    const outboundHeaders: Record<string, string> = {
+      Authorization: this.config.authHeader,
+      'Content-Type': 'application/json',
+    };
+
+    // Event-stream emit BEFORE the fetch fires. Independent of the response.
+    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+      url,
       method: 'POST',
-      headers: {
-        Authorization: this.config.authHeader,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
+      requestHeaders: outboundHeaders,
+      requestBody: JSON.stringify(payload),
+      model: model.upstreamModel,
     });
 
+    // The guard emits a paired failure response event on ANY thrown error so
+    // console readers never see a dangling request event.
+    const res = await withUpstreamFailureGuard(
+      upstreamEventContext,
+      spanId,
+      url,
+      'POST',
+      // Loopback URLs skip the proxy (see isLoopbackUrl in proxy.ts), so this
+      // also keeps local daemon calls from being routed via the gateway.
+      () => proxiedFetch(
+        url,
+        {
+          method: 'POST',
+          headers: outboundHeaders,
+          body: JSON.stringify(payload),
+        },
+        { provider: this.name, model: model.id }
+      ),
+      model.upstreamModel
+    );
+
     if (!res.ok) {
-      const errText = await res.text();
+      // Body read can fail mid-stream (connection reset) — pair the request
+      // event with a failure response before rethrowing.
+      let errText: string;
+      try {
+        errText = await res.text();
+      } catch (err: any) {
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          error: `Response body read failed: ${err?.message ?? err}`,
+        });
+        throw err;
+      }
+      emitUpstreamFailureOnce(upstreamEventContext, {
+        model: model.upstreamModel,
+        spanId,
+        url,
+        method: 'POST',
+        status: res.status,
+        statusText: res.statusText,
+        responseHeaders: res.headers,
+        responseBody: errText,
+        error: `OpenCode Proxy error [${res.status}]`,
+      });
       throw new Error(`OpenCode Proxy failed [${res.status}]: ${errText}`);
     }
 
-    const data = (await res.json()) as any;
+    // Emit the response event the moment the body BYTES arrive — before
+    // JSON.parse (see anthropic.ts for the rationale).
+    let rawBody: string;
+    try {
+      rawBody = await res.text();
+    } catch (err: any) {
+      emitUpstreamFailureOnce(upstreamEventContext, {
+        model: model.upstreamModel,
+        spanId,
+        url,
+        method: 'POST',
+        status: res.status,
+        statusText: res.statusText,
+        error: `Response body read failed: ${err?.message ?? err}`,
+      });
+      throw err;
+    }
+    // The shape is `{ data: { text: string } }` (private HTTP API; not
+    // OpenAI-compatible).
+    emitUpstreamResponseOnce(upstreamEventContext, {
+      model: model.upstreamModel,
+      spanId,
+      url,
+      method: 'POST',
+      status: res.status,
+      statusText: res.statusText,
+      responseHeaders: res.headers,
+      responseBody: rawBody,
+    });
+    const data = JSON.parse(rawBody) as any;
     const text = data.data?.text || '';
 
     // Estimate tokens

@@ -1,0 +1,142 @@
+import type { CaptureRecorder } from '../capture/recorder.js';
+import { emitUpstreamRequest, emitUpstreamResponse } from '../observability/http-exchange.js';
+
+/**
+ * Event-stream upstream context shared by the provider adapters. The shape
+ * is intentionally minimal — the orchestrator fills it once, and the
+ * adapter passes it to every `emitUpstreamRequest` / `emitUpstreamResponse`
+ * call. Centralizing the field names here keeps the 5 provider adapters
+ * from each spelling out the same boilerplate.
+ */
+export interface UpstreamEventContext {
+  sessionId: string;
+  /** OpenTelemetry traceId shared across all events of one inference turn. */
+  traceId: string;
+  model: string;
+  recorder: CaptureRecorder;
+}
+
+/** Returns the spanId minted by `emitUpstreamRequest`, or undefined when the context is absent (capture off / mock mode / tests). */
+export function emitUpstreamRequestOnce(
+  ctx: UpstreamEventContext | undefined,
+  args: {
+    url: string;
+    method: string;
+    requestHeaders: Record<string, string>;
+    requestBody: string;
+    /** Actual upstream model on the wire (defaults to ctx.model = the client-requested model). */
+    model?: string;
+  }
+): string | undefined {
+  if (!ctx) return undefined;
+  return emitUpstreamRequest({
+    recorder: ctx.recorder,
+    url: args.url,
+    method: args.method,
+    requestHeaders: args.requestHeaders,
+    requestBody: args.requestBody,
+    sessionId: ctx.sessionId,
+    traceId: ctx.traceId,
+    model: args.model ?? ctx.model,
+  });
+}
+
+/** Emit a SUCCESS upstream response event. */
+export function emitUpstreamResponseOnce(
+  ctx: UpstreamEventContext | undefined,
+  args: {
+    spanId: string | undefined;
+    url: string;
+    method: string;
+    status: number;
+    statusText: string;
+    responseHeaders: Headers;
+    responseBody: string;
+    model?: string;
+  }
+): void {
+  if (!ctx || !args.spanId) return;
+  emitUpstreamResponse({
+    recorder: ctx.recorder,
+    url: args.url,
+    method: args.method,
+    status: args.status,
+    statusText: args.statusText,
+    responseHeaders: args.responseHeaders,
+    responseBody: args.responseBody,
+    sessionId: ctx.sessionId,
+    traceId: ctx.traceId,
+    model: args.model ?? ctx.model,
+    spanId: args.spanId,
+  });
+}
+
+/**
+ * Emit an upstream FAILURE response event. Always pairs with the request
+ * event fired earlier so console readers don't see dangling request
+ * events that never resolve. Status is reported as the upstream's HTTP
+ * status when known, else `0` (network / DNS / TLS / timeout).
+ */
+export function emitUpstreamFailureOnce(
+  ctx: UpstreamEventContext | undefined,
+  args: {
+    spanId: string | undefined;
+    url: string;
+    method: string;
+    status: number;
+    statusText: string;
+    responseHeaders?: Headers;
+    responseBody?: string;
+    error: string;
+    model?: string;
+  }
+): void {
+  if (!ctx || !args.spanId) return;
+  emitUpstreamResponse({
+    recorder: ctx.recorder,
+    url: args.url,
+    method: args.method,
+    status: args.status,
+    statusText: args.statusText,
+    responseHeaders: args.responseHeaders ?? new Headers(),
+    responseBody: args.responseBody ?? '',
+    sessionId: ctx.sessionId,
+    traceId: ctx.traceId,
+    model: args.model ?? ctx.model,
+    spanId: args.spanId,
+    error: args.error,
+  });
+}
+
+/**
+ * Wrap a provider fetch+parse in a try/catch that guarantees a response
+ * event fires for every request event, even when the fetch itself throws
+ * (DNS failure, TLS handshake, TCP reset, abort). The thrown error is
+ * re-thrown after emitting so the orchestrator's retry / failover logic
+ * still runs unchanged — only the capture pipeline is given a complete
+ * req/resp pair.
+ */
+export async function withUpstreamFailureGuard<T>(
+  ctx: UpstreamEventContext | undefined,
+  spanId: string | undefined,
+  url: string,
+  method: string,
+  fn: () => Promise<T>,
+  model?: string
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err: any) {
+    const status = typeof err?.status === 'number' ? err.status : 0;
+    emitUpstreamFailureOnce(ctx, {
+      spanId,
+      url,
+      method,
+      status,
+      statusText: typeof err?.statusText === 'string' ? err.statusText : (status === 0 ? 'NETWORK_ERROR' : ''),
+      error: typeof err?.message === 'string' ? err.message : String(err),
+      model,
+    });
+    throw err;
+  }
+}

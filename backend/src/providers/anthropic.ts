@@ -1,10 +1,16 @@
 import crypto from 'node:crypto';
-import { LLMProvider } from './base.js';
+import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch } from '../utils/proxy.js';
 import { anthropicMessagesUrl } from './wire.js';
+import {
+  emitUpstreamRequestOnce,
+  emitUpstreamResponseOnce,
+  emitUpstreamFailureOnce,
+  withUpstreamFailureGuard,
+} from '../observability/upstream-events.js';
 
 /**
  * Anthropic Messages upstream wire. Tools are fully mapped both directions
@@ -177,7 +183,8 @@ export class AnthropicProvider implements LLMProvider {
 
   public async createCompletion(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<ChatCompletionResponse> {
     const url = anthropicMessagesUrl(this.config.baseUrl);
     const headers: Record<string, string> = {
@@ -190,21 +197,66 @@ export class AnthropicProvider implements LLMProvider {
 
     const payload = buildAnthropicPayload(request, model);
 
+    // Event-stream emit BEFORE the fetch fires. Independent of the response.
+    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+      url,
+      method: 'POST',
+      requestHeaders: headers,
+      requestBody: JSON.stringify(payload),
+      model: model.upstreamModel,
+    });
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
 
     try {
-      const res = await proxiedFetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      }, { provider: this.config.name, model: model.id });
+      // The guard emits a paired failure response event on ANY thrown error
+      // so console readers never see a dangling request event.
+      const res = await withUpstreamFailureGuard(
+        upstreamEventContext,
+        spanId,
+        url,
+        'POST',
+        () => proxiedFetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        }, { provider: this.config.name, model: model.id }),
+        model.upstreamModel
+      );
 
       if (!res.ok) {
-        const errorText = await res.text();
+        // Body read can fail mid-stream (connection reset) — pair the request
+        // event with a failure response before rethrowing.
+        let errorText: string;
+        try {
+          errorText = await res.text();
+        } catch (err: any) {
+          emitUpstreamFailureOnce(upstreamEventContext, {
+            model: model.upstreamModel,
+            spanId,
+            url,
+            method: 'POST',
+            status: res.status,
+            statusText: res.statusText,
+            error: `Response body read failed: ${err?.message ?? err}`,
+          });
+          throw err;
+        }
         const retryAfterHeader = res.headers.get('retry-after');
         const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          responseHeaders: res.headers,
+          responseBody: errorText,
+          error: `Anthropic error [${res.status}]`,
+        });
         throw new UpstreamError({
           message: `Anthropic error [${res.status}]: ${errorText}`,
           status: res.status,
@@ -215,7 +267,36 @@ export class AnthropicProvider implements LLMProvider {
         });
       }
 
-      const data = (await res.json()) as any;
+      // Emit the response event the moment the body BYTES arrive — before
+      // JSON.parse. A 200-with-garbage body (e.g. misconfigured baseUrl
+      // returning an HTML error page) must still leave the response event
+      // on disk; likewise a mid-body connection reset gets a failure event.
+      let rawBody: string;
+      try {
+        rawBody = await res.text();
+      } catch (err: any) {
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          error: `Response body read failed: ${err?.message ?? err}`,
+        });
+        throw err;
+      }
+      emitUpstreamResponseOnce(upstreamEventContext, {
+        model: model.upstreamModel,
+        spanId,
+        url,
+        method: 'POST',
+        status: res.status,
+        statusText: res.statusText,
+        responseHeaders: res.headers,
+        responseBody: rawBody,
+      });
+      const data = JSON.parse(rawBody) as any;
       return anthropicToChatCompletion(data, model);
     } finally {
       clearTimeout(timeout);

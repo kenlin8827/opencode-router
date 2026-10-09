@@ -46,7 +46,10 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const sessionId = res.headers['x-ocr-session-id'] as string;
 
     assert.ok(traceId, 'Response header must contain X-OCR-Trace-ID');
-    assert.ok(traceId.startsWith('trace_'), 'Trace ID should have trace_ prefix');
+    // The trace id is the OpenTelemetry traceId shared with the capture
+    // event stream: a 32-hex string when minted locally (no inbound
+    // traceparent / x-request-id headers in this request).
+    assert.match(traceId, /^[0-9a-f]{32}$/, 'Trace ID should be a 32-hex OTel traceId');
     assert.strictEqual(sessionId, 'sess_unit_test_trace_1');
   });
 

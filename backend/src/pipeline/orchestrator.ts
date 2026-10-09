@@ -14,6 +14,9 @@ import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
+import type { UpstreamEventContext } from '../providers/base.js';
+import { emitClientRequest, setClientExchangeContext } from '../observability/http-exchange.js';
+import { resolveTraceId } from '../observability/trace-id.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 
 export interface ProcessContext {
@@ -21,6 +24,13 @@ export interface ProcessContext {
   headers?: Record<string, string | string[] | undefined>;
   /** Inbound wire that produced this request — recorded as session birth metadata. */
   wire?: 'chat' | 'anthropic' | 'responses';
+  /**
+   * Raw Fastify request, used by the capture pipeline to record the inbound
+   * request event (method / url / sanitized headers / body) synchronously
+   * at process() entry — independent of any response. Optional so legacy
+   * callers and unit tests can pass plain headers without a request object.
+   */
+  fastifyRequest?: import('fastify').FastifyRequest;
 }
 
 /** Deep-enough message copy for capture snapshots (content parts cloned). */
@@ -29,6 +39,45 @@ function snapshotMessages(messages: any[]): any[] {
     role: m.role,
     content: Array.isArray(m.content) ? m.content.map((p: any) => ({ ...p })) : m.content,
   }));
+}
+
+/**
+ * Pull a non-sensitive subset of inbound headers for the trace's
+ * `clientHeaders` field. Three categories:
+ *   - user-agent / accept-language — client fingerprint.
+ *   - request id (x-request-id / x-trace-id / x-correlation-id / request-id /
+ *     traceparent) — cross-service correlation, NOT a credential.
+ * Authorization / x-api-key / cookies / anything else are intentionally
+ * omitted (raw headers carry API keys). Fastify surfaces headers as
+ * `string | string[] | undefined`; arrays collapse to their first value to
+ * keep the field scalar. Returns undefined when nothing matched so the
+ * trace stays compact for the common no-headers path.
+ */
+const REQUEST_ID_KEYS = ['x-request-id', 'x-trace-id', 'x-correlation-id', 'request-id', 'traceparent'];
+
+function extractClientHeaders(
+  headers?: Record<string, string | string[] | undefined>
+): { userAgent?: string; acceptLanguage?: string; requestId?: string } | undefined {
+  if (!headers) return undefined;
+  const pick = (key: string): string | undefined => {
+    const v = headers[key] ?? headers[key.toLowerCase()];
+    if (v === undefined) return undefined;
+    if (Array.isArray(v)) return v[0];
+    return v;
+  };
+  const ua = pick('user-agent');
+  const al = pick('accept-language');
+  let rid: string | undefined;
+  for (const k of REQUEST_ID_KEYS) {
+    rid = pick(k);
+    if (rid) break;
+  }
+  if (ua === undefined && al === undefined && rid === undefined) return undefined;
+  return {
+    ...(ua !== undefined ? { userAgent: ua } : {}),
+    ...(al !== undefined ? { acceptLanguage: al } : {}),
+    ...(rid !== undefined ? { requestId: rid } : {}),
+  };
 }
 
 export class PipelineOrchestrator {
@@ -125,13 +174,21 @@ export class PipelineOrchestrator {
     const startTime = Date.now();
     const captureEnabled = this.captureRecorder.isEnabled();
 
+    // Capture pipeline state — see observability/http-exchange.ts and
+    // observability/upstream-events.ts for the wire emit contract. The
+    // `traceId` shared across all four events is sourced from the inbound
+    // request when the client supplied one (W3C `traceparent`,
+    // `x-request-id`) so the gateway stays transparent in distributed
+    // traces; when nothing is supplied, we mint a fresh 32-hex id
+    // (OpenTelemetry compliant).
+    const traceResolution = context?.fastifyRequest
+      ? resolveTraceId(context.fastifyRequest, 'client-or-mint')
+      : { traceId: crypto.randomUUID().replace(/-/g, '').slice(0, 32), source: 'minted' as const };
+    const captureOutTraceId = traceResolution.traceId;
+
     let captureSessionId = '';
     let preResolvedSession: SessionResolveResult | undefined;
-    let captureRequest: ChatCompletionRequest | undefined;
-    const captureOut: {
-      upstreamRequest?: ChatCompletionRequest;
-      upstreamError?: unknown;
-    } = {};
+    let upstreamEventContext: UpstreamEventContext | undefined;
     if (captureEnabled) {
       const normalizedMessages = PromptOptimizer.normalizeMessages(request);
       const snapshotRequest: ChatCompletionRequest = { ...request, messages: normalizedMessages };
@@ -144,51 +201,31 @@ export class PipelineOrchestrator {
         context?.headers
       );
       captureSessionId = preResolvedSession.sessionId;
-      captureRequest = {
-        ...snapshotRequest,
-        messages: snapshotMessages(normalizedMessages),
+      // CLIENT REQUEST event fires synchronously here — independent of any
+      // response. Even if the upstream call hangs / times out / the handler
+      // throws, the client request event is already on disk.
+      // (GATEWAY RESPONSE event is emitted by the Fastify onResponse hook
+      // after the handler returns, using the ctx attached back onto req.)
+      const clientExchangeCtx = emitClientRequest({
+        recorder: this.captureRecorder,
+        req: context?.fastifyRequest,
+        body: snapshotRequest,
+        sessionId: captureSessionId,
+        traceId: captureOutTraceId,
+        model: request.model || 'auto',
+      });
+      if (context?.fastifyRequest) {
+        setClientExchangeContext(context.fastifyRequest, clientExchangeCtx);
+      }
+      upstreamEventContext = {
+        recorder: this.captureRecorder,
+        sessionId: captureSessionId,
+        traceId: captureOutTraceId,
+        model: request.model || 'auto',
       };
     }
 
-    try {
-      const result = await this.processInternal(request, context, captureOut, preResolvedSession);
-      if (captureEnabled) {
-        void this.captureRecorder.record({
-          sessionId: captureSessionId,
-          status: 'ok',
-          model: request.model || 'auto',
-          request: captureRequest,
-          upstreamRequest: captureOut.upstreamRequest,
-          upstreamError: captureOut.upstreamError,
-          response: result.response,
-          routing: {
-            tierUsed: result.tierUsed,
-            layerUsed: result.layerUsed,
-            modelUsed: result.modelUsed,
-            provider: this.registry.getModel(result.modelUsed)?.provider,
-            fallbackOccurred: result.fallbackOccurred,
-            failoverPath: result.failoverPath,
-          },
-          usage: result.response.usage,
-          latencyMs: result.latencyMs,
-        });
-      }
-      return result;
-    } catch (err: any) {
-      if (captureEnabled) {
-        void this.captureRecorder.record({
-          sessionId: captureSessionId,
-          status: 'error',
-          model: request.model || 'auto',
-          request: captureRequest,
-          upstreamRequest: captureOut.upstreamRequest,
-          upstreamError: captureOut.upstreamError,
-          error: err?.message || String(err),
-          latencyMs: Date.now() - startTime,
-        });
-      }
-      throw err;
-    }
+    return await this.processInternal(request, context, preResolvedSession, upstreamEventContext, captureOutTraceId);
   }
 
   /**
@@ -205,11 +242,9 @@ export class PipelineOrchestrator {
   private async processInternal(
     request: ChatCompletionRequest,
     context?: ProcessContext,
-    captureOut?: {
-      upstreamRequest?: ChatCompletionRequest;
-      upstreamError?: unknown;
-    },
-    preResolvedSession?: SessionResolveResult
+    preResolvedSession?: SessionResolveResult,
+    upstreamEventContext?: UpstreamEventContext,
+    traceId?: string
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
 
@@ -421,7 +456,7 @@ export class PipelineOrchestrator {
           allowEscalate: tierCrossPolicy === 'allow_escalate',
           attemptCap: maxFailoverCandidates,
         },
-        captureOut
+        upstreamEventContext
       );
 
       let fastRes: ChatCompletionResponse | null = null;
@@ -472,7 +507,7 @@ export class PipelineOrchestrator {
             allowEscalate: false,
             attemptCap: maxFailoverCandidates,
           },
-          captureOut
+          upstreamEventContext
         );
 
         if (!flagshipResult.success || !flagshipResult.response) {
@@ -529,7 +564,7 @@ export class PipelineOrchestrator {
       const execResult = await this.executeCandidatePool(
         normalizedRequest,
         { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel },
-        captureOut
+        upstreamEventContext
       );
 
       if (!execResult.success || !execResult.response) {
@@ -606,8 +641,11 @@ export class PipelineOrchestrator {
       latencyMs,
     });
 
-    // 9. Session Trajectory Recording
-    const traceId = `trace_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    // 9. Session Trajectory Recording — the traceId is shared with the
+    // capture event stream (the OTel traceId sourced from the client request
+    // — see resolveTraceId). One id now joins capture events and the trace
+    // record, so a console reader can pull both streams by traceId.
+    const sharedTraceId = traceId ?? 'unknown';
     const lastUserMsg = normalizedRequest.messages.filter(m => m.role === 'user').pop();
     const userPromptSummary = typeof lastUserMsg?.content === 'string'
       ? lastUserMsg.content.slice(0, 200)
@@ -616,7 +654,7 @@ export class PipelineOrchestrator {
         : '';
 
     this.traceTracker.record({
-      traceId,
+      traceId: sharedTraceId,
       sessionId,
       turnNumber: sessionTurnCount,
       timestamp: startTime,
@@ -626,6 +664,7 @@ export class PipelineOrchestrator {
         messageCount: normalizedRequest.messages.length,
         hasSystemPrompt: normalizedRequest.messages.some(m => m.role === 'system'),
         hasToolsOrSchema: Boolean(decision.needsSchemaValidation),
+        clientHeaders: extractClientHeaders(context?.headers),
       },
       routing: {
         layerUsed: (decision.layerUsed || 'layer0') as any,
@@ -673,7 +712,7 @@ export class PipelineOrchestrator {
       sessionId,
       sessionRatchetApplied: ratchetApplied,
       sessionLookupType: sessionResolve.lookupType,
-      traceId,
+      traceId: sharedTraceId,
       costUsd: actualCost,
       baselineCostUsd: baselineCost,
       savedCostUsd,
@@ -719,10 +758,7 @@ export class PipelineOrchestrator {
       attemptCap: number;
       label?: string;
     },
-    captureOut?: {
-      upstreamRequest?: ChatCompletionRequest;
-      upstreamError?: unknown;
-    }
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<{
     success: boolean;
     response?: ChatCompletionResponse;
@@ -782,28 +818,16 @@ export class PipelineOrchestrator {
 
       for (let attempt = 0; attempt <= maxInplaceAttempts; attempt++) {
         try {
-          candidateResponse = await this.registry.execute(request, candidate);
+          candidateResponse = await this.registry.execute(
+            request,
+            candidate,
+            upstreamEventContext
+          );
           cbManager.recordSuccess(candidate.id);
           candidateSucceeded = true;
           break; // successfully executed on this candidate!
         } catch (err: any) {
           lastError = err;
-          // Capture the upstream error payload verbatim (status + parsed body)
-          // so failed turns show what the provider actually returned.
-          if (captureOut && err?.errorBody !== undefined) {
-            let parsedBody: unknown = err.errorBody;
-            try {
-              parsedBody = JSON.parse(err.errorBody);
-            } catch {
-              // Not JSON — keep the raw string.
-            }
-            captureOut.upstreamError = {
-              status: err.status,
-              provider: err.provider,
-              modelId: err.modelId,
-              body: parsedBody,
-            };
-          }
           const diagnosis = ErrorClassifier.classify(
             err,
             candidate.id,
@@ -815,12 +839,6 @@ export class PipelineOrchestrator {
 
           // 1. Client error (400 Bad Request, context length exceeded) -> NEVER retriable, fail immediately
           if (!diagnosis.isRetriable) {
-            if (captureOut) {
-              captureOut.upstreamRequest = {
-                ...request,
-                messages: snapshotMessages(request.messages || []),
-              };
-            }
             return {
               success: false,
               failoverOccurred: false,
@@ -849,15 +867,9 @@ export class PipelineOrchestrator {
       }
 
       if (candidateSucceeded && candidateResponse) {
-        // Capture what the SUCCESSFUL upstream call actually received — for
-        // the escalation path this is the fallback/escalation request, not
-        // the original (post-compression) one.
-        if (captureOut) {
-          captureOut.upstreamRequest = {
-            ...request,
-            messages: snapshotMessages(request.messages || []),
-          };
-        }
+        // The provider published its real wire body through the capture sink
+        // before returning — captureOut.upstreamRequest holds the SUCCESSFUL
+        // attempt's payload (last write wins across retries).
         return {
           success: true,
           response: candidateResponse,
@@ -876,12 +888,6 @@ export class PipelineOrchestrator {
     // turns still carry the outbound view for debugging. Zero-attempt failures
     // (empty pool / every candidate skipped by breaker) never wrote anything
     // upstream, so no snapshot is recorded for them.
-    if (captureOut && failoverAttempts > 0) {
-      captureOut.upstreamRequest = {
-        ...request,
-        messages: snapshotMessages(request.messages || []),
-      };
-    }
     return {
       success: false,
       failoverOccurred: failoverAttempts > 1,

@@ -8,6 +8,10 @@ import {
   Tool,
 } from '../types/openai.js';
 import { ChatMessageLite, RespNode, RespStore, newResponseId } from '../session/resp-store.js';
+import {
+  appendGatewayResponseChunk,
+  getClientExchangeContext,
+} from '../observability/http-exchange.js';
 
 /**
  * OpenAI Responses API compatibility layer (POST /v1/responses).
@@ -338,6 +342,7 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
         clientIp: req.ip,
         headers: req.headers,
         wire: 'responses',
+        fastifyRequest: req,
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
@@ -375,7 +380,9 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
           'Access-Control-Allow-Origin': '*',
           'X-OCR-Session-ID': result.sessionId || '',
         });
+        const sseCtx = getClientExchangeContext(req);
         for (const evt of chatToStreamEvents(result.response, respId, result.modelUsed)) {
+          if (sseCtx) appendGatewayResponseChunk(sseCtx, evt);
           reply.raw.write(evt);
         }
         reply.raw.end();

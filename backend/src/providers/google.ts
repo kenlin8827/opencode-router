@@ -1,9 +1,15 @@
 import crypto from 'node:crypto';
-import { LLMProvider } from './base.js';
+import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch } from '../utils/proxy.js';
+import {
+  emitUpstreamRequestOnce,
+  emitUpstreamResponseOnce,
+  emitUpstreamFailureOnce,
+  withUpstreamFailureGuard,
+} from '../observability/upstream-events.js';
 
 /**
  * ADR-0011: Google Generative Language wire (`@ai-sdk/google`) —
@@ -182,33 +188,79 @@ export class GoogleProvider implements LLMProvider {
 
   public async createCompletion(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/models/${encodeURIComponent(model.upstreamModel)}:generateContent`;
 
     const payload = buildGooglePayload(request, model);
 
+    const outboundHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': this.config.apiKey,
+      ...this.config.headers,
+    };
+
+    // Event-stream emit BEFORE the fetch fires. Independent of the response.
+    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+      url,
+      method: 'POST',
+      requestHeaders: outboundHeaders,
+      requestBody: JSON.stringify(payload),
+      model: model.upstreamModel,
+    });
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
 
     try {
-      const res = await proxiedFetch(
+      const res = await withUpstreamFailureGuard(
+        upstreamEventContext,
+        spanId,
         url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': this.config.apiKey,
-            ...this.config.headers,
+        'POST',
+        () => proxiedFetch(
+          url,
+          {
+            method: 'POST',
+            headers: outboundHeaders,
+            body: JSON.stringify(payload),
+            signal: controller.signal,
           },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        },
-        { provider: this.config.name, model: model.id }
+          { provider: this.config.name, model: model.id }
+        ),
+          model.upstreamModel
       );
 
       if (!res.ok) {
-        const errorText = await res.text();
+        // Body read can fail mid-stream (connection reset) — pair the request
+        // event with a failure response before rethrowing.
+        let errorText: string;
+        try {
+          errorText = await res.text();
+        } catch (err: any) {
+          emitUpstreamFailureOnce(upstreamEventContext, {
+            model: model.upstreamModel,
+            spanId,
+            url,
+            method: 'POST',
+            status: res.status,
+            statusText: res.statusText,
+            error: `Response body read failed: ${err?.message ?? err}`,
+          });
+          throw err;
+        }
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          responseHeaders: res.headers,
+          responseBody: errorText,
+          error: `Google error [${res.status}]`,
+        });
         throw new UpstreamError({
           message: `Upstream ${this.name} [google] returned status ${res.status}: ${errorText}`,
           status: res.status,
@@ -218,7 +270,34 @@ export class GoogleProvider implements LLMProvider {
         });
       }
 
-      const data = (await res.json()) as any;
+      // Emit the response event the moment the body BYTES arrive — before
+      // JSON.parse (see anthropic.ts for the rationale).
+      let rawBody: string;
+      try {
+        rawBody = await res.text();
+      } catch (err: any) {
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          error: `Response body read failed: ${err?.message ?? err}`,
+        });
+        throw err;
+      }
+      emitUpstreamResponseOnce(upstreamEventContext, {
+        model: model.upstreamModel,
+        spanId,
+        url,
+        method: 'POST',
+        status: res.status,
+        statusText: res.statusText,
+        responseHeaders: res.headers,
+        responseBody: rawBody,
+      });
+      const data = JSON.parse(rawBody) as any;
       return googleToChatCompletion(data, model);
     } finally {
       clearTimeout(timeout);

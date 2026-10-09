@@ -333,6 +333,46 @@ describe('CaptureRecorder', () => {
     }
   });
 
+  it('listSessions tallies event-stream files per TURN (not per event line)', async () => {
+    const dir = makeTmpDir();
+    try {
+      const rec = new CaptureRecorder({ enabled: true, dir, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 4096 });
+      const wire = { requestLine: '', requestHeaders: {}, requestBody: '', responseLine: '', status: 0, responseHeaders: {}, responseBody: '' };
+      // Turn 1 (ok): full 4-event cycle.
+      for (const [direction, phase, spanId] of [
+        ['client', 'request', 's1'], ['upstream', 'request', 's2'],
+        ['upstream', 'response', 's2'], ['client', 'response', 's1'],
+      ] as const) {
+        await rec.recordEvent({
+          eventType: 'http-exchange', direction, phase, spanId, traceId: 't1',
+          sessionId: 'sess_evt', model: 'auto', status: 'ok',
+          wire: direction === 'client' && phase === 'request'
+            ? { ...wire, requestBody: JSON.stringify({ messages: [{ role: 'user', content: '事件流预览文本' }] }) }
+            : wire,
+        });
+      }
+      // Turn 2 (failed): upstream response is an error → ONE failed turn,
+      // even though a gateway-response error event also carries the traceId.
+      for (const [direction, phase, spanId, status] of [
+        ['client', 'request', 's3', 'ok'], ['upstream', 'request', 's4', 'ok'],
+        ['upstream', 'response', 's4', 'error'], ['client', 'response', 's3', 'error'],
+      ] as const) {
+        await rec.recordEvent({
+          eventType: 'http-exchange', direction, phase, spanId, traceId: 't2',
+          sessionId: 'sess_evt', model: 'auto', status, wire,
+        });
+      }
+      const row = rec.listSessions(rec.listDates()[0].date)[0];
+      assert.equal(row.turns, 2, '8 event lines = 2 turns');
+      assert.equal(row.failed, 1, 'failed counts turns, not error events');
+      assert.equal(row.lastStatus, 'error');
+      assert.equal(row.preview, '事件流预览文本');
+      rec.stop();
+    } finally {
+      rmrf(dir);
+    }
+  });
+
   it('findBySession matches safe and hashed ids across dates', async () => {
     const dir = makeTmpDir();
     try {
@@ -364,3 +404,355 @@ describe('CaptureRecorder', () => {
     }
   });
 });
+
+describe('CaptureRecorder HTTP exchange event stream', () => {
+  let tmp: string;
+  let recorder: CaptureRecorder;
+
+  before(() => {
+    tmp = makeTmpDir();
+    recorder = new CaptureRecorder({
+      enabled: true,
+      dir: tmp,
+      retentionDays: 7,
+      maxTotalMB: 512,
+      maxBodyBytes: 1024,
+    });
+  });
+
+  after(() => {
+    recorder.stop();
+    rmrf(tmp);
+  });
+
+  // Helper: emit one full inference turn (4 events) into the recorder
+  // with the given correlationId. Wire bodies use minimal valid shapes so
+  // the recorder's truncate pass is exercised.
+  async function emitOneTurn(
+    correlationId: string,
+    sessionId: string,
+    model: string,
+    opts: { inboundStatus?: number; outboundStatus?: number; outboundError?: string } = {}
+  ): Promise<{ wireId: string }> {
+    const wireId = `wire_${correlationId}`;
+    // 1. Client request — fires synchronously the moment the handler
+    //    enters the orchestrator.
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'client',
+      phase: 'request',
+      spanId: wireId,
+      traceId: correlationId,
+      sessionId,
+      model,
+      status: 'ok',
+      wire: {
+        requestLine: 'POST /v1/chat/completions HTTP/1.1',
+        requestHeaders: { 'user-agent': 'opencode-router/test', authorization: '[REDACTED]' },
+        requestBody: '{"messages":[]}',
+        responseLine: '',
+        status: 0,
+        responseHeaders: {},
+        responseBody: '',
+      },
+    });
+    // 2. Upstream request — fires before the provider fetch.
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'upstream',
+      phase: 'request',
+      spanId: `${wireId}_out`,
+      traceId: correlationId,
+      sessionId,
+      model,
+      status: 'ok',
+      wire: {
+        requestLine: 'POST https://api.example/v1/chat/completions HTTP/1.1',
+        requestHeaders: { authorization: '[REDACTED]', 'content-type': 'application/json' },
+        requestBody: '{"model":"upstream-model","messages":[]}',
+        responseLine: '',
+        status: 0,
+        responseHeaders: {},
+        responseBody: '',
+      },
+    });
+    // 3. Upstream response — fires after `await res.text()`.
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'upstream',
+      phase: 'response',
+      spanId: `${wireId}_out`,
+      traceId: correlationId,
+      sessionId,
+      model,
+      status: opts.outboundError ? 'error' : 'ok',
+      wire: {
+        requestLine: 'POST https://api.example/v1/chat/completions HTTP/1.1',
+        requestHeaders: {},
+        requestBody: '',
+        responseLine: `HTTP/1.1 ${opts.outboundStatus ?? 200} OK`,
+        status: opts.outboundStatus ?? 200,
+        responseHeaders: { 'content-type': 'application/json' },
+        responseBody: '{"choices":[]}',
+      },
+      ...(opts.outboundError ? { error: opts.outboundError } : {}),
+    });
+    // 4. Gateway response — fires in the Fastify onResponse hook.
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'client',
+      phase: 'response',
+      spanId: wireId,
+      traceId: correlationId,
+      sessionId,
+      model,
+      status: opts.inboundStatus && opts.inboundStatus >= 400 ? 'error' : 'ok',
+      wire: {
+        requestLine: 'POST /v1/chat/completions HTTP/1.1',
+        requestHeaders: {},
+        requestBody: '',
+        responseLine: `HTTP/1.1 ${opts.inboundStatus ?? 200} OK`,
+        status: opts.inboundStatus ?? 200,
+        responseHeaders: {},
+        responseBody: '',
+      },
+    });
+    return { wireId };
+  }
+
+  it('writes exactly 4 events per inference turn (inbound-req/res + outbound-req/res)', async () => {
+    const sessionIdA = 'sess_events_aaa';
+    const sessionIdB = 'sess_events_bbb';
+    await emitOneTurn('corr_aaa', sessionIdA, 'auto-fast');
+    await emitOneTurn('corr_bbb', sessionIdB, 'auto-flagship');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const contentA = fs.readFileSync(path.join(tmp, dateDir, `${sessionIdA}.jsonl`), 'utf8');
+    const linesA = contentA.split('\n').filter(l => l.trim());
+    assert.equal(linesA.length, 4, 'turn A writes 4 events into its own session file');
+    const contentB = fs.readFileSync(path.join(tmp, dateDir, `${sessionIdB}.jsonl`), 'utf8');
+    const linesB = contentB.split('\n').filter(l => l.trim());
+    assert.equal(linesB.length, 4, 'turn B writes 4 events into its own session file');
+  });
+
+  it('groups events into logical turns by traceId (groupEventsIntoTurns)', () => {
+    const traceId = 'trace_grp_1';
+    const events = [
+      // client req (ts 1000)
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
+      // upstream req (ts 1005)
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'b', ts: 1005, wire: emptyWire() } as any,
+      // upstream resp (ts 1500)
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'c', ts: 1500, wire: emptyWire() } as any,
+      // client resp (ts 1520)
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
+    ];
+    const turns = CaptureRecorder.groupEventsIntoTurns(events);
+    assert.equal(turns.length, 1);
+    const t = turns[0];
+    assert.equal(t.clientRequest?.id, 'a');
+    assert.equal(t.upstreamRequest?.id, 'b');
+    assert.equal(t.upstreamResponse?.id, 'c');
+    assert.equal(t.gatewayResponse?.id, 'd');
+    assert.equal(t.upstreamLatencyMs, 1500 - 1005);
+    assert.equal(t.gatewayLatencyMs, 1520 - 1000);
+  });
+
+  it('records request event BEFORE response event (request-event independence)', async () => {
+    // The core invariant the user asked for: "if you sent a request,
+    // record it; you don't have to wait for the response." We test by
+    // checking that the client-request line in the JSONL appears BEFORE
+    // the client-response line for the same spanId.
+    const sessionId = 'sess_indep';
+    const wireId = 'wire_indep';
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'client', phase: 'request',
+      spanId: wireId, traceId: 'c1', sessionId, model: 'auto',
+      status: 'ok',
+      wire: { requestLine: 'POST /x HTTP/1.1', requestHeaders: {}, requestBody: '{}', responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
+    });
+    // Provider throws — emit a failure response. The REQUEST must already
+    // be on disk even though the response is a failure.
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'upstream', phase: 'request',
+      spanId: 'w_out', traceId: 'c1', sessionId, model: 'auto',
+      status: 'ok',
+      wire: { requestLine: 'POST https://x HTTP/1.1', requestHeaders: {}, requestBody: '{}', responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
+    });
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'upstream', phase: 'response',
+      spanId: 'w_out', traceId: 'c1', sessionId, model: 'auto',
+      status: 'error',
+      wire: { requestLine: '', requestHeaders: {}, requestBody: '', responseLine: 'HTTP/1.1 503 Service Unavailable', status: 503, responseHeaders: {}, responseBody: '' },
+      error: 'upstream 503',
+    });
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'client', phase: 'response',
+      spanId: wireId, traceId: 'c1', sessionId, model: 'auto',
+      status: 'error',
+      wire: { requestLine: '', requestHeaders: {}, requestBody: '', responseLine: 'HTTP/1.1 502 Bad Gateway', status: 502, responseHeaders: {}, responseBody: '' },
+    });
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const content = fs.readFileSync(path.join(tmp, dateDir, `${sessionId}.jsonl`), 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+    assert.equal(lines.length, 4);
+    const req = JSON.parse(lines[0]);
+    const res = JSON.parse(lines[3]);
+    assert.equal(req.phase, 'request');
+    assert.equal(req.direction, 'client');
+    assert.equal(res.phase, 'response');
+    assert.equal(res.direction, 'client');
+    assert.equal(req.spanId, res.spanId);
+    assert.equal(req.traceId, res.traceId);
+    // Failure is durable on both sides.
+    const outRes = JSON.parse(lines[2]);
+    assert.equal(outRes.status, 'error');
+    assert.equal(outRes.error, 'upstream 503');
+    assert.equal(outRes.direction, 'upstream');
+  });
+
+  it('readEvents groups by correlationId and computes per-direction latency', async () => {
+    const sessionId = 'sess_read_events';
+    // Two turns, sequential — same sessionId so both land in one JSONL.
+    await emitOneTurn('corr_read_1', sessionId, 'auto-fast');
+    await emitOneTurn('corr_read_2', sessionId, 'auto-flagship');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    const result = recorder.readEvents(dateDir, file, 100);
+    assert.equal(result.turns.length, 2);
+    assert.equal(result.events.length, 8);
+    // Each turn has all four events paired.
+    for (const t of result.turns) {
+      assert.ok(t.clientRequest && t.gatewayResponse && t.upstreamRequest && t.upstreamResponse,
+        `turn ${t.traceId} missing event pair`);
+      assert.equal(t.clientRequest!.spanId, t.gatewayResponse!.spanId);
+      assert.equal(t.upstreamRequest!.spanId, t.upstreamResponse!.spanId);
+    }
+  });
+
+  it('truncates oversized wire bodies (UTF-8 path)', async () => {
+    const sessionId = 'sess_truncate';
+    const bigBody = 'x'.repeat(2048); // > maxBodyBytes (1024)
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'upstream', phase: 'request',
+      spanId: 'w_out', traceId: 'corr_t', sessionId, model: 'auto',
+      status: 'ok',
+      wire: { requestLine: 'POST x HTTP/1.1', requestHeaders: {}, requestBody: bigBody, responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
+    });
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const content = fs.readFileSync(path.join(tmp, dateDir, `${sessionId}.jsonl`), 'utf8');
+    const line = content.split('\n').filter(l => l.trim())[0];
+    const obj = JSON.parse(line);
+    assert.ok(obj.truncated === true, 'truncated flag must be set');
+    const stored = obj.wire.requestBody;
+    assert.ok(typeof stored === 'string' && stored.length <= 1024 + '...[TRUNCATED]'.length);
+    assert.ok(stored.endsWith('...[TRUNCATED]'));
+  });
+
+  it('truncates on a BYTE boundary (CJK body never exceeds the byte budget)', async () => {
+    const sessionId = 'sess_truncate_cjk';
+    // 600 CJK chars = 1800 UTF-8 bytes > 1024 budget. A code-unit slice
+    // would store 1024 chars ≈ 3072 bytes (3× over budget).
+    const bigBody = '汉'.repeat(600);
+    await recorder.recordEvent({
+      eventType: 'http-exchange', direction: 'upstream', phase: 'request',
+      spanId: 'w_cjk', traceId: 'corr_cjk', sessionId, model: 'auto',
+      status: 'ok',
+      wire: { requestLine: 'POST x HTTP/1.1', requestHeaders: {}, requestBody: bigBody, responseLine: '', status: 0, responseHeaders: {}, responseBody: '' },
+    });
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const content = fs.readFileSync(path.join(tmp, dateDir, `${sessionId}.jsonl`), 'utf8');
+    const line = content.split('\n').filter(l => l.trim())[0];
+    const obj = JSON.parse(line);
+    assert.ok(obj.truncated === true);
+    const stored = obj.wire.requestBody as string;
+    assert.ok(stored.endsWith('...[TRUNCATED]'));
+    const bodyPart = stored.slice(0, -'...[TRUNCATED]'.length);
+    assert.ok(Buffer.byteLength(bodyPart, 'utf8') <= 1024, `byte budget respected, got ${Buffer.byteLength(bodyPart, 'utf8')}`);
+  });
+});
+
+describe('CaptureRecorder hardening (code-review findings)', () => {
+  let tmp: string;
+  let recorder: CaptureRecorder;
+
+  before(() => {
+    tmp = makeTmpDir();
+    recorder = new CaptureRecorder({ enabled: true, dir: tmp, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024 });
+  });
+  after(() => {
+    recorder.stop();
+    rmrf(tmp);
+  });
+
+  it('redacts credential header VALUES (incl. vendor -key headers) and query auth, keeps names', async () => {
+    const { emitUpstreamRequest } = await import('../src/observability/http-exchange.js');
+    const sessionId = 'sess_redact';
+    emitUpstreamRequest({
+      recorder,
+      url: 'https://api.example/v1/chat?key=AIzaSySecretKey&foo=bar',
+      method: 'POST',
+      requestHeaders: {
+        Authorization: 'Bearer sk-real-secret',
+        'x-api-key': 'real-api-key',
+        'x-goog-api-key': 'real-google-key',
+        'Ocp-Apim-Subscription-Key': 'real-azure-key',
+        'X-Functions-Key': 'real-func-key',
+        'content-type': 'application/json',
+      },
+      requestBody: '{}',
+      sessionId,
+      traceId: 'trace_redact',
+      model: 'auto',
+    });
+    await new Promise(r => setTimeout(r, 100));
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const content = fs.readFileSync(path.join(tmp, dateDir, `${sessionId}.jsonl`), 'utf8');
+    const ev = JSON.parse(content.split('\n').filter(l => l.trim())[0]);
+    const h = ev.wire.requestHeaders;
+    // Header NAMES kept, VALUES redacted — "you sent an x-api-key" must
+    // remain visible for debugging auth failures.
+    assert.deepEqual(h, {
+      authorization: '[REDACTED]',
+      'x-api-key': '[REDACTED]',
+      'x-goog-api-key': '[REDACTED]',
+      'ocp-apim-subscription-key': '[REDACTED]',
+      'x-functions-key': '[REDACTED]',
+      'content-type': 'application/json',
+    });
+    // Query-string auth redacted; non-auth params preserved.
+    assert.ok(!ev.wire.requestLine.includes('AIzaSySecretKey'), 'raw query key must never persist');
+    assert.ok(ev.wire.requestLine.includes('foo=bar'));
+    // No raw credential anywhere in the whole line.
+    assert.ok(!content.includes('sk-real-secret') && !content.includes('real-api-key') && !content.includes('real-azure-key'));
+  });
+
+  it('groupEventsIntoTurns keeps turns separate when a client reuses one traceId', () => {
+    const events = [
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a1', id: '1', ts: 1000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'a1', id: '2', ts: 1100, wire: emptyWire() } as any,
+      // Same constant traceId, NEW turn (client sends fixed x-request-id).
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'b1', id: '3', ts: 2000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId: 'CONST', sessionId: 's', model: 'auto', status: 'ok', spanId: 'b1', id: '4', ts: 2100, wire: emptyWire() } as any,
+    ];
+    const turns = CaptureRecorder.groupEventsIntoTurns(events);
+    assert.equal(turns.length, 2, 'constant traceId must not collapse turns');
+    assert.equal(turns[0].clientRequest?.id, '1');
+    assert.equal(turns[0].gatewayResponse?.id, '2');
+    assert.equal(turns[1].clientRequest?.id, '3');
+    assert.equal(turns[1].gatewayResponse?.id, '4');
+    assert.equal(turns[0].gatewayLatencyMs, 100);
+    assert.equal(turns[1].gatewayLatencyMs, 100);
+  });
+});
+
+function emptyWire(): any {
+  return {
+    requestLine: '',
+    requestHeaders: {},
+    requestBody: '',
+    responseLine: '',
+    status: 0,
+    responseHeaders: {},
+    responseBody: '',
+  };
+}

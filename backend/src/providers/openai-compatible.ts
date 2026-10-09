@@ -1,8 +1,14 @@
-import { LLMProvider } from './base.js';
+import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch } from '../utils/proxy.js';
+import {
+  emitUpstreamRequestOnce,
+  emitUpstreamResponseOnce,
+  emitUpstreamFailureOnce,
+  withUpstreamFailureGuard,
+} from '../observability/upstream-events.js';
 
 export class OpenAICompatibleProvider implements LLMProvider {
   public name: string;
@@ -15,7 +21,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   public async createCompletion(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const headers: Record<string, string> = {
@@ -28,7 +35,6 @@ export class OpenAICompatibleProvider implements LLMProvider {
       headers['OpenAI-Organization'] = this.config.organization;
     }
 
-    // Build payload using upstreamModel name
     const payload: any = {
       ...request,
       model: model.upstreamModel,
@@ -41,21 +47,68 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // stream_options without stream: true with a 400).
     delete payload.stream_options;
 
+    // Event-stream emit BEFORE the fetch fires — independent of the response.
+    // Pairs with the upstream-response event below via `spanId`.
+    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+      url,
+      method: 'POST',
+      requestHeaders: headers,
+      requestBody: JSON.stringify(payload),
+      model: model.upstreamModel,
+    });
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
 
     try {
-      const res = await proxiedFetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      }, { provider: this.config.name, model: model.id });
+      // The guard emits a paired failure response event on ANY thrown error
+      // (network / DNS / TLS / abort / UpstreamError) so console readers
+      // never see a dangling request event without a matching response.
+      const res = await withUpstreamFailureGuard(
+        upstreamEventContext,
+        spanId,
+        url,
+        'POST',
+        () => proxiedFetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        }, { provider: this.config.name, model: model.id }),
+        model.upstreamModel
+      );
 
       if (!res.ok) {
-        const errorText = await res.text();
+        // Body read can fail mid-stream (connection reset) — pair the request
+        // event with a failure response before rethrowing.
+        let errorText: string;
+        try {
+          errorText = await res.text();
+        } catch (err: any) {
+          emitUpstreamFailureOnce(upstreamEventContext, {
+            model: model.upstreamModel,
+            spanId,
+            url,
+            method: 'POST',
+            status: res.status,
+            statusText: res.statusText,
+            error: `Response body read failed: ${err?.message ?? err}`,
+          });
+          throw err;
+        }
         const retryAfterHeader = res.headers.get('retry-after');
         const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          responseHeaders: res.headers,
+          responseBody: errorText,
+          error: `Upstream ${res.status}`,
+        });
         throw new UpstreamError({
           message: `Upstream ${this.name} returned status ${res.status}: ${errorText}`,
           status: res.status,
@@ -66,7 +119,36 @@ export class OpenAICompatibleProvider implements LLMProvider {
         });
       }
 
-      const json = (await res.json()) as ChatCompletionResponse;
+      // Emit the response event the moment the body BYTES arrive — before
+      // JSON.parse (see anthropic.ts for the rationale). The raw text body
+      // preserves any whitespace / numeric-precision quirks the upstream
+      // added.
+      let rawBody: string;
+      try {
+        rawBody = await res.text();
+      } catch (err: any) {
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          error: `Response body read failed: ${err?.message ?? err}`,
+        });
+        throw err;
+      }
+      emitUpstreamResponseOnce(upstreamEventContext, {
+        model: model.upstreamModel,
+        spanId,
+        url,
+        method: 'POST',
+        status: res.status,
+        statusText: res.statusText,
+        responseHeaders: res.headers,
+        responseBody: rawBody,
+      });
+      const json = JSON.parse(rawBody) as ChatCompletionResponse;
       return json;
     } finally {
       clearTimeout(timeout);

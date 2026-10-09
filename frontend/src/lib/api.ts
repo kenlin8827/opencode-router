@@ -168,6 +168,32 @@ export interface CaptureSessionMatch extends CaptureSessionRow {
   date: string;
 }
 
+/**
+ * HTTP-level observation of the SUCCESSFUL outbound call (mirrors
+ * backend UpstreamHttpRecord): URL, status, safe response-header subset,
+ * TTFB, total duration, attempt index, wire kind. Absent when no
+ * outbound HTTP attempt landed successfully.
+ */
+export interface UpstreamHttpRecord {
+  url: string;
+  method: string;
+  status: number;
+  responseHeaders?: {
+    retryAfter?: string;
+    requestId?: string;
+    contentType?: string;
+    ratelimit?: {
+      limit?: string;
+      remaining?: string;
+      reset?: string;
+    };
+  };
+  ttfbMs: number | null;
+  durationMs: number;
+  attemptIndex: number;
+  wireKind: 'openai' | 'anthropic' | 'google' | 'responses' | 'opencode-proxy';
+}
+
 export interface CaptureRecord {
   id: string;
   ts: number;
@@ -175,8 +201,10 @@ export interface CaptureRecord {
   status: 'ok' | 'error';
   model: string;
   request?: unknown;
-  /** Post-compression snapshot of what the successful upstream call received */
+  /** Real outbound wire body (provider-translated, upstreamModel substituted). */
   upstreamRequest?: unknown;
+  /** HTTP-level capture of the successful outbound call (last-write-wins). */
+  upstreamHttp?: UpstreamHttpRecord;
   /** Upstream error payload (status + parsed body) when a candidate call failed */
   upstreamError?: unknown;
   response?: unknown;
@@ -192,6 +220,70 @@ export interface CaptureRecord {
   usage?: unknown;
   latencyMs?: number;
   truncated?: boolean;
+}
+
+/**
+ * One HTTP-exchange event (mirrors backend HttpExchangeEvent). The capture
+ * pipeline emits 2-4 events per inference turn, all sharing the same
+ * `traceId` (OpenTelemetry semantics):
+ *   - direction='client',   phase='request'  — the inbound HTTP request
+ *   - direction='client',   phase='response' — gateway → client response
+ *   - direction='upstream', phase='request'  — gateway → provider request
+ *   - direction='upstream', phase='response' — provider → gateway response
+ *
+ * Each req/resp pair shares one `spanId`. Console readers join the four
+ * events by `traceId`.
+ */
+export interface WireBody {
+  /** Non-UTF-8 payloads fall back to hex (mirrors backend WireBody). */
+  hex: string;
+}
+
+export interface RawWireCapture {
+  requestLine: string;
+  requestHeaders: Record<string, string>;
+  requestBody: string | WireBody;
+  responseLine: string;
+  status: number;
+  responseHeaders: Record<string, string>;
+  responseBody: string | WireBody;
+}
+
+export interface HttpExchangeEvent {
+  id: string;
+  ts: number;
+  eventType: 'http-exchange';
+  direction: 'client' | 'upstream';
+  phase: 'request' | 'response';
+  spanId: string;
+  traceId: string;
+  sessionId: string;
+  model: string;
+  status: 'ok' | 'error' | 'pending';
+  wire: RawWireCapture;
+  routing?: {
+    tierUsed?: string;
+    layerUsed?: string;
+    modelUsed?: string;
+    provider?: string;
+    fallbackOccurred?: boolean;
+    failoverPath?: string[];
+  };
+  error?: string;
+  truncated?: boolean;
+}
+
+export interface CaptureTurn {
+  traceId: string;
+  sessionId: string;
+  model: string;
+  clientRequest?: HttpExchangeEvent;
+  gatewayResponse?: HttpExchangeEvent;
+  upstreamRequest?: HttpExchangeEvent;
+  upstreamResponse?: HttpExchangeEvent;
+  error?: string;
+  gatewayLatencyMs?: number;
+  upstreamLatencyMs?: number;
 }
 
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
@@ -581,6 +673,23 @@ export const api = {
     if (!res.ok) return [];
     const json = await res.json();
     return json.matches || [];
+  },
+
+  async getCaptureEvents(
+    date: string,
+    file: string,
+    limit = 500
+  ): Promise<{
+    events: HttpExchangeEvent[];
+    turns: CaptureTurn[];
+    totalLines: number;
+    fileTruncated: boolean;
+  }> {
+    const res = await fetch(
+      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?limit=${limit}`
+    );
+    if (!res.ok) return { events: [], turns: [], totalLines: 0, fileTruncated: false };
+    return res.json();
   },
 
   async getCaptureRecords(

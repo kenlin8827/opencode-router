@@ -1,4 +1,4 @@
-import { LLMProvider } from './base.js';
+import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { WireKind } from './wire.js';
@@ -42,9 +42,10 @@ export class DispatchingProvider implements LLMProvider {
 
   public async createCompletion(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<ChatCompletionResponse> {
-    return this.exec(model).createCompletion(request, model);
+    return this.exec(model).createCompletion(request, model, upstreamEventContext);
   }
 
   public async createStream(

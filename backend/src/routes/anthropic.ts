@@ -6,6 +6,10 @@ import {
   ChatMessage,
   ChatMessageContentPart,
 } from '../types/openai.js';
+import {
+  appendGatewayResponseChunk,
+  getClientExchangeContext,
+} from '../observability/http-exchange.js';
 
 /**
  * Anthropic Messages API compatibility layer (POST /v1/messages).
@@ -341,6 +345,7 @@ export function registerAnthropicRoutes(
         clientIp: req.ip,
         headers: req.headers,
         wire: 'anthropic',
+        fastifyRequest: req,
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
@@ -380,7 +385,9 @@ export function registerAnthropicRoutes(
           ...ocrHeaders,
         });
 
+        const sseCtx = getClientExchangeContext(req);
         for (const evt of chatToAnthropicStreamEvents(result.response, model)) {
+          if (sseCtx) appendGatewayResponseChunk(sseCtx, evt);
           reply.raw.write(evt);
         }
         reply.raw.end();

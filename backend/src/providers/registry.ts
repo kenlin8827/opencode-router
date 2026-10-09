@@ -1,4 +1,4 @@
-import { LLMProvider } from './base.js';
+import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
@@ -517,7 +517,8 @@ export class ProviderRegistry {
 
   public async execute(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext
   ): Promise<ChatCompletionResponse> {
     if (this.mockMode) {
       return this.mockExecute(request, model);
@@ -528,7 +529,7 @@ export class ProviderRegistry {
       throw new Error(`Provider '${model.provider}' not found for model '${model.id}'`);
     }
 
-    return provider.createCompletion(request, model);
+    return provider.createCompletion(request, model, upstreamEventContext);
   }
 
   /**

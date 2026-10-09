@@ -12,6 +12,7 @@ import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { ChatCompletionRequest } from './types/openai.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
+import { appendGatewayResponseChunk, emitGatewayResponse, getClientExchangeContext } from './observability/http-exchange.js';
 
 const TIER_RANK: Record<string, number> = { fast: 0, flagship: 1, reasoning: 2 };
 
@@ -67,6 +68,70 @@ export function createServer(
 
   // Register CORS to allow any web frontend (Chatbox, NextChat, OpenWebUI)
   app.register(cors, { origin: true });
+
+  // Event-stream client-side hooks: the orchestrator attaches the client
+  // exchange ctx onto req via Symbol key (see CLIENT_EXCHANGE_CTX in
+  // observability/http-exchange.ts) the moment it emits the client REQUEST
+  // event. The onResponse hook reads it back via `getClientExchangeContext`
+  // and emits the gateway RESPONSE event. Both events are independent — the
+  // request event is durable even if the response never arrives (timeout /
+  // cancel / etc.).
+  //
+  // Caveat: if capture is disabled mid-flight via console toggle, the
+  // REQUEST event may be on disk while the RESPONSE event won't be.
+  // That's acceptable — the REQUEST event is the source of truth for
+  // "we received this client traffic"; the RESPONSE event is best-effort.
+  // The onSend hook fires right BEFORE the payload goes to the socket and
+  // is the only lifecycle point where the serialized response body is
+  // available (onResponse only sees status/headers). We stash the body on
+  // the exchange ctx; the onResponse hook below then emits the client
+  // RESPONSE event with the complete wire. SSE branches bypass onSend
+  // (reply.raw), so they stash their accumulated chunks manually.
+  app.addHook('onSend', (req, _reply, payload, done) => {
+    const ctx = getClientExchangeContext(req);
+    if (ctx) {
+      if (typeof payload === 'string') {
+        appendGatewayResponseChunk(ctx, payload);
+      } else if (Buffer.isBuffer(payload)) {
+        appendGatewayResponseChunk(ctx, payload.toString('utf8'));
+      }
+      // stream payloads: not captured here (inference SSE goes via reply.raw
+      // and is accumulated in the route handler instead).
+    }
+    done(null, payload);
+  });
+
+  app.addHook('onResponse', async (req, reply) => {
+    const ctx = getClientExchangeContext(req);
+    if (ctx && orchestrator.getCaptureRecorder().isEnabled()) {
+      emitGatewayResponse(ctx, reply as any);
+    }
+    return reply;
+  });
+
+  // Client-abort capture: when the socket closes before the response
+  // finishes, the onResponse hook never fires and the client-request event
+  // would dangle. Watch the raw response's 'close' (fires after 'finish'
+  // on the normal path, or on premature termination): if no response event
+  // was emitted by then, record a synthetic 499 (nginx convention for
+  // client-closed connection) so every request event stays paired.
+  // NB: Fastify's `onClose` application hook is server-shutdown, NOT this.
+  app.addHook('onRequest', (req, reply, done) => {
+    reply.raw.on('close', () => {
+      // writableEnded = response fully written — a later socket close (e.g.
+      // keep-alive teardown) must not synthesize a 499 for a completed 200.
+      if (reply.raw.writableEnded) return;
+      const ctx = getClientExchangeContext(req);
+      if (ctx && !ctx.pending.responded && orchestrator.getCaptureRecorder().isEnabled()) {
+        emitGatewayResponse(ctx, {
+          statusCode: 499,
+          statusMessage: 'Client Closed Request',
+          getHeader: () => undefined,
+        } as any);
+      }
+    });
+    done();
+  });
 
   // Register console dashboard and management routes
   registerConsoleRoutes(app, registry, orchestrator);
@@ -457,6 +522,7 @@ export function createServer(
         clientIp: req.ip,
         headers: req.headers,
         wire: 'chat',
+        fastifyRequest: req,
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
@@ -504,9 +570,12 @@ export function createServer(
           'X-OCR-Latency-MS': result.latencyMs.toString(),
         });
 
+        const sseCtx = getClientExchangeContext(req);
         for (const chunk of buildChatStreamChunks(result.response, result.modelUsed)) {
+          if (sseCtx) appendGatewayResponseChunk(sseCtx, chunk);
           reply.raw.write(chunk);
         }
+        if (sseCtx) appendGatewayResponseChunk(sseCtx, 'data: [DONE]\n\n');
         reply.raw.write('data: [DONE]\n\n');
         reply.raw.end();
         return reply;

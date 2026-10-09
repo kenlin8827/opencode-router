@@ -11,6 +11,137 @@ import { getOcrHomeDir } from '../cli/paths.js';
  * `truncated: true` when it exceeds the per-body byte budget (a truncated
  * JSON document is no longer valid JSON, so it is stored as a string).
  * Request headers are NEVER captured (they carry API keys).
+ *
+ * `upstreamRequest` is the REAL outbound wire body the provider actually
+ * sent — translated through the wire (OpenAI / Anthropic / Google / Responses
+ * / OpenCode-proxy), with `model.upstreamModel` substituted and routing-only
+ * fields (`router_options`, `stream_options`) stripped. Shape varies by
+ * wire (see provider adapter payload builders).
+ *
+ * `upstreamHttp` is the HTTP-level observation of the SUCCESSFUL outbound
+ * call (last-write-wins across in-place retries and failover hops): the
+ * resolved URL, HTTP status, a SAFE subset of response headers
+ * (retry-after / request-id / content-type / ratelimit trio), TTFB, total
+ * duration, and the wire kind. Header capture excludes all credential-
+ * bearing fields.
+ *
+ * `inboundHttp` is the symmetric inbound leg: the Fastify-observed method,
+ * URL, client IP, the final response status the gateway returned, total
+ * gateway-side latency, a SAFE subset of response headers (content-type +
+ * X-OCR-* diagnostics — never Authorization / cookies / API keys), and a
+ * SAFE whitelist of inbound request headers (user-agent / accept-language /
+ * request-id / anthropic-version / openai-organization). All credential-
+ * bearing fields are dropped.
+ *
+ * `outboundHttp` is the gateway → client response observation: status,
+ * total request lifecycle latency (the user's perceived response time),
+ * and content-type. Pairs with `inboundHttp` to bookend the whole request.
+ */
+export interface UpstreamHttpRecord {
+  url: string;
+  method: string;
+  status: number;
+  /**
+   * All response headers from the upstream call — full header names are kept
+   * so the captured record is a faithful snapshot of the wire. VALUES whose
+   * name matches the credential deny-list (api-key / authorization / cookie /
+   * token / secret / password / bearer / signature / credential / x-auth /
+   * proxy-auth / x-goog-api-key) are replaced with the literal string
+   * `[REDACTED]` so API keys never reach the disk. The deny-list is case-
+   * insensitive substring match — see `sanitizeHeadersForCapture` in
+   * `observability/http-exchange.ts`.
+   */
+  responseHeaders?: Record<string, string>;
+  /** First-byte latency (ms). null when no body byte arrived (pre-body error). */
+  ttfbMs: number | null;
+  /** Total round-trip latency (ms) from request fire to fetch resolve. */
+  durationMs: number;
+  /** 1-based index of the successful attempt inside the candidate chain. */
+  attemptIndex: number;
+  wireKind: 'openai' | 'anthropic' | 'google' | 'responses' | 'opencode-proxy';
+}
+
+/**
+ * Inbound HTTP transport observation: what the gateway received from the
+ * client and what HTTP status / latency it ended up returning. Symmetric to
+ * UpstreamHttpRecord but for the inbound leg. Header capture is a SAFE
+ * whitelist only — credential-bearing fields are dropped by the deny-list
+ * at runtime as a defense-in-depth over the whitelist review. Filled by the
+ * Fastify `onSend` hook so it reflects the FINAL response status (after all
+ * error paths in the handler).
+ */
+export interface InboundHttpRecord {
+  method: string;
+  /** Request URL path with query string (e.g. `/v1/chat/completions?x=1`). */
+  url: string;
+  /** Source IP as seen by Fastify (honors `trustProxy` if configured). */
+  clientIp?: string;
+  /** HTTP status the gateway returned to the client (final, after error paths). */
+  status: number;
+  /** Total gateway-side latency from request start to response ready (ms). */
+  durationMs: number;
+  /** Safe subset of inbound request headers — protocol-fingerprint whitelist only. */
+  inboundHeaders?: {
+    userAgent?: string;
+    acceptLanguage?: string;
+    requestId?: string;
+    anthropicVersion?: string;
+    openaiOrganization?: string;
+  };
+}
+
+/**
+ * Outbound (gateway → client) HTTP transport observation. Pairs with
+ * `inboundHttp` to bookend the whole request. Latency here is the full
+ * request lifecycle (inbound start to outbound ready) — i.e. the user's
+ * perceived response time. Carries the content-type and the X-OCR-*
+ * diagnostic surface the gateway itself emitted (never credentials).
+ */
+export interface OutboundHttpRecord {
+  status: number;
+  /** Total round-trip latency (ms): request start to response body ready. */
+  durationMs: number;
+  /** Content-Type of the outbound response (e.g. `application/json`). */
+  contentType?: string;
+  /** X-OCR-* diagnostic headers the gateway emitted (tier / model / session / trace / cost). */
+  ocrDiagnostics?: Record<string, string>;
+}
+
+/**
+ * Raw HTTP wire capture: the byte-faithful snapshot of one HTTP exchange.
+ * The shape mirrors a standard HTTP wire dump (RFC 7230 §3): request line,
+ * header block, blank line, body — for both the request and the response.
+ * Captured so debug can answer "what did the upstream actually receive"
+ * without parsing through the gateway's transformations, and vice versa.
+ *
+ * Bodies are stored as UTF-8 strings when they parse cleanly (typical for
+ * JSON chat-completions traffic). Non-UTF-8 payloads fall back to a hex
+ * encoding under `{ hex: string }` so binary upstream responses (e.g.
+ * audio / image generators) are still inspectable.
+ */
+export type WireBody = string | { hex: string };
+
+export interface RawWireCapture {
+  /** "POST /v1/chat/completions HTTP/1.1" — the wire request line. */
+  requestLine: string;
+  /** All request headers — full names preserved, credential values masked. */
+  requestHeaders: Record<string, string>;
+  /** Request body — JSON-stringified chat completions, or hex for binary. */
+  requestBody: WireBody;
+  /** "HTTP/1.1 200 OK" — the wire status line as the server wrote it. */
+  responseLine: string;
+  status: number;
+  responseHeaders: Record<string, string>;
+  responseBody: WireBody;
+}
+
+/**
+ * @deprecated Use `HttpExchangeEvent` instead. The turn-centric schema
+ * pre-dates the HTTP exchange event stream; new capture JSONL files
+ * only write `HttpExchangeEvent`. The fields below remain readable for
+ * back-compat with already-written archives but the orchestrator no
+ * longer writes them — every field is best-effort, last-write-wins
+ * semantics that no longer match how capture actually works.
  */
 export interface CaptureRecord {
   id: string; // cap_<hex>
@@ -19,9 +150,27 @@ export interface CaptureRecord {
   status: 'ok' | 'error';
   model: string; // client-requested model id
   request?: unknown;
-  /** Post-compression snapshot of what the successful upstream call actually received (same shape as request). */
+  /** @deprecated read-only back-compat — see HttpExchangeEvent.wire.requestBody. */
   upstreamRequest?: unknown;
-  /** Upstream error payload when a candidate call failed with a provider response (status + parsed body). */
+  /**
+   * @deprecated read-only back-compat — see HttpExchangeEvent.wire.responseBody
+   * (one outbound-response event per HTTP exchange).
+   */
+  upstreamResponse?: unknown;
+  /**
+   * @deprecated read-only back-compat — replaced by the HTTP exchange event
+   * stream (one outbound-response event with status / headers / body).
+   */
+  upstreamHttp?: UpstreamHttpRecord;
+  /** @deprecated see HttpExchangeEvent.wire. */
+  upstreamWire?: RawWireCapture;
+  /** @deprecated see HttpExchangeEvent.wire. */
+  inboundWire?: RawWireCapture;
+  /** @deprecated unused — outbound HTTP timing is in upstream-response events. */
+  inboundHttp?: InboundHttpRecord;
+  /** @deprecated unused — gateway response is captured as inbound-response event. */
+  outboundHttp?: OutboundHttpRecord;
+  /** @deprecated see outbound-failure events with status + body. */
   upstreamError?: unknown;
   response?: unknown;
   error?: string;
@@ -36,6 +185,79 @@ export interface CaptureRecord {
   usage?: unknown;
   latencyMs?: number;
   truncated?: boolean;
+}
+
+/**
+ * One HTTP-exchange event in the capture event stream. Replaces the
+ * turn-centric `CaptureRecord` model: every HTTP exchange now emits TWO
+ * independent events (request + response) instead of one combined record.
+ *
+ * Benefits over the turn model:
+ *   - **Request events persist even when no response arrives** (timeout,
+ *     client cancel, provider unreachable) — the request side is captured
+ *     synchronously before the wire call returns, so failure is recorded.
+ *   - **Request / response timing** becomes a first-class pair. Two events
+ *     with the same `spanId` describe one exchange; their `ts`
+ *     delta IS the request→response latency, computed at read time.
+ *   - **Symmetry across client and upstream legs**: each direction emits
+ *     its own request + response event, all four sharing one
+ *     `traceId` so the full picture joins back together.
+ *
+ * A single inference turn produces 2-4 events sharing the same
+ * `traceId`: client-request, gateway-response, upstream-request,
+ * upstream-response. File layout keeps the per-turn grouping (same
+ * `sessionId`) so the existing turn-based session browser keeps working
+ * while the events are now individually retrievable.
+ *
+ * Direction naming follows the gateway's POV:
+ *   - `client`     = client ↔ gateway (the request that arrived, the response
+ *                    that was sent back to the client)
+ *   - `upstream`   = gateway ↔ upstream provider (the request the gateway
+ *                    sent upstream, the response that came back)
+ * This matches OpenTelemetry conventions for proxy/gateway roles.
+ */
+export interface HttpExchangeEvent {
+  id: string; // evt_<hex>
+  ts: number; // epoch ms — when THIS phase fired (request send / response recv)
+  /** Always 'http-exchange' for this event type. */
+  eventType: 'http-exchange';
+  /** 'client' = client ↔ gateway; 'upstream' = gateway ↔ provider. */
+  direction: 'client' | 'upstream';
+  /** 'request' = the wire side that's being sent; 'response' = the side that's being received. */
+  phase: 'request' | 'response';
+  /**
+   * Stable per-exchange id (OpenTelemetry spanId) shared by the request
+   * event AND its matching response event (same direction). E.g. one
+   * client exchange = one `spanId` with two events (req + resp).
+   */
+  spanId: string;
+  /**
+   * Stable trace id (OpenTelemetry traceId) shared across all four
+   * events of one inference turn (the client-request, client-response,
+   * upstream-request, upstream-response all share one `traceId`).
+   * Sourced from the inbound request's `traceparent` / `x-request-id`
+   * when present, otherwise minted as 32-hex (see resolveTraceId).
+   */
+  traceId: string;
+  /** Session id from session-manager (or synthetic `ocr-turn-<id>` when no session exists yet). */
+  sessionId: string;
+  /** Client-requested model id (from inbound request body's `model` field). */
+  model: string;
+  /** Status of THIS event — request side rarely errors; response side mirrors the wire status. */
+  status: 'ok' | 'error' | 'pending';
+  /** The wire dump for THIS side only (request side OR response side — the other side fields are empty). */
+  wire: RawWireCapture;
+  /** Optional routing decision, attached when known (mostly on upstream-response). */
+  routing?: {
+    tierUsed?: string;
+    layerUsed?: string;
+    modelUsed?: string;
+    provider?: string;
+    fallbackOccurred?: boolean;
+    failoverPath?: string[];
+  };
+  /** Error message if THIS phase errored (e.g. upstream request never got a response). */
+  error?: string;
 }
 
 export interface CaptureDateRow {
@@ -170,8 +392,11 @@ export class CaptureRecorder {
   }
 
   /**
-   * Append one captured turn. Fire-and-forget for callers on the inference
-   * hot path (`void recorder.record(...)`); tests may await the promise.
+   * @deprecated Use `recordEvent()` instead. The turn-centric `CaptureRecord`
+   * model has been superseded by `HttpExchangeEvent` (one event per HTTP
+   * side, request and response are independent). `record()` is kept only
+   * for back-compat with already-written archive files; the orchestrator
+   * no longer calls it. New code MUST use `recordEvent()`.
    */
   public async record(entry: Omit<CaptureRecord, 'id' | 'ts'>): Promise<void> {
     if (!this.enabled) return;
@@ -180,6 +405,9 @@ export class CaptureRecorder {
     const upstreamRequest = this.truncateField(entry.upstreamRequest);
     const upstreamError = this.truncateField(entry.upstreamError);
     const response = this.truncateField(entry.response);
+    // upstreamHttp is a fixed-shape HTTP summary (URL/method/status/headers/
+    // ttfb/duration/attemptIndex/wireKind) — bounded by header whitelist, no
+    // body payload, so it never approaches maxBodyBytes. Pass through.
     const record: CaptureRecord = {
       ...entry,
       id: `cap_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
@@ -203,6 +431,78 @@ export class CaptureRecorder {
       await fs.promises.appendFile(file, JSON.stringify(record) + '\n', 'utf8');
     } catch (err: any) {
       console.warn(`[Capture] Failed to append to ${file}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Append one HTTP-exchange event to the event stream. Each HTTP exchange
+   * emits TWO events (one request, one response) sharing the same
+   * `spanId`. One inference turn typically produces 2-4 events
+   * sharing the same `traceId`. Synchronous callers (handler scope,
+   * provider scope) can fire this the moment the wire side is known —
+   * there is no longer a "wait for the response" barrier before the
+   * request side is recorded.
+   *
+   * Same fail-open contract as `record()`: a capture failure must never
+   * break the inference hot path.
+   */
+  public async recordEvent(event: Omit<HttpExchangeEvent, 'id' | 'ts'>): Promise<void> {
+    if (!this.enabled) return;
+    const ts = Date.now();
+
+    // Bound wire bodies at the same maxBodyBytes cap as the legacy turn
+    // schema — a 10MB request body must not blow past the per-line JSONL
+    // budget and starve retention. `WireBody` is `string | { hex: string }`
+    // — we count bytes in BOTH forms (UTF-8 string length, hex bytes via
+    // halving). Truncation yields the same shape so the field type stays
+    // stable for readers.
+    const truncateBody = (body: WireBody | undefined): { value: WireBody | undefined; truncated: boolean } => {
+      if (body === undefined || body === '') return { value: body, truncated: false };
+      const isHex = typeof body === 'object' && body !== null && 'hex' in body;
+      const byteLen = isHex ? Math.floor(body.hex.length / 2) : Buffer.byteLength(body as string, 'utf8');
+      if (byteLen <= this.maxBodyBytes) return { value: body, truncated: false };
+      if (isHex) {
+        const hexChars = this.maxBodyBytes * 2;
+        return { value: { hex: (body as { hex: string }).hex.slice(0, hexChars) + '...[TRUNCATED]' }, truncated: true };
+      }
+      // Slice on a BYTE boundary, not a UTF-16 code-unit boundary: CJK text
+      // is 3 bytes/char in UTF-8, so `body.slice(0, maxBodyBytes)` could
+      // overshoot the byte budget ~3x AND split a surrogate pair. Buffer
+      // subarray + toString ends cleanly; a partial trailing codepoint
+      // surfaces as U+FFFD — drop it so the byte budget stays strict.
+      const buf = Buffer.from(body as string, 'utf8');
+      let sliced = buf.subarray(0, this.maxBodyBytes).toString('utf8');
+      if (sliced.endsWith('\uFFFD')) sliced = sliced.slice(0, -1);
+      return { value: sliced + '...[TRUNCATED]', truncated: true };
+    };
+
+    const truncatedReq = truncateBody(event.wire?.requestBody);
+    const truncatedResp = truncateBody(event.wire?.responseBody);
+    const truncated = truncatedReq.truncated || truncatedResp.truncated || undefined;
+    const wire: RawWireCapture = {
+      ...event.wire,
+      requestBody: truncatedReq.value ?? '',
+      responseBody: truncatedResp.value ?? '',
+    };
+
+    const full: HttpExchangeEvent & { truncated?: boolean } = {
+      ...event,
+      id: `evt_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+      ts,
+      wire,
+      ...(truncated ? { truncated: true } : {}),
+    };
+
+    const file = path.join(
+      this.rootDir,
+      CaptureRecorder.localDateDir(new Date(ts)),
+      CaptureRecorder.sessionFileName(full.sessionId)
+    );
+    try {
+      this.ensureDir(path.dirname(file));
+      await fs.promises.appendFile(file, JSON.stringify(full) + '\n', 'utf8');
+    } catch (err: any) {
+      console.warn(`[Capture] Failed to append event to ${file}: ${err.message}`);
     }
   }
 
@@ -270,31 +570,64 @@ export class CaptureRecorder {
       try {
         const filePath = path.join(dir, f.name);
         const st = fs.statSync(filePath);
-        // Per-session outcome tally for the console badges: parse each turn's
-        // status (files are bounded by maxBodyBytes per line, so this stays
-        // cheap even for long sessions).
+        // Per-session outcome tally for the console badges. Two line formats
+        // share the archive:
+        //   - legacy cap_ turn records (one line per turn): counted directly.
+        //   - evt_ http-exchange events (2-4 lines per turn): collected and
+        //     grouped via groupEventsIntoTurns, so a turn counts once no
+        //     matter how many of its events carry an error status.
         let turns = 0;
         let failed = 0;
         let lastStatus: 'ok' | 'error' | undefined;
         let preview: string | undefined;
+        const streamEvents: HttpExchangeEvent[] = [];
         try {
           const content = fs.readFileSync(filePath, 'utf8');
           for (const line of content.split(/\r?\n/)) {
             if (!line.trim()) continue;
-            turns++;
             try {
               const rec = JSON.parse(line);
-              const status = rec.status;
-              if (status === 'error') failed++;
-              if (status === 'ok' || status === 'error') lastStatus = status;
-              // Files are append-only, so the first line with a request body
-              // is the session's opening turn — capture its user text once.
-              if (preview === undefined && rec.request !== undefined) {
-                preview = CaptureRecorder.extractSessionPreview(rec.request);
+              if (rec.eventType === 'http-exchange') {
+                streamEvents.push(rec as HttpExchangeEvent);
+                // First client request body = the session's opening turn.
+                // extractSessionPreview also accepts the raw string form
+                // (it strips a "...[TRUNCATED]" tail and repairs the cut
+                // JSON), so pass the wire body through unparsed.
+                if (
+                  preview === undefined &&
+                  rec.direction === 'client' &&
+                  rec.phase === 'request' &&
+                  rec.wire?.requestBody !== undefined
+                ) {
+                  preview = CaptureRecorder.extractSessionPreview(rec.wire.requestBody);
+                }
+              } else {
+                turns++;
+                const status = rec.status;
+                if (status === 'error') failed++;
+                if (status === 'ok' || status === 'error') lastStatus = status;
+                // Files are append-only, so the first line with a request body
+                // is the session's opening turn — capture its user text once.
+                if (preview === undefined && rec.request !== undefined) {
+                  preview = CaptureRecorder.extractSessionPreview(rec.request);
+                }
               }
             } catch {
               // Corrupt line — counts as a turn but not a failure.
+              turns++;
             }
+          }
+          // groupEventsIntoTurns returns chronological turns; iterate in
+          // order so lastStatus reflects the FINAL turn's outcome.
+          for (const t of CaptureRecorder.groupEventsIntoTurns(streamEvents)) {
+            turns++;
+            const hasError =
+              Boolean(t.error) ||
+              [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse]
+                .some(e => e?.status === 'error');
+            if (hasError) failed++;
+            if (t.gatewayResponse) lastStatus = t.gatewayResponse.status === 'error' ? 'error' : 'ok';
+            else if (hasError) lastStatus = 'error';
           }
         } catch {
           // Read failed — return metadata without the tally.
@@ -362,13 +695,204 @@ export class CaptureRecorder {
   }
 
   /**
+   * Read HTTP exchange events from one archive file, newest `limit` events
+   * in chronological order. Returns events + a `turns` summary that
+   * groups the events by `traceId` (spanId-aware) so the console can
+   * render them as logical turns. The underlying file is also bounded at
+   * MAX_READ_BYTES (pathologically large archives are tailed; the tail is
+   * what matters).
+   */
+  public readEvents(
+    date: string,
+    file: string,
+    limit = 500
+  ): {
+    events: HttpExchangeEvent[];
+    turns: Array<{
+      traceId: string;
+      sessionId: string;
+      model: string;
+      clientRequest?: HttpExchangeEvent;
+      gatewayResponse?: HttpExchangeEvent;
+      upstreamRequest?: HttpExchangeEvent;
+      upstreamResponse?: HttpExchangeEvent;
+      /** Any of the four events with an error field set; "first error wins". */
+      error?: string;
+      /** gateway cycle latency (client-resp.ts - client-req.ts). */
+      gatewayLatencyMs?: number;
+      /** upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
+      upstreamLatencyMs?: number;
+    }>;
+    totalLines: number;
+    fileTruncated: boolean;
+  } {
+    const filePath = this.resolveArchiveFile(date, file);
+    if (!filePath) return { events: [], turns: [], totalLines: 0, fileTruncated: false };
+
+    let text: string;
+    let fileTruncated = false;
+    try {
+      const st = fs.statSync(filePath);
+      const readSize = Math.min(st.size, MAX_READ_BYTES);
+      const fd = fs.openSync(filePath, 'r');
+      try {
+        const buf = Buffer.alloc(readSize);
+        fs.readSync(fd, buf, 0, readSize, st.size - readSize);
+        text = buf.toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      fileTruncated = readSize < st.size;
+    } catch {
+      return { events: [], turns: [], totalLines: 0, fileTruncated: false };
+    }
+
+    const lines = text.split(/\r?\n/);
+    if (fileTruncated && lines.length > 0) lines.shift();
+
+    const events: HttpExchangeEvent[] = [];
+    for (const raw of lines) {
+      if (!raw.trim()) continue;
+      try {
+        const obj = JSON.parse(raw) as Record<string, unknown>;
+        if (obj.eventType === 'http-exchange') {
+          events.push(obj as unknown as HttpExchangeEvent);
+        }
+        // cap_xxx entries (turn-centric) are skipped — the console reads
+        // those via /api/ui/capture/:date/:file (readRecords path).
+      } catch {
+        // Corrupt/partial line — skip, never fail the whole read.
+      }
+    }
+
+    let newest = events.slice(-Math.max(1, limit));
+    // Don't cut a turn in half: when the window starts mid-turn, the
+    // leading events (upstream/gateway responses whose client-request fell
+    // outside the window) would form a phantom incomplete turn with no
+    // latency — drop everything before the first turn-start in the window.
+    const firstTurnStart = newest.findIndex(e => e.direction === 'client' && e.phase === 'request');
+    if (firstTurnStart > 0) newest = newest.slice(firstTurnStart);
+    const turns = CaptureRecorder.groupEventsIntoTurns(newest);
+    return { events: newest, turns, totalLines: events.length, fileTruncated };
+  }
+
+  /**
+   * Group a flat list of HTTP exchange events into logical turns via
+   * `traceId`. Each turn joins its four events: client-direction events
+   * pair by `spanId`, upstream events attach to the trace's active turn
+   * (last-write-wins across failover hops). SpanId-aware because a client
+   * that sends a CONSTANT `x-request-id` on every request would otherwise
+   * collapse the whole session into one turn.
+   * Pure function — exported for unit tests.
+   */
+  public static groupEventsIntoTurns(
+    events: HttpExchangeEvent[]
+  ): Array<{
+    traceId: string;
+    sessionId: string;
+    model: string;
+    clientRequest?: HttpExchangeEvent;
+    gatewayResponse?: HttpExchangeEvent;
+    upstreamRequest?: HttpExchangeEvent;
+    upstreamResponse?: HttpExchangeEvent;
+    error?: string;
+    gatewayLatencyMs?: number;
+    upstreamLatencyMs?: number;
+  }> {
+    type Turn = {
+      traceId: string;
+      sessionId: string;
+      model: string;
+      clientRequest?: HttpExchangeEvent;
+      gatewayResponse?: HttpExchangeEvent;
+      upstreamRequest?: HttpExchangeEvent;
+      upstreamResponse?: HttpExchangeEvent;
+      error?: string;
+      gatewayLatencyMs?: number;
+      upstreamLatencyMs?: number;
+    };
+    const byTrace = new Map<string, Turn[]>();
+    /** traceId → the turn upstream events should attach to (the latest). */
+    const activeByTrace = new Map<string, Turn>();
+
+    const newTurn = (ev: HttpExchangeEvent): Turn => {
+      const t: Turn = { traceId: ev.traceId, sessionId: ev.sessionId, model: ev.model };
+      let list = byTrace.get(ev.traceId);
+      if (!list) {
+        list = [];
+        byTrace.set(ev.traceId, list);
+      }
+      list.push(t);
+      return t;
+    };
+
+    for (const ev of events) {
+      let t: Turn | undefined;
+      if (ev.direction === 'client' && ev.phase === 'request') {
+        // A client request ALWAYS starts a new turn — even when the traceId
+        // was already seen (a client sending a constant x-request-id on
+        // every request gets one turn per request, not one giant merged
+        // turn with last-write-wins fields).
+        t = newTurn(ev);
+        t.clientRequest = ev;
+        activeByTrace.set(ev.traceId, t);
+      } else if (ev.direction === 'client' && ev.phase === 'response') {
+        // Pair by spanId with the matching client request (newest first —
+        // the common case is the latest turn of the trace).
+        const list = byTrace.get(ev.traceId) ?? [];
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].clientRequest?.spanId === ev.spanId) {
+            t = list[i];
+            break;
+          }
+        }
+        if (!t) t = newTurn(ev); // response whose request fell outside the read window
+        t.gatewayResponse = ev;
+      } else {
+        // Upstream events attach to the trace's active turn. Failover hops
+        // overwrite each other (last-write-wins) — the final attempt is
+        // the one that produced the gateway response.
+        t = activeByTrace.get(ev.traceId);
+        if (!t) {
+          t = newTurn(ev);
+          activeByTrace.set(ev.traceId, t);
+        }
+        if (ev.phase === 'request') t.upstreamRequest = ev;
+        else t.upstreamResponse = ev;
+      }
+      if (ev.error && !t.error) t.error = ev.error;
+    }
+    const all: Turn[] = [];
+    for (const list of byTrace.values()) all.push(...list);
+    for (const t of all) {
+      if (t.clientRequest && t.gatewayResponse) {
+        t.gatewayLatencyMs = t.gatewayResponse.ts - t.clientRequest.ts;
+      }
+      if (t.upstreamRequest && t.upstreamResponse) {
+        t.upstreamLatencyMs = t.upstreamResponse.ts - t.upstreamRequest.ts;
+      }
+    }
+    return all.sort((a, b) => {
+      const aTs = a.clientRequest?.ts ?? a.upstreamRequest?.ts ?? 0;
+      const bTs = b.clientRequest?.ts ?? b.upstreamRequest?.ts ?? 0;
+      return aTs - bTs;
+    });
+  }
+
+  /**
    * Read the raw JSONL archive verbatim (for export/download). Unlike
    * readRecords this is NOT capped at MAX_READ_BYTES — exports should be
    * complete; per-line size is already bounded by maxBodyBytes at write time.
    *
-   * When `exclude` is non-empty, those body fields (request / upstreamRequest
-   * / response / upstreamError) are stripped from each turn and the rest is
-   * re-serialized — metadata (ts/status/model/routing/usage) always survives.
+   * When `exclude` is non-empty, body fields are stripped and the rest is
+   * re-serialized — metadata (ts/status/model/routing/ids) always survives.
+   * Handles both line formats:
+   *   - legacy cap_ turn records: `request` / `upstreamRequest` / `response`
+   *     / `upstreamError` fields are deleted directly.
+   *   - evt_ http-exchange events: the same exclude names map onto the
+   *     matching wire side (`request` → client request body,
+   *     `upstreamRequest`/`upstreamHttp` → upstream request body,
+   *     `response`/`upstreamError` → response bodies + the error field).
    * Corrupt lines are kept verbatim, same fail-open policy as every read.
    */
   public readRawArchive(date: string, file: string, exclude?: string[]): string | null {
@@ -382,8 +906,21 @@ export class CaptureRecorder {
       for (const line of raw.split(/\r?\n/)) {
         if (!line.trim()) continue;
         try {
-          const rec = JSON.parse(line) as Record<string, unknown>;
-          for (const f of drop) delete rec[f];
+          const rec = JSON.parse(line) as Record<string, any>;
+          if (rec.eventType === 'http-exchange' && rec.wire) {
+            if (drop.has('request') && rec.direction === 'client' && rec.phase === 'request') {
+              rec.wire.requestBody = '';
+            }
+            if ((drop.has('upstreamRequest') || drop.has('upstreamHttp')) && rec.direction === 'upstream' && rec.phase === 'request') {
+              rec.wire.requestBody = '';
+            }
+            if ((drop.has('response') || drop.has('upstreamError')) && rec.phase === 'response') {
+              rec.wire.responseBody = '';
+            }
+            if (drop.has('upstreamError')) delete rec.error;
+          } else {
+            for (const f of drop) delete rec[f];
+          }
           out.push(JSON.stringify(rec));
         } catch {
           out.push(line);

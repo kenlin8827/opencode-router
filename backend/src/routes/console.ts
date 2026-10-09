@@ -1435,7 +1435,19 @@ export function registerConsoleRoutes(
     // `exclude` (comma-separated, whitelisted body fields) strips those fields
     // per turn — metadata (ts/status/model/routing/usage) always survives.
     if ((req.query as any)?.format === 'raw') {
-      const RAW_EXCLUDE_FIELDS = new Set(['request', 'upstreamRequest', 'response', 'upstreamError']);
+      // The set of body fields the export endpoint accepts for strip. Wider
+      // than the legacy turn schema (upstreamResponse / inboundHttp / etc.)
+      // — covers everything the new HTTP exchange event stream writes too.
+      const RAW_EXCLUDE_FIELDS = new Set([
+        'request',
+        'upstreamRequest',
+        'upstreamResponse',
+        'upstreamHttp',
+        'inboundHttp',
+        'outboundHttp',
+        'response',
+        'upstreamError',
+      ]);
       const exclude = String((req.query as any)?.exclude || '')
         .split(',')
         .map(f => f.trim())
@@ -1450,6 +1462,25 @@ export function registerConsoleRoutes(
     }
     const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '200', 10) || 200, 1), 2000);
     const result = captureRecorder.readRecords(date, file, limit);
+    if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
+      return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
+    }
+    return { status: 'ok', date, file, ...result };
+  });
+
+  /**
+   * Read the HTTP exchange events written by the capture pipeline.
+   * Each inference turn produces 2-4 events sharing the same `traceId`:
+   * client-request, gateway-response, upstream-request, upstream-response.
+   * The console joins them into one logical turn via `traceId` / `spanId`.
+   */
+  app.get('/api/ui/capture/:date/:file/events', async (req: any, reply: any) => {
+    const { date, file } = req.params as { date: string; file: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '500', 10) || 500, 1), 5000);
+    const result = captureRecorder.readEvents(date, file, limit);
     if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
       return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
     }
