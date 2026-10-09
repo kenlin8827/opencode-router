@@ -287,8 +287,13 @@ export interface TierPoolInfo {
 export interface TierPoolsResponse {
   status: string;
   pools: Record<string, TierPoolInfo>;
-  /** effective boot-time smart-match config (per tier), for suggestion previews */
-  match?: Partial<Record<'fast' | 'flagship' | 'reasoning', { patterns?: string[]; minInputPerM?: number; maxInputPerM?: number }>>;
+  /** effective smart-match config (per tier, fully symmetric — ADR-0012), for suggestion previews */
+  match?: Partial<
+    Record<
+      'fast' | 'flagship' | 'reasoning',
+      { patterns?: string[]; minInputPerM?: number; maxInputPerM?: number; exclude?: string[]; excludeTiers?: string[] }
+    >
+  >;
 }
 
 export interface ComboMemberView {
@@ -363,6 +368,24 @@ export const api = {
 
   async getTierPools(): Promise<TierPoolsResponse> {
     const res = await fetch('/api/ui/tier-pools');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Ephemeral pool preview computed from (unsaved) tier-policy form state. */
+  async previewTierPools(tiers: unknown): Promise<TierPoolsResponse> {
+    const res = await fetch('/api/ui/tier-pools/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tiers }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Live (committed) pool snapshot — the registry's m.tier after the last applyTierConfigNow. */
+  async getLiveTierPools(): Promise<TierPoolsResponse> {
+    const res = await fetch('/api/ui/tier-pools/live');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

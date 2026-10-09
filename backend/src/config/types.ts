@@ -24,6 +24,22 @@ export interface ModelRegistration {
   isDefaultInTier?: boolean;
   supportsReasoningEffort?: boolean;
   supportsPromptCaching?: boolean;
+  /**
+   * Inputs captured by the smart-match boot paths (boot-direct / sync).
+   * Presence marks the model as RUNTIME-RECLASSIFIABLE: the registry replays
+   * tiers[t].match + catalog overrides against these inputs without a restart.
+   * Hand-configured models omit it and keep their explicit tier forever.
+   */
+  tierMatch?: { rawInputPerM?: number; reasoningFlag: boolean };
+  /** Explicit tier from the opencode.jsonc model definition (catalog overrides are read live) */
+  configTier?: TierLevel;
+  /**
+   * ADR-0012 fourth state: the model matched no tier's positive conditions
+   * (no residual fallback any more). It joins NO candidate pool. Kept as a
+   * flag rather than widening `tier` so TIER_RANK / failover chains / session
+   * ratchet keep operating on the strict three-state TierLevel.
+   */
+  unclassified?: boolean;
 }
 
 /**
@@ -59,15 +75,14 @@ export interface FallbackConfig {
 }
 
 /**
- * Per-tier composition policy — resolved at runtime whenever a tier's candidate
- * pool is needed (primary pick, failover chain, session self-healing).
- * Filtering order: blacklist → whitelist; patterns are wildcards
- * (`*` any chars, `?` single char, case-insensitive; no wildcard = substring).
- * Blacklist and whitelist are mutually exclusive in the console UI; if both
- * are set in hand-written YAML, blacklist wins.
- * Tier MEMBERSHIP itself is decided at boot by `match` + the catalog tier
- * field (see providers/tier-match.ts); the legacy priceRange filter was
- * removed — a `priceRange` key in old configs is ignored.
+ * Per-tier composition policy. Pool membership has exactly ONE basis: the
+ * `match` decision function (providers/tier-match.ts) — patterns claim,
+ * price bands bound, exclude vetoes. Since ADR-0012 all three tiers are
+ * FULLY SYMMETRIC (no residual tier): a model matching nothing ends up
+ * `unclassified` and joins no pool. Selection strategy and weights shape
+ * HOW the pool is used, never WHO is in it.
+ * Patterns are wildcards (`*` any chars, `?` single char, case-insensitive;
+ * no wildcard = substring).
  */
 export interface TierWeightRule {
   pattern: string; // wildcard pattern over model id
@@ -75,23 +90,32 @@ export interface TierWeightRule {
 }
 
 export interface TierPolicy {
-  /**
-   * Smart-match rules that classify models into this tier at boot (vs. the
-   * filters below which only narrow an already-classified pool). Blank
-   * fields fall back to the built-in baseline (providers/tier-match.ts).
-   */
   match?: {
-    patterns?: string[]; // wildcard patterns over model id
-    minInputPerM?: number;
-    maxInputPerM?: number;
+    patterns?: string[]; // wildcard patterns over model id (all tiers claim)
+    minInputPerM?: number; // price-band floor — configured for EVERY tier incl. flagship
+    maxInputPerM?: number; // price-band ceiling; a band with no ceiling is a WEAK condition (consulted last)
+    exclude?: string[]; // vetoes this tier's auto-claim (explicit pins bypass it)
+    /**
+     * ADR-0012 anchor-exclude: a model matching ANY condition (patterns / price
+     * band / reasoning flag) of one of these tiers may not be AUTO-claimed by
+     * THIS tier. Runtime filter derived from the other tiers' own conditions.
+     */
+    excludeTiers?: TierLevel[];
   };
-  blacklist?: string[]; // matched models are removed from the tier entirely
-  whitelist?: string[]; // non-empty: ONLY matching models are kept
   selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
   weights?: TierWeightRule[]; // multi-role: selection probability (weighted) / rotation share (round_robin) / same-priority order tie-break (priority)
 }
 
 export interface TiersConfig {
+  /**
+   * GLOBAL denylist (sibling of the tiers; edited on the raw-YAML page). A
+   * model matching any pattern joins NO candidate pool — unconditionally, i.e.
+   * even an explicit catalog/jsonc pin cannot rescue it. Invisible to tier
+   * routing, primary pick and failover; direct calls by model id / combos
+   * still work. The /tiers page round-trips this field untouched on save (the
+   * backend merges `tiers` by whole-object replacement).
+   */
+  exclude?: string[];
   fast?: TierPolicy;
   flagship?: TierPolicy;
   reasoning?: TierPolicy;

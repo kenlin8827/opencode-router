@@ -23,7 +23,7 @@ const TIER_REASON_KEYS: Record<TierReasonCode, string> = {
   name: 'catalogPage.ocrTierWhyName',
   flag: 'catalogPage.ocrTierWhyReasoning',
   cost: 'catalogPage.ocrTierWhyCost',
-  default: 'catalogPage.ocrTierWhyDefault',
+  unclassified: 'catalogPage.ocrTierWhyUnclassified',
 };
 
 /**

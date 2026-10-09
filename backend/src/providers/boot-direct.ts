@@ -1,5 +1,5 @@
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
-import { TierLevel } from '../types/router.js';
+import { PoolMembership, TierLevel } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from './tier-match.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
@@ -31,7 +31,8 @@ export interface DirectBootResult {
 export async function buildDirectPool(): Promise<DirectBootResult> {
   const catalog = await catalogRepository.list();
   // Boot-time smart match (config `tiers[t].match` over the built-in
-  // baseline). Restart required — same semantics as the composition policy.
+  // baseline). The registry replays it live on every config-save event
+  // (applyTierConfigNow) — no gateway restart required for tier edits.
   const tierMatch = resolveTierMatch(loadConfig().tiers);
   const authEntries = readAuthEntries();
   const instances: DirectBootResult['instances'] = [];
@@ -104,15 +105,20 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       const cacheRead = catModel?.cost?.cache_read ?? inputCost * 0.25;
 
       // Explicit tier (catalog override / jsonc model def) wins; otherwise the
-      // configurable smart match classifies (patterns → reasoning flag → price
-      // band on the RAW catalog price → flagship). Free models (input = 0) can
-      // hit the fast band; models without catalog pricing simply skip bands.
+      // configurable smart match classifies (patterns → price band → reasoning
+      // flag). Free models (input = 0) can hit the fast band; models without
+      // catalog pricing simply skip bands and, since ADR-0012, end up
+      // UNCLASSIFIED (no residual tier) unless something claims them.
       const explicitTier = (v: unknown): TierLevel | undefined =>
         v === 'fast' || v === 'flagship' || v === 'reasoning' ? (v as TierLevel) : undefined;
-      const tier: TierLevel =
+      const rawInputPerM = catModel?.cost?.input;
+      const configTier = explicitTier(d?.tier);
+      const membership: PoolMembership =
         explicitTier(catModel?.tier) ??
-        explicitTier(d?.tier) ??
-        classifyTier({ modelId: mid, inputPerM: catModel?.cost?.input, reasoningFlag: isReasoning }, tierMatch);
+        configTier ??
+        classifyTier({ modelId: mid, inputPerM: rawInputPerM, reasoningFlag: isReasoning }, tierMatch);
+      const unclassified = membership === 'unclassified';
+      const tier: TierLevel = unclassified ? 'flagship' : membership;
 
       models.push({
         id: `${rec.id}/${mid}`,
@@ -123,6 +129,11 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         supportsReasoningEffort: isReasoning || undefined,
         supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
         wire,
+        // Classification inputs → the registry replays tier membership live
+        // (config match + catalog overrides) without a gateway restart.
+        tierMatch: { rawInputPerM, reasoningFlag: isReasoning },
+        ...(configTier ? { configTier } : {}),
+        ...(unclassified ? { unclassified: true } : {}),
         pricing: {
           input: inputCost,
           output: outputCost,

@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Zap, Scale, Brain, Save, RefreshCw, Plus, X, RotateCcw, Eye, Ban, Search } from 'lucide-react';
+import { Zap, Scale, Brain, Save, RefreshCw, Plus, X, RotateCcw, Eye, Search } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
 import { DEFAULT_TIER_MATCH } from '../lib/tierMatch';
 import { useI18n } from '../i18n/I18nContext';
@@ -14,15 +14,14 @@ interface WeightRow {
   weight: string;
 }
 
-type FilterMode = 'none' | 'blacklist' | 'whitelist';
 type SelectionStrategy = 'priority' | 'weighted' | 'round_robin';
 
 interface TierPolicyForm {
   matchPatterns: string; // textarea, one wildcard pattern per line ('' = built-in default)
   matchMinInputPerM: string;
   matchMaxInputPerM: string;
-  filterMode: FilterMode;
-  filterPatterns: string; // textarea, one wildcard pattern per line
+  excludePatterns: string; // per-tier veto on auto-claim — SAME meaning for every tier (ADR-0012)
+  matchExcludeTiers: Tier[]; // ADR-0012 anchor-exclude: models matching these tiers' conditions are not claimed here
   selection: SelectionStrategy;
   weights: WeightRow[];
 }
@@ -60,8 +59,8 @@ const dmMatchFields = (tier: Tier) => {
 
 const defaultFormFor = (tier: Tier): TierPolicyForm => ({
   ...dmMatchFields(tier),
-  filterMode: 'none',
-  filterPatterns: '',
+  excludePatterns: '',
+  matchExcludeTiers: [],
   selection: 'priority',
   weights: [],
 });
@@ -74,11 +73,13 @@ const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
     matchMinInputPerM: p?.match?.minInputPerM != null ? String(p.match.minInputPerM) : dm.matchMinInputPerM,
     matchMaxInputPerM: p?.match?.maxInputPerM != null ? String(p.match.maxInputPerM) : dm.matchMaxInputPerM,
   };
-  if (!p || Object.keys(p).length === 0) return { ...defaultFormFor(tier), ...withDefaults };
   return {
+    ...dm,
     ...withDefaults,
-    filterMode: p?.blacklist?.length ? 'blacklist' : p?.whitelist?.length ? 'whitelist' : 'none',
-    filterPatterns: p?.blacklist?.length ? p.blacklist.join('\n') : p?.whitelist?.length ? p.whitelist.join('\n') : '',
+    excludePatterns: p?.match?.exclude?.join('\n') ?? '',
+    matchExcludeTiers: (Array.isArray(p?.match?.excludeTiers) ? p.match.excludeTiers : []).filter(
+      (x: unknown): x is Tier => x === 'fast' || x === 'flagship' || x === 'reasoning',
+    ),
     selection: p?.selection ?? (p?.weights?.length ? 'weighted' : 'priority'),
     weights: (p?.weights || []).map((w: any) => ({ pattern: String(w.pattern ?? ''), weight: String(w.weight ?? 1) })),
   };
@@ -88,6 +89,9 @@ const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
   const policy: Record<string, unknown> = {};
   // Smart match — only the fields the user actually filled; blanks keep the
   // built-in baseline (backend providers/tier-match.ts DEFAULT_TIER_MATCH).
+  // ADR-0012: every tier is configured IDENTICALLY (patterns + price band +
+  // exclude + anchor-exclude tiers). tiers.exclude (global denylist) is not
+  // managed here — it round-trips untouched.
   const match: Record<string, unknown> = {};
   const mp = splitPatterns(f.matchPatterns);
   if (mp.length) match.patterns = mp;
@@ -95,11 +99,10 @@ const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
   const matchMax = parseNum(f.matchMaxInputPerM);
   if (matchMin != null) match.minInputPerM = matchMin;
   if (matchMax != null) match.maxInputPerM = matchMax;
+  const ex = splitPatterns(f.excludePatterns);
+  if (ex.length) match.exclude = ex;
+  if (f.matchExcludeTiers.length) match.excludeTiers = f.matchExcludeTiers;
   if (Object.keys(match).length > 0) policy.match = match;
-  // Blacklist / whitelist are mutually exclusive — the mode selector guarantees it.
-  const pats = splitPatterns(f.filterPatterns);
-  if (f.filterMode === 'blacklist' && pats.length) policy.blacklist = pats;
-  else if (f.filterMode === 'whitelist' && pats.length) policy.whitelist = pats;
   policy.selection = f.selection;
   const weights = f.weights
     .map((w) => ({ pattern: w.pattern.trim(), weight: Math.max(1, Math.round(Number(w.weight) || 1)) }))
@@ -109,8 +112,7 @@ const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
 };
 
 const REASON_LABEL_KEY: Record<string, string> = {
-  blacklist: 'tierPolicy.reasonBlacklist',
-  whitelist: 'tierPolicy.reasonWhitelist',
+  exclude: 'tierPolicy.reasonExclude',
 };
 
 /** Provider logo via the cached catalog proxy; falls back to the initial letter. */
@@ -164,24 +166,79 @@ export const RulesPage: React.FC = () => {
     flagship: defaultFormFor('flagship'),
     reasoning: defaultFormFor('reasoning'),
   });
+  // tiers.exclude (GLOBAL denylist) has no card on this page — it is edited on
+  // the raw-YAML page. It is still round-tripped here because the backend
+  // replaces the whole `tiers` object on save (omitting it would wipe it).
+  const [globalExclude, setGlobalExclude] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [pools, setPools] = useState<Record<string, TierPoolInfo>>({});
+  const [poolsLive, setPoolsLive] = useState<Record<string, TierPoolInfo>>({});
   const [poolsError, setPoolsError] = useState<string | null>(null);
   const [poolModalTier, setPoolModalTier] = useState<Tier | null>(null);
+  const [poolMode, setPoolMode] = useState<'preview' | 'live'>('preview');
   const [poolFilter, setPoolFilter] = useState('');
   const [logoMap, setLogoMap] = useState<Record<string, string>>({});
+  const [poolsLoadingMode, setPoolsLoadingMode] = useState<'preview' | 'live' | null>(null);
+  const [poolsAt, setPoolsAt] = useState<number | null>(null);
+  const [poolsLiveAt, setPoolsLiveAt] = useState<number | null>(null);
   useBodyScrollLock(!!poolModalTier);
 
+  const buildTiersPayload = useCallback((): Record<string, unknown> => {
+    const tiers: Record<string, unknown> = {};
+    for (const { key } of TIERS) {
+      const policy = buildTierPolicy(forms[key]);
+      if (Object.keys(policy).length > 0) tiers[key] = policy;
+    }
+    const ex = splitPatterns(globalExclude);
+    if (ex.length) tiers.exclude = ex;
+    return tiers;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forms, globalExclude]);
+
+  // Pool numbers = EPHEMERAL preview computed from the current FORM state
+  // (server-side pure projection, live pools untouched). Real membership is
+  // rewritten only by handleSave → applyTierConfigNow commit.
+  //
+  // The card footer count is driven by `poolsLive` (committed state) — what
+  // routing will actually use after the next save — NOT by `pools` (the form
+  // preview, which jumps on every keystroke). The preview pool is only shown
+  // inside the detail modal, where its ephemeral nature is explicit.
   const loadPools = useCallback(async () => {
+    setPoolsLoadingMode('preview');
     try {
-      const res = await api.getTierPools();
+      const res = await api.previewTierPools(buildTiersPayload());
       setPools(res.pools || {});
+      setPoolsAt(Date.now());
       setPoolsError(null);
     } catch (err: any) {
       setPoolsError(err?.message || 'error');
+    } finally {
+      setPoolsLoadingMode(null);
+    }
+  }, [buildTiersPayload]);
+
+  /** Live (committed) pool snapshot — the registry's m.tier after the last applyTierConfigNow. */
+  const loadLivePools = useCallback(async () => {
+    setPoolsLoadingMode('live');
+    try {
+      const res = await api.getLiveTierPools();
+      setPoolsLive(res.pools || {});
+      setPoolsLiveAt(Date.now());
+    } catch (err: any) {
+      // Live endpoint is best-effort; preview endpoint already surfaces errors.
+    } finally {
+      setPoolsLoadingMode(null);
     }
   }, []);
+
+  // Debounced live preview while editing the form.
+  useEffect(() => {
+    if (loading) return;
+    const t = setTimeout(() => void loadPools(), 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forms, loading]);
 
   // provider id → logo URL (OCR catalog view); logos are decorative, failures ignored
   const ensureLogos = useCallback(async () => {
@@ -205,7 +262,9 @@ export const RulesPage: React.FC = () => {
           flagship: formFromPolicy('flagship', tiers.flagship),
           reasoning: formFromPolicy('reasoning', tiers.reasoning),
         });
+        setGlobalExclude((tiers.exclude || []).join('\n'));
         await loadPools();
+        await loadLivePools();
       } catch (err: any) {
         toast.error(t('common.failed') + err.message);
       } finally {
@@ -226,14 +285,10 @@ export const RulesPage: React.FC = () => {
     try {
       // Tiers whose fields are all blank are omitted → the backend's
       // whole-object `tiers` replacement drops their policies (clear = remove).
-      const tiers: Record<string, unknown> = {};
-      for (const { key } of TIERS) {
-        const policy = buildTierPolicy(forms[key]);
-        if (Object.keys(policy).length > 0) tiers[key] = policy;
-      }
-      await api.saveConfig({ tiers });
+      await api.saveConfig({ tiers: buildTiersPayload() });
       toast.success(t('tierPolicy.saved'));
       await loadPools();
+      await loadLivePools();
     } catch (err: any) {
       toast.error(t('common.saveFailed') + err.message);
     } finally {
@@ -244,32 +299,64 @@ export const RulesPage: React.FC = () => {
   const openPoolModal = (tier: Tier) => {
     setPoolModalTier(tier);
     setPoolFilter('');
-    loadPools();
+    setPoolMode('preview');
+    void loadPools();
+    void loadLivePools();
     ensureLogos();
   };
 
-  /** Add a pool model to the tier's blacklist — writes to the FORM (mode → blacklist, one id per line); persisted by 保存全部策略. */
-  const addToBlacklist = (tier: Tier, modelId: string) => {
-    setForms((prev) => {
-      const f = prev[tier];
-      const lines = splitPatterns(f.filterPatterns);
+  /** Add a model to the GLOBAL denylist (exact id) — writes tiers.exclude (ADR-0012: its own field). */
+  const addToExclude = (modelId: string) => {
+    setGlobalExclude((prev) => {
+      const lines = splitPatterns(prev);
       if (lines.includes(modelId)) return prev;
-      return { ...prev, [tier]: { ...f, filterMode: 'blacklist', filterPatterns: [...lines, modelId].join('\n') } };
+      return [...lines, modelId].join('\n');
     });
     setPoolModalTier(null);
-    toast.success(t('tierPolicy.addedToBlacklist'));
+    toast.success(t('tierPolicy.addedToExclude'));
   };
 
   const labelStyle = { fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' } as const;
 
   const modalTierMeta = poolModalTier ? TIERS.find((x) => x.key === poolModalTier) : undefined;
-  const modalPool = poolModalTier ? pools[poolModalTier] : undefined;
+  const modalPoolSet = poolModalTier ? (poolMode === 'live' ? poolsLive[poolModalTier] : pools[poolModalTier]) : undefined;
+  const modalPool = modalPoolSet;
   const modalStrategy: SelectionStrategy = poolModalTier ? forms[poolModalTier].selection : 'priority';
   const modalTotalWeight = modalPool?.pool.reduce((s, m) => s + m.weight, 0) ?? 0;
   const modalQ = poolFilter.trim().toLowerCase();
   const modalVisiblePool =
     modalPool?.pool.filter((m) => !modalQ || m.id.toLowerCase().includes(modalQ) || m.provider.toLowerCase().includes(modalQ)) ?? [];
   const modalVisibleExcluded = modalPool?.excluded.filter((e) => !modalQ || e.id.toLowerCase().includes(modalQ)) ?? [];
+
+  // Virtual scroll: row height is fixed (row style below uses 6px+12px+1px = 38px).
+  // 50+ row pools would otherwise mount ~50 logos + buttons; viewport render
+  // keeps DOM work proportional to visible rows regardless of pool size.
+  //
+  // Layout (C-style pure flow, no sticky): list-header sits above the scroll
+  // container, status bar below it — both are flex-shrink:0 siblings of the
+  // scroll container, never overlap rows, never need to reserve pixel space.
+  const ROW_H = 38;
+  const OVERSCAN = 10;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewportH(el.clientHeight);
+    setScrollTop(0); // fresh container = fresh scroll position
+    const ro = new ResizeObserver(() => setViewportH(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [poolModalTier]); // reset when modal opens (different tier)
+  const virtual = useMemo(() => {
+    const total = modalVisiblePool.length;
+    if (viewportH === 0) return { start: 0, end: total, total, padTop: 0, padBottom: 0 };
+    const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+    const visibleRows = Math.max(1, Math.ceil(viewportH / ROW_H)) + OVERSCAN * 2;
+    const end = Math.min(total, start + visibleRows);
+    return { start, end, total, padTop: start * ROW_H, padBottom: (total - end) * ROW_H };
+  }, [modalVisiblePool.length, scrollTop, viewportH]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -284,15 +371,20 @@ export const RulesPage: React.FC = () => {
             <span>{saving ? t('common.loading') : t('tierPolicy.saveBtn')}</span>
           </button>
         </div>
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '6px' }}>{t('tierPolicy.desc')}</p>
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('tierPolicy.defaultsHint')}</div>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0, marginBottom: '6px', whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '6px' }}>{t('tierPolicy.defaultsHint')}</div>
       </div>
 
       {/* One policy card per tier */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '16px' }}>
         {TIERS.map(({ key: tier, labelKey, icon: Icon, color }) => {
           const f = forms[tier];
-          const poolInfo = pools[tier];
+          // Card footer = EPHEMERAL preview from the current form (debounced
+          // 500ms via loadPools). Updates as the user edits, so the count
+          // reflects "what would happen if I saved now" — not the committed
+          // state. For the committed (post-save) state, use the detail modal
+          // and switch to the 实时 tab.
+          const poolInfo = pools[tier] ?? poolsLive[tier];
           return (
             <div
               key={tier}
@@ -341,7 +433,7 @@ export const RulesPage: React.FC = () => {
                     step="any"
                     min={0}
                     className="input"
-                    placeholder={t('tierPolicy.minInput')}
+                    placeholder={t('tierPolicy.minInputPrice')}
                     value={f.matchMinInputPerM}
                     onChange={(e) => updateForm(tier, { matchMinInputPerM: e.target.value })}
                   />
@@ -350,12 +442,45 @@ export const RulesPage: React.FC = () => {
                     step="any"
                     min={0}
                     className="input"
-                    placeholder={t('tierPolicy.maxInput')}
+                    placeholder={t('tierPolicy.maxInputPrice')}
                     value={f.matchMaxInputPerM}
                     onChange={(e) => updateForm(tier, { matchMaxInputPerM: e.target.value })}
                   />
                 </div>
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.matchHint')}</div>
+                <label style={{ ...labelStyle, marginTop: '8px' }}>{t('tierPolicy.tierExcludeLabel')}</label>
+                <textarea
+                  rows={2}
+                  className="input"
+                  style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
+                  placeholder={t('tierPolicy.excludePlaceholder')}
+                  value={f.excludePatterns}
+                  onChange={(e) => updateForm(tier, { excludePatterns: e.target.value })}
+                />
+                <label style={{ ...labelStyle, marginTop: '8px' }}>{t('tierPolicy.excludeTiersLabel')}</label>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  {TIERS.filter((x) => x.key !== tier).map(({ key: other, labelKey }) => {
+                    const on = f.matchExcludeTiers.includes(other);
+                    return (
+                      <button
+                        key={other}
+                        type="button"
+                        className={on ? 'btn btn-primary' : 'btn'}
+                        style={{ fontSize: '11px', padding: '3px 9px' }}
+                        title={t('tierPolicy.excludeTiersHint')}
+                        onClick={() =>
+                          updateForm(tier, {
+                            matchExcludeTiers: on
+                              ? f.matchExcludeTiers.filter((x) => x !== other)
+                              : [...f.matchExcludeTiers, other],
+                          })
+                        }
+                      >
+                        {on ? <X size={10} /> : <Plus size={10} />}
+                        <span>{t(labelKey)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Selection strategy + weights */}
@@ -427,40 +552,6 @@ export const RulesPage: React.FC = () => {
                 <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
               </div>
 
-              {/* Blacklist / whitelist — mutually exclusive */}
-              <div>
-                <label style={labelStyle}>{t('tierPolicy.filterMode')}</label>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: f.filterMode !== 'none' ? '8px' : '0' }}>
-                  {(['none', 'blacklist', 'whitelist'] as FilterMode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={f.filterMode === mode ? 'btn btn-primary' : 'btn'}
-                      style={{ fontSize: '12px', flex: 1 }}
-                      onClick={() => updateForm(tier, { filterMode: mode })}
-                    >
-                      {t(mode === 'none' ? 'tierPolicy.filterNone' : mode === 'blacklist' ? 'tierPolicy.filterBlacklist' : 'tierPolicy.filterWhitelist')}
-                    </button>
-                  ))}
-                </div>
-                {f.filterMode !== 'none' && (
-                  <>
-                    <label style={labelStyle}>
-                      {t(f.filterMode === 'blacklist' ? 'tierPolicy.blacklist' : 'tierPolicy.whitelist')}
-                    </label>
-                    <textarea
-                      rows={3}
-                      className="input"
-                      style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
-                      placeholder={t('tierPolicy.patternsPlaceholder')}
-                      value={f.filterPatterns}
-                      onChange={(e) => updateForm(tier, { filterPatterns: e.target.value })}
-                    />
-                  </>
-                )}
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.patternHint')}</div>
-              </div>
-
               {/* Candidate pool summary → opens the detail modal */}
               <div
                 style={{
@@ -502,11 +593,13 @@ export const RulesPage: React.FC = () => {
       {/* Candidate pool detail modal — portal to body (page-level modal, z-index 100) */}
       {poolModalTier &&
         createPortal(
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'rgba(0, 0, 0, 0.85)',
+          <>
+            <style>{`@keyframes ocr-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }`}</style>
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(0, 0, 0, 0.85)',
               zIndex: 100,
               display: 'flex',
               alignItems: 'center',
@@ -531,16 +624,73 @@ export const RulesPage: React.FC = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
                 <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   {modalTierMeta && <modalTierMeta.icon size={15} color={modalTierMeta.color} />}
-                  <span>{modalTierMeta ? t(modalTierMeta.labelKey) : ''} · {t('tierPolicy.poolTitle')}</span>
+                  <span>
+                    {modalTierMeta ? t(modalTierMeta.labelKey) : ''} ·{' '}
+                    {t('tierPolicy.poolTitleBase', {
+                      mode: t(poolMode === 'live' ? 'tierPolicy.poolTabLive' : 'tierPolicy.poolTabPreview'),
+                    })}
+                  </span>
                 </h3>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  {modalQ && (
-                    <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
-                      {modalVisiblePool.length}/{modalPool?.pool.length ?? 0}
+                  <div style={{ display: 'flex', gap: 0, border: '1px solid var(--card-border)', borderRadius: 6, padding: 2 }}>
+                    {(['preview', 'live'] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setPoolMode(m);
+                          if (m === 'live') void loadLivePools();
+                          else void loadPools();
+                        }}
+                        className={poolMode === m ? 'btn btn-primary' : 'btn'}
+                        style={{ padding: '2px 10px', fontSize: '11px', borderRadius: 4 }}
+                        title={t(m === 'preview' ? 'tierPolicy.poolTabPreviewHint' : 'tierPolicy.poolTabLiveHint')}
+                      >
+                        {t(m === 'preview' ? 'tierPolicy.poolTabPreview' : 'tierPolicy.poolTabLive')}
+                        {poolMode === m && poolsLoadingMode === m && (
+                          <span style={{ marginLeft: 6, fontSize: 9, animation: 'ocr-spin 0.9s linear infinite', display: 'inline-block' }}>↻</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  {(() => {
+                    const at = poolMode === 'live' ? poolsLiveAt : poolsAt;
+                    return at ? (
+                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                        {t('tierPolicy.refreshedAt')} {new Date(at).toLocaleTimeString()}
+                      </span>
+                    ) : null;
+                  })()}
+                  {modalPool && (
+                    <span
+                      title={`${t('tierPolicy.poolTitle')} ${modalPool.pool.length} · ${t('tierPolicy.excludedTitle')} ${modalPool.excluded.length}`}
+                      style={{
+                        fontSize: '10px',
+                        color: 'var(--text-dim)',
+                        fontFamily: 'JetBrains Mono, monospace',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        background: 'var(--card-border)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {t('tierPolicy.poolCount', { n: modalPool.pool.length })}
+                      {modalQ ? ` · ${t('tierPolicy.poolFilteredCount', { shown: modalVisiblePool.length, total: modalPool.pool.length })}` : ''}
+                      {' · '}
+                      {modalPool.excluded.length}
                     </span>
                   )}
-                  <button className="btn" style={{ padding: '3px 10px', fontSize: '11px' }} onClick={loadPools}>
-                    <RefreshCw size={11} />
+                  <button
+                    className="btn"
+                    style={{ padding: '3px 10px', fontSize: '11px', opacity: poolsLoadingMode === poolMode ? 0.7 : 1 }}
+                    title={t('tierPolicy.refreshHint')}
+                    disabled={poolsLoadingMode !== null}
+                    onClick={() => void (poolMode === 'live' ? loadLivePools() : loadPools())}
+                  >
+                    <RefreshCw
+                      size={11}
+                      style={poolsLoadingMode === poolMode ? { animation: 'ocr-spin 0.9s linear infinite' } : undefined}
+                    />
                     <span>{t('tierPolicy.refresh')}</span>
                   </button>
                   <button
@@ -567,7 +717,6 @@ export const RulesPage: React.FC = () => {
                 />
               </div>
 
-              <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               {poolsError ? (
                 <div
                   style={{
@@ -588,7 +737,12 @@ export const RulesPage: React.FC = () => {
                       ? t('tierPolicy.poolUnavailable')
                       : `${t('tierPolicy.poolLoadFailed')} (${poolsError})`}
                   </span>
-                  <button className="btn" style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }} onClick={loadPools}>
+                  <button
+                    className="btn"
+                    style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
+                    disabled={poolsLoadingMode !== null}
+                    onClick={() => void loadPools()}
+                  >
                     <RefreshCw size={11} />
                     <span>{t('tierPolicy.poolRetry')}</span>
                   </button>
@@ -597,128 +751,169 @@ export const RulesPage: React.FC = () => {
                 <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
               ) : (
                 <>
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    {/* header */}
-                    <div
-                      style={{
-                        position: 'sticky',
-                        top: 0,
-                        zIndex: 1,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        padding: '4px 8px',
-                        borderBottom: '1px solid var(--card-border)',
-                        fontSize: '10px',
-                        fontWeight: 700,
-                        color: 'var(--text-dim)',
-                        background: 'var(--card-bg)',
-                        backdropFilter: 'blur(16px)',
-                      }}
-                    >
-                      <span style={{ width: 7, flexShrink: 0 }} />
-                      <span style={{ flex: 1, minWidth: 0 }}>{t('tierPolicy.colModel')}</span>
-                      <span style={{ flexShrink: 0, fontFamily: 'JetBrains Mono, monospace' }}>
-                        {t('tierPolicy.colInput')} / {t('tierPolicy.colOutput')} · {t('tierPolicy.colWeight')}
-                        {modalStrategy !== 'priority' ? ` · ${t('tierPolicy.colShare')}` : ''}
-                      </span>
-                      <span style={{ width: 96, flexShrink: 0, textAlign: 'right' }}>{t('tierPolicy.colActions')}</span>
-                    </div>
+                  {/* List header — pure flow sibling of the scroll container,
+                      never overlaps rows. Sits above the scroll viewport. */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '4px 8px',
+                      borderBottom: '1px solid var(--card-border)',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      color: 'var(--text-dim)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span style={{ width: 7, flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0 }}>{t('tierPolicy.colModel')}</span>
+                    <span style={{ flexShrink: 0, fontFamily: 'JetBrains Mono, monospace' }}>
+                      {t('tierPolicy.colInput')} / {t('tierPolicy.colOutput')} · {t('tierPolicy.colWeight')}
+                      {modalStrategy !== 'priority' ? ` · ${t('tierPolicy.colShare')}` : ''}
+                    </span>
+                    <span style={{ width: 172, flexShrink: 0, textAlign: 'right' }}>{t('tierPolicy.colActions')}</span>
+                  </div>
 
+                  <div
+                    key={poolModalTier ?? 'closed'}
+                    ref={scrollRef}
+                    onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+                    style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+                  >
                     {modalVisiblePool.length === 0 ? (
                       <div style={{ padding: '10px 8px', fontSize: '12px', color: 'var(--accent-rose)' }}>
                         {modalQ ? t('common.noResults') : t('tierPolicy.poolEmpty')}
                       </div>
                     ) : (
-                      modalVisiblePool.map((m, idx) => {
-                        const blacklisted =
-                          forms[poolModalTier].filterMode === 'blacklist' &&
-                          splitPatterns(forms[poolModalTier].filterPatterns).includes(m.id);
-                        const segs = [
-                          `$${m.inputPrice ?? '?'} / $${m.outputPrice ?? '?'}`,
-                          `${m.weight}x`,
-                          ...(modalStrategy !== 'priority' && modalTotalWeight > 0
-                            ? [`${Math.round((m.weight / modalTotalWeight) * 100)}%`]
-                            : []),
-                          ...(m.priority != null ? [`P${m.priority}`] : []),
-                        ].join(' · ');
-                        return (
-                          <div
-                            key={m.id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '10px',
-                              padding: '6px 8px',
-                              borderBottom: '1px solid var(--card-border)',
-                              fontSize: '12px',
-                            }}
-                          >
-                            <span
-                              title={m.healthy ? t('tierPolicy.poolHealthy') : t('tierPolicy.poolUnhealthy')}
+                      <>
+                        {virtual.padTop > 0 && <div style={{ height: virtual.padTop }} />}
+                        {modalVisiblePool.slice(virtual.start, virtual.end).map((m, idx) => {
+                          const realIdx = virtual.start + idx;
+                          const segs = [
+                            `$${m.inputPrice ?? '?'} / $${m.outputPrice ?? '?'}`,
+                            `${m.weight}x`,
+                            ...(modalStrategy !== 'priority' && modalTotalWeight > 0
+                              ? [`${Math.round((m.weight / modalTotalWeight) * 100)}%`]
+                              : []),
+                            ...(m.priority != null ? [`P${m.priority}`] : []),
+                          ].join(' · ');
+                          return (
+                            <div
+                              key={m.id}
                               style={{
-                                width: 7,
-                                height: 7,
-                                borderRadius: '50%',
-                                background: m.healthy ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                                flexShrink: 0,
-                              }}
-                            />
-                            <ProviderLogo providerId={m.provider} logoMap={logoMap} />
-                            <span
-                              title={`${m.provider} / ${m.id}`}
-                              style={{
-                                flex: 1,
-                                minWidth: 0,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                                fontFamily: 'JetBrains Mono, monospace',
-                                fontWeight: 600,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                padding: '6px 8px',
+                                borderBottom: '1px solid var(--card-border)',
+                                fontSize: '12px',
+                                height: ROW_H,
+                                boxSizing: 'border-box',
                               }}
                             >
-                              {m.id}
-                            </span>
-                            {modalStrategy === 'priority' && idx === 0 && (
                               <span
+                                title={m.healthy ? t('tierPolicy.poolHealthy') : t('tierPolicy.poolUnhealthy')}
                                 style={{
+                                  width: 7,
+                                  height: 7,
+                                  borderRadius: '50%',
+                                  background: m.healthy ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                                   flexShrink: 0,
-                                  fontSize: 9,
-                                  padding: '1px 5px',
-                                  borderRadius: 999,
-                                  border: '1px solid var(--accent)',
-                                  color: 'var(--accent)',
+                                }}
+                              />
+                              <ProviderLogo providerId={m.provider} logoMap={logoMap} />
+                              <span
+                                title={`${m.provider} / ${m.id}`}
+                                style={{
+                                  flex: 1,
+                                  minWidth: 0,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  fontFamily: 'JetBrains Mono, monospace',
+                                  fontWeight: 600,
                                 }}
                               >
-                                {t('tierPolicy.preferredBadge')}
+                                {m.id}
                               </span>
-                            )}
-                            <span style={{ flexShrink: 0, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-muted)' }}>
-                              {segs}
-                            </span>
-                            <span style={{ width: 96, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
-                              {blacklisted ? (
-                                <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.alreadyBlacklisted')}</span>
-                              ) : (
-                                <button
-                                  className="btn"
-                                  style={{ padding: '2px 8px', fontSize: '10px' }}
-                                  title={t('tierPolicy.addToBlacklist')}
-                                  onClick={() => addToBlacklist(poolModalTier, m.id)}
+                              {modalStrategy === 'priority' && realIdx === 0 && (
+                                <span
+                                  style={{
+                                    flexShrink: 0,
+                                    fontSize: 9,
+                                    padding: '1px 5px',
+                                    borderRadius: 999,
+                                    border: '1px solid var(--accent)',
+                                    color: 'var(--accent)',
+                                  }}
                                 >
-                                  <Ban size={10} />
-                                  <span>{t('tierPolicy.addToBlacklist')}</span>
-                                </button>
+                                  {t('tierPolicy.preferredBadge')}
+                                </span>
                               )}
-                            </span>
-                          </div>
-                        );
-                      })
+                              <span style={{ flexShrink: 0, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-muted)' }}>
+                                {segs}
+                              </span>
+                              <span style={{ width: 172, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                                {splitPatterns(globalExclude).includes(m.id) ? (
+                                  <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.alreadyExcluded')}</span>
+                                ) : (
+                                  <button
+                                    className="btn"
+                                    style={{ padding: '2px 8px', fontSize: '10px' }}
+                                    title={t('tierPolicy.excludeBtnHint')}
+                                    onClick={() => addToExclude(m.id)}
+                                  >
+                                    <X size={10} />
+                                    <span>{t('tierPolicy.excludeBtn')}</span>
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        {virtual.padBottom > 0 && <div style={{ height: virtual.padBottom }} />}
+                      </>
                     )}
                   </div>
 
+                  {/* Status bar — pure flow sibling below the scroll container,
+                      never overlaps rows. Mirrors the top header positionally. */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '4px 10px',
+                      fontSize: '10px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                      color: 'var(--text-dim)',
+                      borderTop: '1px solid var(--card-border)',
+                      flexShrink: 0,
+                      minHeight: 26,
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <span>
+                      {modalVisiblePool.length === 0
+                        ? '—'
+                        : modalQ
+                          ? t('tierPolicy.poolFilteredCount', { shown: modalVisiblePool.length, total: modalPool?.pool.length ?? 0 })
+                          : t('tierPolicy.poolRange', {
+                              from: Math.min(scrollTop === 0 ? 1 : Math.floor(scrollTop / ROW_H) + 1, modalVisiblePool.length || 1),
+                              to: Math.min(Math.ceil((scrollTop + viewportH) / ROW_H), modalVisiblePool.length),
+                              total: modalVisiblePool.length,
+                            })}
+                    </span>
+                    <span>
+                      {modalPool
+                        ? `${t('tierPolicy.excludedTitle')} ${modalPool.excluded.length}`
+                        : ''}
+                    </span>
+                  </div>
+
                   {modalVisibleExcluded.length > 0 && (
-                    <details style={{ marginTop: '12px', flexShrink: 0 }}>
+                    <details style={{ flexShrink: 0 }}>
                       <summary
                         style={{
                           cursor: 'pointer',
@@ -732,7 +927,7 @@ export const RulesPage: React.FC = () => {
                       >
                         {t('tierPolicy.excludedTitle')} ({modalVisibleExcluded.length})
                       </summary>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '6px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '6px', padding: '0 8px 8px' }}>
                         {modalVisibleExcluded.map((e) => (
                           <span
                             key={e.id}
@@ -756,7 +951,7 @@ export const RulesPage: React.FC = () => {
               )}
               </div>
             </div>
-          </div>,
+          </>,
           document.body
         )}
     </div>

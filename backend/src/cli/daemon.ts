@@ -118,6 +118,121 @@ export function resolveRuntimeBinary(): { bin: string; args: string[] } {
   return { bin: 'npx', args: ['tsx', entryTs] };
 }
 
+/**
+ * Write `ocr.pid` + `ocr.info.json` so `ocr status` / `ocr stop` / the UI can
+ * track this gateway. Shared between `startDaemon` (wrapper pid) and the
+ * UI-restart child (self-registers its own pid after adoption).
+ */
+export function writeDaemonFiles(pid: number, port: number, host: string): void {
+  const pidFile = getPidFilePath();
+  const infoFile = getInfoFilePath();
+  fs.writeFileSync(pidFile, String(pid), 'utf8');
+  fs.writeFileSync(
+    infoFile,
+    JSON.stringify(
+      {
+        pid,
+        port,
+        host,
+        startTime: new Date().toISOString(),
+        version: APP_VERSION,
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+}
+
+/**
+ * Env var set on the detached restart-child spawned by `spawnDetachedRestartChild`:
+ * the OLD gateway's pid it must wait for (and force-kill if stuck) before serving.
+ */
+export const RESTART_PARENT_ENV = 'OCR_RESTART_OF';
+
+/**
+ * Spawn a detached copy of the gateway runtime pointed at the same entry, with
+ * `OCR_RESTART_OF=<our pid>` in its env. The child waits for us to exit, then
+ * boots and self-registers the pid/info files. Best-effort: returns false if
+ * the spawn fails (caller then degrades to plain stop semantics).
+ */
+export function spawnDetachedRestartChild(opts: { port: number; host: string }): boolean {
+  try {
+    const { bin, args } = resolveRuntimeBinary();
+    const repoDir = getRepoRootDir();
+    const logFile = getLogFilePath();
+
+    if (IS_WINDOWS) {
+      // Same Start-Process pattern as startDaemon: hidden cmd wrapper that
+      // appends stdout/stderr to the daemon log. Env must be set inline since
+      // Start-Process -Environment needs PowerShell 7 (we target 5.1).
+      const envSets =
+        `set "${RESTART_PARENT_ENV}=${process.pid}" && ` +
+        `set "PORT=${opts.port}" && set "HOST=${opts.host}" && set "NODE_ENV=production" && `;
+      const cmdLine = `/c "${envSets}"${bin}" ${args.map((a) => `"${a}"`).join(' ')} >> "${logFile}" 2>&1"`;
+      const psCmd = `$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '${cmdLine.replace(/'/g, "''")}' -WorkingDirectory '${repoDir.replace(/'/g, "''")}' -WindowStyle Hidden -PassThru; $p.Id`;
+      const res = spawnSync('powershell', ['-NoProfile', '-Command', psCmd], {
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+      return parseInt(res.stdout?.trim() || '0', 10) > 0;
+    }
+
+    const logFd = fs.openSync(logFile, 'a');
+    const child = spawn(bin, args, {
+      cwd: repoDir,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: {
+        ...process.env,
+        [RESTART_PARENT_ENV]: String(process.pid),
+        PORT: String(opts.port),
+        HOST: opts.host,
+        NODE_ENV: 'production',
+      },
+      shell: false,
+    });
+    child.unref();
+    return Boolean(child.pid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Called once at gateway boot. If we were spawned as a UI-restart child, wait
+ * for the old gateway process to die (it self-exits ~0.5s after acknowledging
+ * the restart; force-kill after 15s), briefly let the listen port release, and
+ * consume the env flag so a crash-looped child never adopts recursively.
+ * Returns true when this process IS a restart child (caller then writes the
+ * daemon pid/info files for itself once it is listening).
+ */
+export async function adoptRestartParent(): Promise<boolean> {
+  const raw = process.env[RESTART_PARENT_ENV];
+  delete process.env[RESTART_PARENT_ENV];
+  const oldPid = parseInt(raw || '', 10);
+  if (!raw || isNaN(oldPid) || oldPid === process.pid) return false;
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline && isProcessAlive(oldPid)) {
+    await sleep(200);
+  }
+  if (isProcessAlive(oldPid)) {
+    try {
+      if (IS_WINDOWS) {
+        spawnSync('taskkill', ['/F', '/T', '/PID', String(oldPid)], { windowsHide: true });
+      } else {
+        process.kill(oldPid, 'SIGKILL');
+      }
+    } catch {
+      // already gone between check and kill
+    }
+  }
+  await sleep(300); // let the OS finish releasing the listen socket
+  return true;
+}
+
 export async function startDaemon(options: { port?: number; host?: string; daemon?: boolean } = {}): Promise<{
   success: boolean;
   pid: number;
@@ -139,8 +254,6 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
   }
 
   const logFile = getLogFilePath();
-  const pidFile = getPidFilePath();
-  const infoFile = getInfoFilePath();
   const repoDir = getRepoRootDir();
 
   const { bin, args } = resolveRuntimeBinary();
@@ -197,22 +310,7 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
     };
   }
 
-  fs.writeFileSync(pidFile, String(pid), 'utf8');
-  fs.writeFileSync(
-    infoFile,
-    JSON.stringify(
-      {
-        pid,
-        port,
-        host,
-        startTime: new Date().toISOString(),
-        version: APP_VERSION,
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
+  writeDaemonFiles(pid, port, host);
 
   // Wait for health check up to 5 seconds
   let online = false;

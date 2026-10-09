@@ -120,7 +120,7 @@ export class CircuitBreakerManager {
 
   /**
    * Manually trip a model into OPEN state (admin takes it out of rotation from the console).
-   * In-memory only: cleared on gateway restart; use tier blacklist (config.tiers) for a persistent exclusion.
+   * In-memory only: cleared on gateway restart; use the exclude lists (config.tiers) for a persistent exclusion.
    */
   public trip(
     modelId: string,

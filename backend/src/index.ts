@@ -9,8 +9,13 @@ import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 import { Layer1Classifier } from './router/layer1-classifier.js';
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
+import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 
 async function main() {
+  // If this process was spawned by the UI "Restart Gateway" button, wait for
+  // the old gateway to die (and take over) before booting further.
+  const isRestartChild = await adoptRestartParent();
+
   const config = loadConfig();
   initProxyConfig(config.proxy);
 
@@ -62,6 +67,9 @@ async function main() {
 
   try {
     await app.listen({ port: config.port, host: config.host });
+    // A UI-restart child must self-register: the pid/info files still point at
+    // the old (now-exiting) gateway, and nobody else rewrites them.
+    if (isRestartChild) writeDaemonFiles(process.pid, config.port, config.host);
     console.log('\n============================================================');
     console.log(`🚀 OCR Gateway (OpenCode Router) is ready! (OpenAI API Compatible)`);
     console.log(`👉 API Base URL     : http://127.0.0.1:${config.port}/v1`);

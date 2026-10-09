@@ -412,6 +412,8 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy);
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture);
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
+    orchestrator.getRegistry().applyTierConfigNow(); // tier match/policies commit immediately (no restart)
+    warnOnEmptyTierPools(); // ADR-0012: no residual tier → an empty pool is now possible
     return result;
   };
   app.post('/api/ui/config', handleSaveConfig);
@@ -431,22 +433,90 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture); // hot-apply capture too
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
+    orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier match/policies too
+    warnOnEmptyTierPools(); // ADR-0012: no residual tier → an empty pool is now possible
     return result;
   };
   app.post('/api/ui/config/raw', handleSaveRawYaml);
   app.post('/api/console/config/raw', handleSaveRawYaml);
 
-  // 6b. Tier composition policies — effective candidate pools (for console preview)
-  const handleTierPools = async () => {
-    const tiers = ['fast', 'flagship', 'reasoning'] as const;
-    // Preview freshly-saved policies (loadConfig reads config.yaml live) so the
-    // console reflects the last save without a gateway restart; runtime routing
-    // still uses the registry's construction-time snapshot until restart.
-    const freshTiers = loadConfig().tiers;
+  // 6b. Tier composition policies — candidate pool snapshots (console preview).
+  // PREVIEW is always a pure projection (resolveTierPool with a match arg never
+  // mutates live pools); real membership is committed ONLY by the save events
+  // below (applyTierConfigNow) — editing rules takes effect without a restart.
+  //
+  // Catalog overrides (overrides.json) are read FRESH and passed in explicitly —
+  // no implicit fallback inside the registry. The preview MUST honor whatever
+  // pin state the user is looking at; if overrides were re-read lazily inside
+  // resolveTierPool, a concurrent edit between the two reads could yield two
+  // different memberships for the same model in the same response.
+  const projectTierPools = async (policies: any, match: any) => {
     const pools: Record<string, unknown> = {};
-    for (const tier of tiers) {
-      const { pool, excluded } = registry.resolveTierPool(tier, freshTiers);
-      const cb = registry.getCircuitBreakerManager();
+    const cb = registry.getCircuitBreakerManager();
+    const { readOverridesStore } = await import('../opencode/catalog/overrides-store.js');
+    const overrides = readOverridesStore()?.models ?? {};
+    const shape = (pool: { model: any; weight: number }[]) =>
+      pool.map(({ model, weight }) => ({
+        id: model.id,
+        provider: model.provider,
+        upstreamModel: model.upstreamModel,
+        priority: model.priority,
+        isDefaultInTier: Boolean(model.isDefaultInTier),
+        inputPrice: model.pricing?.input,
+        outputPrice: model.pricing?.output,
+        healthy: cb.isAvailable(model.id),
+        weight,
+      }));
+    for (const tier of ['fast', 'flagship', 'reasoning'] as const) {
+      const { pool, excluded } = registry.resolveTierPool(tier, policies, { match, overrides });
+      pools[tier] = { pool: shape(pool), excluded };
+    }
+    return pools;
+  };
+
+  // ADR-0012: with the residual tier gone a pool can legitimately become EMPTY
+  // (no pattern/band/flag claims it), after which routing degrades across
+  // tiers. Degradation is allowed but never silent — warn on every commit.
+  const warnOnEmptyTierPools = () => {
+    const tiers = loadConfig().tiers;
+    const match = resolveTierMatch(tiers);
+    for (const tier of ['fast', 'flagship', 'reasoning'] as const) {
+      const { pool } = registry.resolveTierPool(tier, tiers, { match });
+      if (pool.length === 0) {
+        console.warn(
+          `[Console] Tier '${tier}' has an EMPTY candidate pool — its requests will degrade to another tier. ` +
+            `Loosen tiers.${tier}.match (patterns / price band) or pin models on the Catalog page.`,
+        );
+      }
+    }
+  };
+
+  const handleTierPools = async () => {
+    // Snapshot of the SAVED file state (what a restart would load anyway, and
+    // what the save-commit has already applied).
+    const freshTiers = loadConfig().tiers;
+    const match = resolveTierMatch(freshTiers);
+    return { status: 'ok', pools: await projectTierPools(freshTiers, match), match };
+  };
+  app.get('/api/ui/tier-pools', handleTierPools);
+  app.get('/api/console/tier-pools', handleTierPools);
+
+  // 6b'. Live (committed) tier pool snapshot — reflects the registry's
+  // current m.tier (the last applyTierConfigNow result) plus the global
+  // tiers.exclude filter. No preview; what the runtime would actually use.
+  //
+  // Read-only on purpose: the previous version called applyTierConfigNow()
+  // here as a "force-commit view" trick, but that mutated m.tier / m.unclassified
+  // on every Live tab open — a stealth commit with no save event behind it.
+  // The console must NEVER write routing state from a GET. Out-of-band file
+  // edits get picked up on the next save commit (the console already triggers
+  // applyTierConfigNow in handleSaveConfig / handleSaveRawYaml).
+  const handleTierPoolsLive = async () => {
+    const policies = registry.getTierPolicies();
+    const pools: Record<string, unknown> = {};
+    const cb = registry.getCircuitBreakerManager();
+    for (const tier of ['fast', 'flagship', 'reasoning'] as const) {
+      const { pool, excluded } = registry.resolveTierPool(tier, policies);
       pools[tier] = {
         pool: pool.map(({ model, weight }) => ({
           id: model.id,
@@ -462,10 +532,21 @@ export function registerConsoleRoutes(
         excluded,
       };
     }
-    return { status: 'ok', pools, match: resolveTierMatch(freshTiers) };
+    return { status: 'ok', live: true, pools };
   };
-  app.get('/api/ui/tier-pools', handleTierPools);
-  app.get('/api/console/tier-pools', handleTierPools);
+  app.get('/api/ui/tier-pools/live', handleTierPoolsLive);
+  app.get('/api/console/tier-pools/live', handleTierPoolsLive);
+
+  // 6b'. Ephemeral preview from UNSAVED form state — { tiers } in the body;
+  // the console shows what the pools WOULD be, without touching routing.
+  const handleTierPoolsPreview = async (req: any) => {
+    const body = req.body as { tiers?: unknown };
+    const tiers = body?.tiers ?? loadConfig().tiers ?? {};
+    const match = resolveTierMatch(tiers as any);
+    return { status: 'ok', preview: true, pools: await projectTierPools(tiers, match), match };
+  };
+  app.post('/api/ui/tier-pools/preview', handleTierPoolsPreview);
+  app.post('/api/console/tier-pools/preview', handleTierPoolsPreview);
 
   // 6b-2. Catalog source management — view/add/remove/toggle/refresh the remote
   // catalog sources (config.catalog.sources). Mutations apply to the live
@@ -650,6 +731,7 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     const { catalogRepository } = await import('../opencode/catalog/repository.js');
     await catalogRepository.ensureOcrStore();
+    registry.applyTierConfigNow(); // explicit catalog tier edits commit to pools immediately
     return { status: 'ok' };
   };
 
@@ -663,6 +745,7 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     const { catalogRepository } = await import('../opencode/catalog/repository.js');
     await catalogRepository.ensureOcrStore();
+    registry.applyTierConfigNow(); // explicit catalog tier edits commit to pools immediately
     return { status: 'ok' };
   };
 
@@ -1246,10 +1329,20 @@ export function registerConsoleRoutes(
   app.delete('/api/ui/api-keys/:id', handleDeleteApiKey);
   app.delete('/api/console/api-keys/:id', handleDeleteApiKey);
 
-  // 10. Remote restart trigger from UI
+  // 10. Remote restart trigger from UI — spawn a detached replacement gateway
+  //     first (it waits for our pid to die, boots, and self-registers the
+  //     pid/info files), THEN exit. Without the spawn we would just stop and
+  //     nothing would bring the gateway back (there is no supervisor).
   const handleRestart = async () => {
+    const { spawnDetachedRestartChild } = await import('../cli/daemon.js');
+    const cfg = loadConfig();
+    const addr = app.server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : cfg.port;
+    const spawned = spawnDetachedRestartChild({ port, host: cfg.host });
     setTimeout(() => process.exit(0), 500);
-    return { status: 'restarting', message: 'Gateway restart signal acknowledged' };
+    return spawned
+      ? { status: 'restarting', message: 'Gateway restart signal acknowledged — replacement process is booting' }
+      : { status: 'stopping', message: 'Could not spawn a replacement process; gateway will STOP. Start it again with `ocr start`.' };
   };
   app.post('/api/ui/restart', handleRestart);
   app.post('/api/console/restart', handleRestart);

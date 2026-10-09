@@ -197,12 +197,36 @@ export const Layout: React.FC = () => {
     const ok = await confirmDialog({ title: t('header.restartConfirm') });
     if (!ok) return;
     try {
-      await api.restartGateway();
+      const res = await api.restartGateway();
+      if (res.status === 'stopping') {
+        toast.error(res.message || t('header.restartFailed'));
+        setTimeout(() => window.location.reload(), 1500);
+        return;
+      }
       toast.info(t('header.restarting'));
-      setTimeout(() => window.location.reload(), 1500);
     } catch {
+      toast.error(t('header.restartFailed'));
       setTimeout(() => window.location.reload(), 1500);
+      return;
     }
+    // The old process dies ~0.5s after acknowledging; the replacement needs a
+    // few seconds to boot. Poll /health (served by the gateway itself) until
+    // it is back, then reload — up to ~45s.
+    await new Promise((r) => setTimeout(r, 2000));
+    for (let i = 0; i < 86; i++) {
+      try {
+        const res = await fetch('/health', { signal: AbortSignal.timeout(1000) });
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // gateway still offline
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    toast.error(t('header.restartTimeout'));
+    window.location.reload();
   };
 
   const currentRouteMeta = ROUTE_META_KEYS[location.pathname] || {

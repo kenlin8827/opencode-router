@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ModelRegistration } from '../config/types.js';
-import { TierLevel } from '../types/router.js';
+import { PoolMembership, TierLevel } from '../types/router.js';
+import { loadConfig } from '../config/index.js';
+import { resolveTierMatch, classifyTier } from '../providers/tier-match.js';
 
 export interface OpenCodeServiceConfig {
   baseUrl: string;
@@ -98,6 +100,9 @@ export class OpenCodeConnector {
   public async syncToTierModels(): Promise<ModelRegistration[]> {
     const rawModels = await this.getModels();
     const registered: ModelRegistration[] = [];
+    // Shared smart match — same config & precedence as the direct boot pool
+    // (providers/tier-match.ts); this path must not drift its own heuristic.
+    const tierMatch = resolveTierMatch(loadConfig().tiers);
 
     for (const m of rawModels) {
       if (m.status !== 'active') continue;
@@ -114,18 +119,15 @@ export class OpenCodeConnector {
       const outputCost = m.cost?.[0]?.output ?? inputCost * 4.0;
       const cachedCost = m.cost?.[0]?.cache?.read ?? inputCost * 0.25;
 
-      // 3. Dynamic Tiering based on pricing thresholds, variant types & capabilities
-      let tier: TierLevel = 'flagship';
-      const nameLower = (m.id || '').toLowerCase();
-      const isLightweightVariant = /(flash|lite|speed|turbo|mini|fast)/.test(nameLower);
-
-      if (isReasoning || inputCost >= 5.0) {
-        tier = 'reasoning'; // Deep reasoning layer
-      } else if (isLightweightVariant || (inputCost > 0 && inputCost <= 0.8)) {
-        tier = 'fast'; // Rapid & inexpensive layer
-      } else {
-        tier = 'flagship'; // Flagship layer
-      }
+      // 3. Tiering via the shared classifyTier (patterns > price band >
+      // reasoning flag) — missing price skips bands, and since ADR-0012 nothing
+      // claims the model → it stays UNCLASSIFIED (no residual flagship).
+      const membership: PoolMembership = classifyTier(
+        { modelId: m.id, inputPerM: m.cost?.[0]?.input, reasoningFlag: isReasoning },
+        tierMatch,
+      );
+      const unclassified = membership === 'unclassified';
+      const tier: TierLevel = unclassified ? 'flagship' : membership;
 
       registered.push({
         id: modelId,
@@ -135,6 +137,8 @@ export class OpenCodeConnector {
         isDefaultInTier: false, // will be dynamically assigned below
         supportsReasoningEffort: isReasoning,
         supportsPromptCaching: true,
+        tierMatch: { rawInputPerM: m.cost?.[0]?.input, reasoningFlag: isReasoning },
+        ...(unclassified ? { unclassified: true } : {}),
         pricing: {
           input: inputCost,
           output: outputCost,
@@ -147,9 +151,12 @@ export class OpenCodeConnector {
     // -----------------------------------------------------------------
     // 4. Dynamic Default Selection (Zero hardcoded model or provider names)
     // -----------------------------------------------------------------
-    // Separate external configured plans from local synthetic fallback if available
-    const externalPlans = registered.filter(m => m.provider !== 'opencode');
-    const pool = externalPlans.length > 0 ? externalPlans : registered;
+    // Separate external configured plans from local synthetic fallback if
+    // available. ADR-0012: UNCLASSIFIED models join no pool, so they can never
+    // be picked as a tier representative either (their `tier` is a placeholder).
+    const claimable = (m: ModelRegistration) => !m.unclassified;
+    const externalPlans = registered.filter(m => m.provider !== 'opencode' && claimable(m));
+    const pool = externalPlans.length > 0 ? externalPlans : registered.filter(claimable);
 
     // Fast Tier Default: lowest input cost model in fast tier
     const tFast = pool.filter(m => m.tier === 'fast').sort((a, b) => a.pricing.input - b.pricing.input);

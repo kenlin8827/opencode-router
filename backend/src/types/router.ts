@@ -2,6 +2,15 @@ import { ChatCompletionResponse } from './openai.js';
 
 export type TierLevel = 'fast' | 'flagship' | 'reasoning';
 
+/**
+ * ADR-0012: what a model's smart-match classification yields. `TierLevel`
+ * stays the REQUEST-side three-state vocabulary (targetTier, TIER_RANK,
+ * escalateTier, flywheel labels, session ratchet) and must never gain a
+ * fourth member; `'unclassified'` is a MODEL-side pool-membership outcome
+ * only. Kept as a separate type so the two axes can't be conflated.
+ */
+export type PoolMembership = TierLevel | 'unclassified';
+
 export const TIER_RANK: Record<TierLevel, number> = {
   fast: 1,
   flagship: 2,

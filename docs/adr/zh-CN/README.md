@@ -19,5 +19,6 @@
 | [ADR-0009](./0009-cost-aware-resilience-and-hierarchical-retry.md) | 经济性感知的高弹性两层重试与跨层级故障转移架构 | **已实现 (Accepted)** | 2026-09-30 | 两层重试拓扑（瞬时5xx原地重试挽救10x KV Cache成本、402立即穿透Failover）、同级优先遍历、向上升档保活与严格反向防降级（Anti-Downgrade） |
 | [ADR-0010](./0010-routing-decision-cache.md) | 路由决策缓存（Layer 2 Judge 结果复用） | **已接受 (Accepted)** | 2026-10-07 | LRU+TTL 缓存 Layer 2 语义裁决结果（非响应缓存），跨会话复用零网络零 token，命中带 [Decision Cache] 标记可观测 |
 | [ADR-0011](./0011-pure-direct-execution-no-daemon.md) | 纯直连执行——OpenCode daemon 完全退出推理链路 | **已接受 (Accepted)** | 2026-10-08 | 废止执行委托：网关直连 provider（npm 数据驱动线型派发 + Responses 线 + /proxy 全链出网），daemon 降级为目录辅助源；不可路由供给显式排除而非静默降级；P1 直连派发 / P2 OAuth 生命周期 / P3 tools·流式透传 |
+| [ADR-0012](./0012-symmetric-tier-matching-and-unclassified-pool.md) | 梯队匹配去残差化——三梯队完全同构 + 锚定排除 excludeTiers + 未分类第四态 | **已实现 (Implemented)** | 2026-10-09 | 取消 flagship 残差兜底：三梯队统一 patterns/价格区间/exclude/excludeTiers 五项配置（flagship 死配置项转为真实生效的闭区间基线 [0.8,5]）；excludeTiers 为梯队侧锚定排除（运行时取被引梯队条件作过滤）；什么都不命中=未分类，不进任何池；空池静默跨梯队降级改为带日志显式降级 |
 
 
