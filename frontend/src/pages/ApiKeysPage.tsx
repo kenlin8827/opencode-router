@@ -43,7 +43,12 @@ export const ApiKeysPage: React.FC = () => {
   // Newly created key display modal
   const [createdKey, setCreatedKey] = useState<ApiKeyItem | null>(null);
   const [newKeyCopied, setNewKeyCopied] = useState(false);
-  useBodyScrollLock(showCreateModal || !!createdKey);
+
+  // Quick Connect picker modal state — declared before useBodyScrollLock so the lock sees it.
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerKeyId, setPickerKeyId] = useState<string | null>(null);
+
+  useBodyScrollLock(showCreateModal || !!createdKey || showPicker);
 
   // Active tab for quick connect code examples (dual protocol: OpenAI + Anthropic)
   const [connectTab, setConnectTab] = useState<
@@ -59,7 +64,11 @@ export const ApiKeysPage: React.FC = () => {
       setLoading(true);
       const res = await api.getApiKeys();
       if (res.status === 'ok') {
-        setKeys(res.keys || []);
+        const next = res.keys || [];
+        setKeys(next);
+        // Drop a stale selection if the picked key was deleted or is now missing.
+        setSelectedKeyId((cur) => (cur && next.some((k) => k.id === cur) ? cur : null));
+        setPickerKeyId((cur) => (cur && next.some((k) => k.id === cur) ? cur : null));
       }
     } catch (err: any) {
       console.error('Failed to load api keys:', err);
@@ -150,7 +159,18 @@ export const ApiKeysPage: React.FC = () => {
 
   const activeCount = keys.filter((k) => k.enabled).length;
   const isAuthProtected = keys.length > 0;
-  const sampleKey = keys[0]?.key || 'sk-ocr-your-client-api-key';
+
+  // Quick Connect: never inline the real key unless the user explicitly reveals it.
+  // Otherwise we render a locale placeholder so screenshots / shoulder-surf don't leak.
+  // Single-key: reveal is one-click. Multi-key: a Modal picker forces an explicit choice.
+  const [revealKey, setRevealKey] = useState(false);
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+  const keyPlaceholder = t('apiKeys.quickConnectKeyPlaceholder');
+  const selectedKey = keys.find((k) => k.id === selectedKeyId) ?? null;
+  // The picker previews whatever the user has staged in the modal — independent of the committed selection.
+  const pickerPreview = keys.find((k) => k.id === pickerKeyId) ?? null;
+  const inlineKey =
+    revealKey && selectedKey ? selectedKey.key : keyPlaceholder;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -469,7 +489,7 @@ export const ApiKeysPage: React.FC = () => {
             </h2>
           </div>
 
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
             {(
               [
                 ['cursor', 'Cursor / IDE'],
@@ -488,12 +508,78 @@ export const ApiKeysPage: React.FC = () => {
                 {label}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => {
+                if (keys.length === 0) return;
+                // Single-key: skip the picker, reveal immediately.
+                if (keys.length === 1) {
+                  setSelectedKeyId(keys[0].id);
+                  setRevealKey(true);
+                  return;
+                }
+                // Multi-key: open the picker modal, pre-selecting the current pick (or none).
+                setPickerKeyId(selectedKey?.id ?? null);
+                setShowPicker(true);
+              }}
+              title={keys.length === 0
+                ? t('apiKeys.quickConnectPickerNoKeysTitle')
+                : t('apiKeys.quickConnectRevealShowTitle')}
+              className="btn btn-sm"
+              style={{ marginLeft: '4px' }}
+              disabled={keys.length === 0}
+            >
+              <Eye size={14} />
+              <span style={{ marginLeft: '4px' }}>{t('apiKeys.quickConnectRevealShow')}</span>
+            </button>
+            {revealKey && selectedKey && (
+              <button
+                type="button"
+                onClick={() => setRevealKey(false)}
+                title={t('apiKeys.quickConnectRevealHideTitle')}
+                className="btn btn-sm"
+                style={{ marginLeft: '4px' }}
+              >
+                <EyeOff size={14} />
+                <span style={{ marginLeft: '4px' }}>{t('apiKeys.quickConnectRevealHide')}</span>
+              </button>
+            )}
           </div>
         </div>
 
         <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
           {t('apiKeys.quickConnectDesc')}
         </p>
+
+        {keys.length > 0 && (
+          <div
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-dim)',
+              padding: '8px 12px',
+              borderRadius: '6px',
+              background: 'rgba(245, 158, 11, 0.08)',
+              border: '1px solid rgba(245, 158, 11, 0.25)',
+              lineHeight: 1.5,
+            }}
+          >
+            {selectedKey && revealKey
+              ? t('apiKeys.quickConnectSecurityNotice', {
+                  placeholder: keyPlaceholder,
+                  prefix: selectedKey.key.slice(0, 10),
+                  suffix: selectedKey.key.slice(-4),
+                })
+              : keys.length > 1
+                ? t('apiKeys.quickConnectNeedPickNotice', {
+                    count: keys.length,
+                    action: t('apiKeys.quickConnectRevealShow'),
+                  })
+                : t('apiKeys.quickConnectSingleKeyNotice', {
+                    placeholder: keyPlaceholder,
+                    action: t('apiKeys.quickConnectRevealShow'),
+                  })}
+          </div>
+        )}
 
         <pre
           style={{
@@ -514,7 +600,7 @@ export const ApiKeysPage: React.FC = () => {
 http://127.0.0.1:3000/v1
 
 # 3. 在 API Key 中填入上方配发的客户端 API Key：
-${sampleKey}
+${inlineKey}
 
 # 4. 模型名称选择或添加：
 #    虚拟分流模型：auto / auto-fast / auto-flagship / auto-reasoning
@@ -526,7 +612,7 @@ ${sampleKey}
 
 client = OpenAI(
     base_url="http://127.0.0.1:3000/v1",
-    api_key="${sampleKey}"
+    api_key="${inlineKey}"
 )
 
 response = client.chat.completions.create(
@@ -540,7 +626,7 @@ print(response.choices[0].message.content)`
           {connectTab === 'curl' && (
 `curl http://127.0.0.1:3000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${sampleKey}" \\
+  -H "Authorization: Bearer ${inlineKey}" \\
   -d '{
     "model": "auto",
     "messages": [{"role": "user", "content": "Ping!"}]
@@ -550,7 +636,7 @@ print(response.choices[0].message.content)`
           {connectTab === 'claude' && (
 `# 1. 设置环境变量（或写入 ~/.claude/settings.json 的 "env" 字段）：
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
-export ANTHROPIC_AUTH_TOKEN=${sampleKey}
+export ANTHROPIC_AUTH_TOKEN=${inlineKey}
 
 # 2. 可选：默认模型（auto = 智能分流，也可 auto-fast / auto-flagship / auto-reasoning）
 export ANTHROPIC_MODEL=auto
@@ -565,7 +651,7 @@ export ANTHROPIC_MODEL=auto
 
 client = Anthropic(
     base_url="http://127.0.0.1:3000",  # SDK 自动拼接 /v1/messages
-    api_key="${sampleKey}"
+    api_key="${inlineKey}"
 )
 
 message = client.messages.create(
@@ -580,7 +666,7 @@ print(message.content[0].text)`
           {connectTab === 'anthropic-curl' && (
 `curl http://127.0.0.1:3000/v1/messages \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: ${sampleKey}" \\
+  -H "x-api-key: ${inlineKey}" \\
   -H "anthropic-version: 2023-06-01" \\
   -d '{
     "model": "auto",
@@ -590,6 +676,170 @@ print(message.content[0].text)`
           )}
         </pre>
       </div>
+
+      {/* 4b. Modal: pick which API key to ship in the snippets */}
+      {showPicker && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('apiKeys.quickConnectPickerTitle')}
+          onClick={(e) => {
+            // Backdrop click closes the picker without picking anything.
+            if (e.target === e.currentTarget) setShowPicker(false);
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.7)',
+            zIndex: 110,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: '100%',
+              maxWidth: '520px',
+              maxHeight: '70vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '18px 22px',
+                borderBottom: '1px solid var(--card-border)',
+              }}
+            >
+              <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)' }}>
+                {t('apiKeys.quickConnectPickerTitle')}
+              </h3>
+              <button
+                type="button"
+                aria-label={t('apiKeys.quickConnectPickerCancel')}
+                onClick={() => setShowPicker(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-dim)',
+                  fontSize: '18px',
+                  cursor: 'pointer',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p
+              style={{
+                padding: '14px 22px 0',
+                fontSize: '12px',
+                color: 'var(--text-muted)',
+                margin: 0,
+                lineHeight: 1.5,
+              }}
+            >
+              {t('apiKeys.quickConnectPickerDesc', { count: keys.length })}
+            </p>
+
+            <div
+              style={{
+                padding: '14px 22px',
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+                minHeight: 0,
+              }}
+            >
+              {/* Combobox scales to 100+ keys: options > 8 auto-renders a filter input (see Combobox.tsx). */}
+              <Combobox
+                value={pickerKeyId ?? ''}
+                onChange={(v) => setPickerKeyId(v || null)}
+                placeholder={t('apiKeys.quickConnectPickerSearchPlaceholder')}
+                options={keys.map((k) => ({
+                  value: k.id,
+                  label: `${k.name}  ·  ${k.key.slice(0, 8)}…${k.key.slice(-4)}`,
+                  meta: k.enabled ? t('apiKeys.statusActive') : t('apiKeys.statusDisabled'),
+                }))}
+                clearable
+                forceFilter
+              />
+
+              {pickerPreview && (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    background: 'var(--input-bg)',
+                    border: '1px solid var(--card-border)',
+                    fontSize: '12px',
+                    color: 'var(--text-muted)',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, color: 'var(--text-main)', marginBottom: '4px' }}>
+                    {pickerPreview.name}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: 'JetBrains Mono, Consolas, monospace',
+                      fontSize: '11px',
+                      color: 'var(--text-dim)',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {pickerPreview.key}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '14px 22px',
+                borderTop: '1px solid var(--card-border)',
+                gap: '10px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setShowPicker(false)}
+                >
+                  {t('apiKeys.quickConnectPickerCancel')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={!pickerPreview}
+                  onClick={() => {
+                    if (!pickerPreview) return;
+                    setSelectedKeyId(pickerPreview.id);
+                    setRevealKey(true);
+                    setShowPicker(false);
+                  }}
+                >
+                  <Check size={13} />
+                  <span style={{ marginLeft: '4px' }}>{t('apiKeys.quickConnectPickerConfirm')}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 5. Modal: Create API Key */}
       {showCreateModal && (

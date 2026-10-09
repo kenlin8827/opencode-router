@@ -23,6 +23,12 @@ interface ComboboxProps {
    * readable even when the trigger is narrow; clamped to the viewport.
    */
   panelMinWidth?: number;
+  /**
+   * Always render the filter input, even when options.length ≤ FILTER_THRESHOLD.
+   * Use sparingly — for pickers where the user expects to search regardless of
+   * the option count (e.g. Quick Connect key picker).
+   */
+  forceFilter?: boolean;
 }
 
 /**
@@ -58,7 +64,7 @@ const optionStyle: React.CSSProperties = {
   fontFamily: "'JetBrains Mono', Consolas, monospace",
 };
 
-export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, placeholder, style, clearable, panelMinWidth }) => {
+export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, placeholder, style, clearable, panelMinWidth, forceFilter }) => {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -75,7 +81,7 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
   const filterRef = useRef<HTMLInputElement>(null);
 
   const selected = options.find((o) => o.value === value);
-  const showFilter = options.length > FILTER_THRESHOLD;
+  const showFilter = forceFilter || options.length > FILTER_THRESHOLD;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
