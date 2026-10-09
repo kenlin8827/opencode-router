@@ -145,6 +145,7 @@ export const zhCN: TranslationDict = {
     excludeBtn: '排除',
     excludeBtnHint: '加入全局排除名单：不进入任何梯队候选池（未分类，仍可直连调用）',
     addedToExclude: '已加入排除名单（表单）—— 记得点击「保存全部策略」',
+    removedFromExclude: '已从排除名单移除（表单）—— 记得点击「保存全部策略」',
     reasonExclude: '未分类（已排除）',
     minInputPrice: '输入价下限 ($/M)',
     maxInputPrice: '输入价上限 ($/M)',

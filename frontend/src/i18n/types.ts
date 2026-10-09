@@ -148,6 +148,7 @@ export interface TranslationDict {
     excludeBtn: string;
     excludeBtnHint: string;
     addedToExclude: string;
+    removedFromExclude: string;
     alreadyExcluded: string;
     reasonExclude: string;
     weightsTitle: string;

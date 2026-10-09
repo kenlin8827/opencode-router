@@ -247,7 +247,7 @@ export const RulesPage: React.FC = () => {
     const t = setTimeout(() => void loadPools(), 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forms, loading]);
+  }, [forms, globalExclude, loading]);
 
   // provider id → logo URL (OCR catalog view); logos are decorative, failures ignored
   const ensureLogos = useCallback(async () => {
@@ -321,8 +321,19 @@ export const RulesPage: React.FC = () => {
       if (lines.includes(modelId)) return prev;
       return [...lines, modelId].join('\n');
     });
-    setPoolModalTier(null);
+    // Intentionally keep the pool modal open so the user can batch-exclude multiple models
+    // without re-opening it. The model disappears from the candidate list and reappears
+    // in the "被策略排除" section below — both visible in the same view.
     toast.success(t('tierPolicy.addedToExclude'));
+  };
+
+  /** Remove a model from the GLOBAL denylist — restores it as unclassified (still callable by id). */
+  const removeFromExclude = (modelId: string) => {
+    setGlobalExclude((prev) => {
+      const lines = splitPatterns(prev).filter((x) => x !== modelId);
+      return lines.join('\n');
+    });
+    toast.success(t('tierPolicy.removedFromExclude'));
   };
 
   const labelStyle = { fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' } as const;
@@ -922,36 +933,62 @@ export const RulesPage: React.FC = () => {
                   </div>
 
                   {modalVisibleExcluded.length > 0 && (
-                    <details style={{ flexShrink: 0 }}>
+                    <details open style={{ flexShrink: 0 }}>
                       <summary
+                        title="被本梯队策略排除的模型 —— 鼠标悬停徽章查看排除原因"
                         style={{
                           cursor: 'pointer',
-                          fontSize: '10px',
+                          fontSize: '11px',
                           fontWeight: 700,
-                          color: 'var(--text-dim)',
+                          color: 'var(--accent-rose)',
                           userSelect: 'none',
-                          padding: '4px 8px',
+                          padding: '6px 10px',
                           borderRadius: 6,
+                          background: 'rgba(244, 63, 94, 0.06)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          listStyle: 'none',
                         }}
                       >
+                        <span aria-hidden style={{ fontSize: '9px', width: 10, display: 'inline-block' }}>▼</span>
                         {t('tierPolicy.excludedTitle')} ({modalVisibleExcluded.length})
                       </summary>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '6px', padding: '0 8px 8px' }}>
                         {modalVisibleExcluded.map((e) => (
-                          <span
+                          <button
                             key={e.id}
+                            type="button"
+                            title={`原因：${t(REASON_LABEL_KEY[e.reason] || e.reason)} — 点击从全局排除名单移除`}
+                            onClick={() => removeFromExclude(e.id)}
                             style={{
                               fontSize: '10px',
-                              padding: '2px 7px',
+                              padding: '2px 4px 2px 7px',
                               borderRadius: 6,
                               background: 'rgba(244, 63, 94, 0.12)',
                               border: '1px solid rgba(244, 63, 94, 0.3)',
                               color: 'var(--accent-rose)',
                               fontFamily: 'JetBrains Mono, monospace',
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
                             }}
                           >
-                            {e.id} · {t(REASON_LABEL_KEY[e.reason] || e.reason)}
-                          </span>
+                            <span>{e.id} · {t(REASON_LABEL_KEY[e.reason] || e.reason)}</span>
+                            <span
+                              aria-hidden
+                              style={{
+                                fontSize: '11px',
+                                lineHeight: 1,
+                                padding: '0 3px',
+                                borderRadius: 4,
+                                background: 'rgba(244, 63, 94, 0.25)',
+                              }}
+                            >
+                              ×
+                            </span>
+                          </button>
                         ))}
                       </div>
                     </details>

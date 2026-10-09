@@ -144,6 +144,7 @@ export const enUS: TranslationDict = {
     excludeBtn: 'Exclude',
     excludeBtnHint: 'Add to the global exclude list: joins no candidate pool (unclassified; still reachable by direct id calls)',
     addedToExclude: 'Added to the exclude list (form) — remember to click "Save All Policies"',
+    removedFromExclude: 'Removed from the exclude list (form) — remember to click "Save All Policies"',
     reasonExclude: 'unclassified (excluded)',
     minInputPrice: 'Input price floor ($/M)',
     maxInputPrice: 'Input price ceiling ($/M)',
