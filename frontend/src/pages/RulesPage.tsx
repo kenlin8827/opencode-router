@@ -17,10 +17,12 @@ interface WeightRow {
 type SelectionStrategy = 'priority' | 'weighted' | 'round_robin';
 
 interface TierPolicyForm {
-  matchPatterns: string; // textarea, one wildcard pattern per line ('' = built-in default)
+  matchPatterns: string; // textarea, one wildcard pattern per line; untouched = omitted (default), touched+cleared = saves [] (closes condition)
+  matchPatternsTouched: boolean; // true = user edited (incl. cleared); false = untouched
   matchMinInputPerM: string;
   matchMaxInputPerM: string;
   excludePatterns: string; // per-tier veto on auto-claim — SAME meaning for every tier (ADR-0012)
+  excludePatternsTouched: boolean; // true = user edited (incl. cleared); false = untouched
   matchExcludeTiers: Tier[]; // ADR-0012 anchor-exclude: models matching these tiers' conditions are not claimed here
   selection: SelectionStrategy;
   weights: WeightRow[];
@@ -45,9 +47,10 @@ const parseNum = (s: string): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-// The match inputs come PRE-FILLED with the built-in baseline (editable as-is);
-// clearing a field and saving omits it → backend falls back to the baseline
-// (providers/tier-match.ts). Note: saving persists the shown values explicitly.
+// The match inputs come PRE-FILLED with the built-in baseline (editable as-is).
+// An UNTOUCHED field is omitted on save → the backend falls back to its
+// baseline (providers/tier-match.ts). A TOUCHED field is saved as-is: clearing
+// it writes `[]`, closing the condition instead of restoring the default.
 const dmMatchFields = (tier: Tier) => {
   const dm = DEFAULT_TIER_MATCH[tier];
   return {
@@ -59,6 +62,8 @@ const dmMatchFields = (tier: Tier) => {
 
 const defaultFormFor = (tier: Tier): TierPolicyForm => ({
   ...dmMatchFields(tier),
+  matchPatternsTouched: false,
+  excludePatternsTouched: false,
   excludePatterns: '',
   matchExcludeTiers: [],
   selection: 'priority',
@@ -77,6 +82,9 @@ const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
     ...dm,
     ...withDefaults,
     excludePatterns: p?.match?.exclude?.join('\n') ?? '',
+    // Key present in saved config (even []) = explicit user state → touched.
+    matchPatternsTouched: p?.match?.patterns != null,
+    excludePatternsTouched: p?.match?.exclude != null,
     matchExcludeTiers: (Array.isArray(p?.match?.excludeTiers) ? p.match.excludeTiers : []).filter(
       (x: unknown): x is Tier => x === 'fast' || x === 'flagship' || x === 'reasoning',
     ),
@@ -87,20 +95,21 @@ const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
 
 const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
   const policy: Record<string, unknown> = {};
-  // Smart match — only the fields the user actually filled; blanks keep the
-  // built-in baseline (backend providers/tier-match.ts DEFAULT_TIER_MATCH).
+  // Smart match — only the fields the user TOUCHED; untouched blanks keep the
+  // built-in baseline (backend providers/tier-match.ts DEFAULT_TIER_MATCH),
+  // while a touched-but-cleared field writes [] to close the condition.
   // ADR-0012: every tier is configured IDENTICALLY (patterns + price band +
   // exclude + anchor-exclude tiers). tiers.exclude (global denylist) is not
   // managed here — it round-trips untouched.
   const match: Record<string, unknown> = {};
   const mp = splitPatterns(f.matchPatterns);
-  if (mp.length) match.patterns = mp;
+  if (f.matchPatternsTouched) match.patterns = mp;
   const matchMin = parseNum(f.matchMinInputPerM);
   const matchMax = parseNum(f.matchMaxInputPerM);
   if (matchMin != null) match.minInputPerM = matchMin;
   if (matchMax != null) match.maxInputPerM = matchMax;
   const ex = splitPatterns(f.excludePatterns);
-  if (ex.length) match.exclude = ex;
+  if (f.excludePatternsTouched) match.exclude = ex;
   if (f.matchExcludeTiers.length) match.excludeTiers = f.matchExcludeTiers;
   if (Object.keys(match).length > 0) policy.match = match;
   policy.selection = f.selection;
@@ -425,7 +434,7 @@ export const RulesPage: React.FC = () => {
                   style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
                   placeholder={(DEFAULT_TIER_MATCH[tier].patterns || []).join('\n')}
                   value={f.matchPatterns}
-                  onChange={(e) => updateForm(tier, { matchPatterns: e.target.value })}
+                  onChange={(e) => updateForm(tier, { matchPatterns: e.target.value, matchPatternsTouched: true })}
                 />
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '6px' }}>
                   <input
@@ -454,7 +463,7 @@ export const RulesPage: React.FC = () => {
                   style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
                   placeholder={t('tierPolicy.excludePlaceholder')}
                   value={f.excludePatterns}
-                  onChange={(e) => updateForm(tier, { excludePatterns: e.target.value })}
+                  onChange={(e) => updateForm(tier, { excludePatterns: e.target.value, excludePatternsTouched: true })}
                 />
                 <label style={{ ...labelStyle, marginTop: '8px' }}>{t('tierPolicy.excludeTiersLabel')}</label>
                 <div style={{ display: 'flex', gap: '6px' }}>
