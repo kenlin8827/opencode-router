@@ -22,13 +22,6 @@ import { globMatch } from './glob.js';
  * proxiedFetch passes the resolved proxy via Bun's fetch `proxy` option
  * (verified on bun 1.3.14); under Node the option is simply ignored and the
  * call behaves like plain fetch.
- *
- * `observe` is an OPTIONAL HTTP-level capture hook used by provider adapters
- * to publish per-attempt timing/status/headers into the capture pipeline.
- * Invoked exactly once per call, in a finally block, with the observed
- * fields populated as far as the fetch lifecycle reached (a pre-body error
- * yields status from the thrown object's `.status` and ttfbMs=null). Infra
- * callers (probe / catalog / logos) do not pass `observe`.
  */
 
 let activeConfig: ProxyConfig | undefined;
@@ -104,6 +97,20 @@ export function resolveProxyUrl(
   }
 
   return globalProxyUrl();
+}
+
+/**
+ * Redact a proxy URL to its origin (`scheme://host:port`). Proxy URLs may
+ * embed credentials (`http://user:pass@host:8080`) — capture must never
+ * persist userinfo, and the origin is all you need to debug "which proxy
+ * did this request take".
+ */
+export function redactProxyUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return 'invalid-proxy-url';
+  }
 }
 
 /** fetch wrapper honoring proxy.url + includes/excludes matching. */

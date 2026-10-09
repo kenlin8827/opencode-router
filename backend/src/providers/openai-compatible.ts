@@ -2,7 +2,7 @@ import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
-import { proxiedFetch } from '../utils/proxy.js';
+import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -55,6 +55,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       requestHeaders: headers,
       requestBody: JSON.stringify(payload),
       model: model.upstreamModel,
+      proxy: resolveProxyUrl(url, { provider: this.config.name, model: model.id }),
     });
 
     const controller = new AbortController();

@@ -480,6 +480,7 @@ export const enUS: TranslationDict = {
     copied: 'Copied',
     formatJson: 'Format',
     showRaw: 'Raw',
+    viaProxy: 'via proxy',
     exportTitle: 'Export this session archive (JSONL)',
     exported: 'Session archive exported',
     exportOptionsTitle: 'Export Session Archive',

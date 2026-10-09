@@ -6,6 +6,7 @@ import type {
   RawWireCapture,
   WireBody,
 } from '../capture/recorder.js';
+import { redactProxyUrl } from '../utils/proxy.js';
 
 /**
  * Credential-bearing header deny-list. ANY header whose name contains one of
@@ -370,6 +371,8 @@ export function emitUpstreamRequest(args: {
   model: string;
   /** Optional pre-mint spanId to share with the response event. */
   spanId?: string;
+  /** Raw proxy URL when routed via proxy; redacted to origin before persisting. */
+  proxy?: string;
 }): string {
   const spanId = args.spanId ?? cryptoRandom();
   void args.recorder.recordEvent({
@@ -390,6 +393,7 @@ export function emitUpstreamRequest(args: {
       responseHeaders: {},
       responseBody: '',
     },
+    ...(args.proxy ? { proxy: redactProxyUrl(args.proxy) } : {}),
   });
   return spanId;
 }

@@ -703,11 +703,15 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
       sessionId,
       traceId: 'trace_redact',
       model: 'auto',
+      proxy: 'http://user:pass@proxy.local:8080',
     });
     await new Promise(r => setTimeout(r, 100));
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const content = fs.readFileSync(path.join(tmp, dateDir, `${sessionId}.jsonl`), 'utf8');
     const ev = JSON.parse(content.split('\n').filter(l => l.trim())[0]);
+    // Proxy recorded as redacted origin — userinfo never persists.
+    assert.equal(ev.proxy, 'http://proxy.local:8080');
+    assert.ok(!content.includes('user:pass'), 'proxy credentials must never persist');
     const h = ev.wire.requestHeaders;
     // Header NAMES kept, VALUES redacted — "you sent an x-api-key" must
     // remain visible for debugging auth failures.

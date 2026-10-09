@@ -2,7 +2,7 @@ import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { OpenCodeServiceConfig } from '../opencode/sync.js';
-import { proxiedFetch } from '../utils/proxy.js';
+import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -57,6 +57,7 @@ export class OpenCodeProxyProvider implements LLMProvider {
       requestHeaders: outboundHeaders,
       requestBody: JSON.stringify(payload),
       model: model.upstreamModel,
+      proxy: resolveProxyUrl(url, { provider: this.name, model: model.id }),
     });
 
     // The guard emits a paired failure response event on ANY thrown error so

@@ -481,6 +481,7 @@ export interface TranslationDict {
     copied: string;
     formatJson: string;
     showRaw: string;
+    viaProxy: string;
     exportTitle: string;
     exported: string;
     exportOptionsTitle: string;

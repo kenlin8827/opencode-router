@@ -393,6 +393,7 @@ const CaptureDrawer: React.FC<{
  *  for the response side. Mirrors the standard HTTP wire format so a
  *  support engineer can paste it directly into a curl / netcat replay. */
 const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
+  const { t } = useI18n();
   const isResponse = event.phase === 'response';
   const statusLine = isResponse
     ? event.wire.responseLine || `HTTP/1.1 ${event.wire.status} ${event.wire.status === 0 ? 'NETWORK_ERROR' : ''}`.trim()
@@ -418,6 +419,20 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
       >
         {statusLine || '(no status line)'}
       </pre>
+      {/* Proxy routing — only present on upstream events that actually went
+          through a proxy; absence means direct connection. */}
+      {event.proxy && (
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: '11px',
+            color: 'var(--text-dim)',
+            fontFamily: 'JetBrains Mono, monospace',
+          }}
+        >
+          ⇢ {t('captures.viaProxy')}: {event.proxy}
+        </div>
+      )}
       <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: 'JetBrains Mono, monospace' }}>
         {isResponse ? '← response headers' : '→ request headers'}
       </div>

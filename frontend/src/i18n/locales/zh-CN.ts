@@ -481,6 +481,7 @@ export const zhCN: TranslationDict = {
     copied: '已复制',
     formatJson: '格式化',
     showRaw: '原始',
+    viaProxy: '经代理',
     exportTitle: '导出该会话归档 (JSONL)',
     exported: '会话归档已导出',
     exportOptionsTitle: '导出会话归档',

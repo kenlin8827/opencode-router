@@ -258,6 +258,12 @@ export interface HttpExchangeEvent {
   };
   /** Error message if THIS phase errored (e.g. upstream request never got a response). */
   error?: string;
+  /**
+   * Redacted proxy origin (`scheme://host:port`) when this upstream call was
+   * routed through a proxy; absent for direct connections. Only meaningful
+   * on `direction='upstream'` events. Userinfo is never persisted.
+   */
+  proxy?: string;
 }
 
 export interface CaptureDateRow {

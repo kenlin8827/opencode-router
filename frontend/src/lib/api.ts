@@ -270,6 +270,8 @@ export interface HttpExchangeEvent {
     failoverPath?: string[];
   };
   error?: string;
+  /** Redacted proxy origin when the upstream call went through a proxy (upstream events only). */
+  proxy?: string;
   truncated?: boolean;
 }
 

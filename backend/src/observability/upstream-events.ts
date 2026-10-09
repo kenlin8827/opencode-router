@@ -26,6 +26,8 @@ export function emitUpstreamRequestOnce(
     requestBody: string;
     /** Actual upstream model on the wire (defaults to ctx.model = the client-requested model). */
     model?: string;
+    /** Raw proxy URL when routed via proxy (redacted to origin at emit). */
+    proxy?: string;
   }
 ): string | undefined {
   if (!ctx) return undefined;
@@ -38,6 +40,7 @@ export function emitUpstreamRequestOnce(
     sessionId: ctx.sessionId,
     traceId: ctx.traceId,
     model: args.model ?? ctx.model,
+    proxy: args.proxy,
   });
 }
 
