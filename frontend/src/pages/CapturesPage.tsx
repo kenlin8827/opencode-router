@@ -255,6 +255,21 @@ const CaptureDrawer: React.FC<{
               </span>
             );
           })()}
+          {/* Proxy badge — visible without opening the upstream tab. */}
+          {turn.upstreamRequest?.proxy && (
+            <span
+              className="badge"
+              title={`${t('captures.viaProxy')}: ${turn.upstreamRequest.proxy}`}
+              style={{
+                background: 'rgba(59,130,246,0.12)',
+                color: '#60a5fa',
+                fontFamily: 'JetBrains Mono, monospace',
+                fontSize: '10px',
+              }}
+            >
+              ⇢ {turn.upstreamRequest.proxy}
+            </span>
+          )}
           {/* TraceId — the linkable key for joining this turn
               across capture events and the trace record. */}
           <span
@@ -1169,6 +1184,20 @@ export const CapturesPage: React.FC = () => {
                                     );
                                   })()}
                                 </span>
+                                {turn.upstreamRequest?.proxy && (
+                                  <span
+                                    className="badge"
+                                    title={`${t('captures.viaProxy')}: ${turn.upstreamRequest.proxy}`}
+                                    style={{
+                                      background: 'rgba(59,130,246,0.12)',
+                                      color: '#60a5fa',
+                                      fontFamily: 'JetBrains Mono, monospace',
+                                      fontSize: '10px',
+                                    }}
+                                  >
+                                    ⇢ proxy
+                                  </span>
+                                )}
                                 <span
                                   title={`traceId=${turn.traceId}`}
                                   style={{
