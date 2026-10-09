@@ -19,7 +19,7 @@ opencode:
 
 # Outbound proxy policy (Optional) — applies to upstream model calls, Layer2
 # judge, and catalog/logo sync. Loopback targets (localhost / 127.0.0.1 / ::1)
-# are NEVER proxied. Resolution: blacklist (force direct) -> whitelist (non-empty:
+# are NEVER proxied. Resolution: excludes (force direct) -> includes (non-empty:
 # only matches proxied) -> url -> direct. With nothing configured,
 # HTTP_PROXY/HTTPS_PROXY env vars still apply (Bun fetch behavior).
 # Patterns match `provider/model` and the bare model id:
@@ -31,10 +31,10 @@ opencode:
 #   url: "http://127.0.0.1:7890"     # global default proxy (empty = direct)
 #     # ^ authenticated proxy: "http://user:pass@127.0.0.1:7890"
 #     #   (sent as Proxy-Authorization, CONNECT included; URL-encode special chars)
-#   whitelist:                        # non-empty: ONLY matches go through proxy
+#   includes:                         # non-empty: ONLY matches go through proxy
 #     - "anthropic/*"
 #     - "*/gpt-*"
-#   blacklist:                        # matches force direct (checked before whitelist)
+#   excludes:                         # matches force direct (checked before includes)
 #     - "deepseek/*"
 
 # Token Saver compression (Optional) — three independent engines (rtk /

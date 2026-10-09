@@ -8,11 +8,11 @@ import { Switch } from '../components/Switch';
 interface ProxyShape {
   enabled?: boolean;
   url?: string;
-  whitelist?: string[];
-  blacklist?: string[];
+  includes?: string[];
+  excludes?: string[];
 }
 
-/** Editable list of glob patterns (one input per row) — shared by whitelist/blacklist. */
+/** Editable list of glob patterns (one input per row) — shared by proxy include/exclude rules. */
 const PatternListEditor: React.FC<{
   label: string;
   placeholder: string;
@@ -125,19 +125,19 @@ export const ProxyPage: React.FC = () => {
         </div>
 
         <PatternListEditor
-          label={t('proxy.whitelist')}
+          label={t('proxy.includes')}
           placeholder={t('proxy.pattern')}
           addLabel={t('proxy.addPattern')}
-          patterns={proxy.whitelist || []}
-          onChange={patterns => setProxy({ ...proxy, whitelist: patterns })}
+          patterns={proxy.includes || []}
+          onChange={patterns => setProxy({ ...proxy, includes: patterns })}
         />
 
         <PatternListEditor
-          label={t('proxy.blacklist')}
+          label={t('proxy.excludes')}
           placeholder={t('proxy.pattern')}
           addLabel={t('proxy.addPattern')}
-          patterns={proxy.blacklist || []}
-          onChange={patterns => setProxy({ ...proxy, blacklist: patterns })}
+          patterns={proxy.excludes || []}
+          onChange={patterns => setProxy({ ...proxy, excludes: patterns })}
         />
       </div>
     </div>

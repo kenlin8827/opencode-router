@@ -535,8 +535,8 @@ export interface TranslationDict {
     enable: string;
     hint: string;
     url: string;
-    whitelist: string;
-    blacklist: string;
+    includes: string;
+    excludes: string;
     pattern: string;
     addPattern: string;
   };
@@ -794,5 +794,19 @@ export interface TranslationDict {
     emptyDesc: string;
     quickConnectTitle: string;
     quickConnectDesc: string;
+    quickConnectKeyPlaceholder: string;
+    quickConnectRevealShow: string;
+    quickConnectRevealShowTitle: string;
+    quickConnectRevealHide: string;
+    quickConnectRevealHideTitle: string;
+    quickConnectSecurityNotice: string;
+    quickConnectNeedPickNotice: string;
+    quickConnectSingleKeyNotice: string;
+    quickConnectPickerTitle: string;
+    quickConnectPickerDesc: string;
+    quickConnectPickerSearchPlaceholder: string;
+    quickConnectPickerConfirm: string;
+    quickConnectPickerCancel: string;
+    quickConnectPickerNoKeysTitle: string;
   };
 }

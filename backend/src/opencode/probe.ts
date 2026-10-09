@@ -23,7 +23,7 @@ export interface ProbeOptions {
   baseURL: string;
   apiKey: string;
   model: string;
-  /** Provider id — only used for outbound proxy blacklist/whitelist matching. */
+  /** Provider id — only used for outbound proxy includes/excludes matching. */
   provider?: string;
   kind?: ProbeKind;
   /** Provider-configured extra headers (opencode.jsonc options.headers). */

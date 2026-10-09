@@ -8,8 +8,8 @@ import { globMatch } from './glob.js';
  * startup — config has no hot reload). Resolution order for a target URL:
  *   1. Loopback targets (localhost / 127.0.0.1 / ::1) are NEVER proxied, so local
  *      services (OpenCode, Ollama) keep working even with a global proxy set.
- *   2. blacklist — a matching provider/model forces direct.
- *   3. whitelist — when non-empty, ONLY matching provider/models go through the proxy.
+ *   2. excludes — a matching provider/model forces direct.
+ *   3. includes — when non-empty, ONLY matching provider/models go through the proxy.
  *   4. proxy.url — global default (skipped when empty).
  *   5. undefined — direct; Bun fetch then still honors HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
  *
@@ -17,7 +17,7 @@ import { globMatch } from './glob.js';
  * so one syntax covers both levels: `providerName/asterisk` (slash-star) selects
  * every model of a provider; a leading star-slash prefix scopes a model pattern
  * to any provider; a bare `claude-*` matches the model id (no wildcard = substring). Calls without a match target (catalog/logo sync) are
- * unlisted: a non-empty whitelist sends them direct, otherwise proxy.url applies.
+ * unlisted: a non-empty includes list sends them direct, otherwise proxy.url applies.
  *
  * proxiedFetch passes the resolved proxy via Bun's fetch `proxy` option
  * (verified on bun 1.3.14); under Node the option is simply ignored and the
@@ -91,15 +91,15 @@ export function resolveProxyUrl(
   if (!cfg || cfg.enabled !== true) return undefined; // opt-in: off unless explicitly enabled
   if (isLoopbackUrl(targetUrl)) return undefined;
 
-  if (cfg.blacklist?.length && cfg.blacklist.some((p) => patternHits(p, match))) return undefined;
-  if (cfg.whitelist?.length) {
-    return cfg.whitelist.some((p) => patternHits(p, match)) ? globalProxyUrl() : undefined;
+  if (cfg.excludes?.length && cfg.excludes.some((p) => patternHits(p, match))) return undefined;
+  if (cfg.includes?.length) {
+    return cfg.includes.some((p) => patternHits(p, match)) ? globalProxyUrl() : undefined;
   }
 
   return globalProxyUrl();
 }
 
-/** fetch wrapper honoring proxy.url + blacklist/whitelist matching. */
+/** fetch wrapper honoring proxy.url + includes/excludes matching. */
 export async function proxiedFetch(
   url: string,
   init: RequestInit = {},

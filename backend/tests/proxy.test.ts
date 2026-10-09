@@ -61,54 +61,54 @@ describe('resolveProxyUrl', () => {
   });
 
   test('provider-level pattern (provider/*) matches every model of that provider', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['anthropic/*'] } as ProxyConfig);
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['anthropic/*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', { provider: 'anthropic', model: 'claude-opus-4' })).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
   });
 
   test('model-level patterns: */model-* across providers and bare model-* on the id', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['*/claude-*'] } as ProxyConfig);
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['*/claude-*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
 
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['claude-*'] } as ProxyConfig);
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['claude-*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
   });
 
   test('bare provider name (no wildcard) works via composite substring', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['anthropic'] } as ProxyConfig);
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['anthropic'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
   });
 
-  test('blacklist forces direct even when a global proxy is set', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', blacklist: ['deepseek/*', 'gpt-4o-mini'] } as ProxyConfig);
+  test('excludes force direct even when a global proxy is set', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', excludes: ['deepseek/*', 'gpt-4o-mini'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.deepseek.com/v1/chat/completions', deepseekCall)).toBeUndefined();
     expect(resolveProxyUrl('https://api.openai.com/v1/chat/completions', openaiCall)).toBeUndefined();
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', anthropicCall)).toBe('http://proxy:8080');
   });
 
-  test('both lists set: blacklist checked first, whitelist gates the rest', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['anthropic/*'], blacklist: ['*/claude-opus-*'] } as ProxyConfig);
+  test('both lists set: excludes checked first, includes gate the rest', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['anthropic/*'], excludes: ['*/claude-opus-*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', { provider: 'anthropic', model: 'claude-3-5-haiku' })).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.anthropic.com/v1/messages', { provider: 'anthropic', model: 'claude-opus-4-1' })).toBeUndefined();
     expect(resolveProxyUrl('https://api.openai.com/v1/chat/completions', openaiCall)).toBeUndefined();
   });
 
-  test('non-empty whitelist sends unlisted infra calls (catalog sync) direct', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['anthropic/*'] } as ProxyConfig);
+  test('non-empty includes list sends unlisted infra calls (catalog sync) direct', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['anthropic/*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://models.dev/api.json')).toBeUndefined();
     expect(resolveProxyUrl('https://openrouter.ai/api/v1/models')).toBeUndefined();
   });
 
-  test('blacklist alone does not block unlisted infra calls', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', blacklist: ['deepseek/*'] } as ProxyConfig);
+  test('excludes alone does not block unlisted infra calls', () => {
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', excludes: ['deepseek/*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://models.dev/api.json')).toBe('http://proxy:8080');
   });
 
   test('layer2 judge participates via its own provider/model', () => {
-    initProxyConfig({ enabled: true, url: 'http://proxy:8080', whitelist: ['openrouter/*'] } as ProxyConfig);
+    initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['openrouter/*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://openrouter.ai/api/v1/chat/completions', { provider: 'openrouter', model: 'mistral-7b' })).toBe('http://proxy:8080');
     expect(resolveProxyUrl('https://api.typesafe.ai/v1/decision/choice', { provider: 'typesafe', model: 'typesafe/jev' })).toBeUndefined();
   });

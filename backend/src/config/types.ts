@@ -134,23 +134,23 @@ export interface OpenCodeConfig {
 
 /**
  * Outbound proxy for upstream calls (model providers, Layer2 judge, catalog sync).
- * Resolution order: loopback targets are NEVER proxied → blacklist (force direct)
- * → whitelist (non-empty: ONLY matches go through proxy) → proxy.url → direct.
+ * Resolution order: loopback targets are NEVER proxied → excludes (force direct)
+ * → includes (non-empty: ONLY matches go through proxy) → proxy.url → direct.
  *
  * Patterns are wildcard globs matched against the composite `provider/modelId`
  * AND the bare model id, so both levels work:
  *   - `anthropic/*`       → provider level (all models of a provider)
  *   - `x/claude-*` (x=* ) → model level within any provider (leading star-slash)
  *   - `claude-*` / `claude` → bare model-id match (wildcard / substring)
- * If both lists are set, blacklist is evaluated first (matched = force direct),
- * then the whitelist gates what remains.
+ * If both lists are set, excludes are evaluated first (matched = force direct),
+ * then includes gate what remains.
  * With no explicit proxy resolved, Bun still honors HTTP_PROXY/HTTPS_PROXY/NO_PROXY.
  */
 export interface ProxyConfig {
   enabled?: boolean; // master switch; default false (opt-in) — proxying only when explicitly true
   url?: string; // global proxy URL, http(s)://[user:pass@]host:port — embedded credentials are sent as Proxy-Authorization (verified on Bun, incl. CONNECT); empty = direct
-  whitelist?: string[]; // non-empty: ONLY matching models/providers go through proxy
-  blacklist?: string[]; // matching models/providers force direct (evaluated before whitelist)
+  includes?: string[]; // non-empty: ONLY matching models/providers go through proxy
+  excludes?: string[]; // matching models/providers force direct (evaluated before includes)
 }
 
 export interface Layer1ClassifierConfig {
