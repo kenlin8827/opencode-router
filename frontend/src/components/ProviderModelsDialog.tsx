@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Trash2, Download, Eye, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap } from 'lucide-react';
+import { Plus, Trash2, Download, Eye, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
 import { useI18n } from '../i18n/I18nContext';
@@ -210,6 +210,7 @@ export const ProviderModelsDialog: React.FC<{
   const busy = pending !== null;
 
   const [pattern, setPattern] = useState('');
+  const [filter, setFilter] = useState('');
   const [preview, setPreview] = useState<PullPreview | null>(null);
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; data: ModelFormState } | null>(null);
   const [hover, setHover] = useState<{ row: ModelRow; top: number; left: number } | null>(null);
@@ -249,6 +250,18 @@ export const ProviderModelsDialog: React.FC<{
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerId]);
+
+  // Local view-only filter — never mutates `rows`; the upstream "Test All"
+  // button keeps targeting the full set so its semantics stay "all models of
+  // this provider", independent of what the user has typed in the filter.
+  const filterText = filter.trim().toLowerCase();
+  const filteredRows = filterText
+    ? rows.filter((row) => {
+        const d = row.def || {};
+        const name = (d.name || row.id.split('/').pop() || '').toLowerCase();
+        return row.id.toLowerCase().includes(filterText) || name.includes(filterText);
+      })
+    : rows;
 
   const run = (action: string, fn: () => Promise<void>) => {
     setPending(action);
@@ -534,7 +547,9 @@ export const ProviderModelsDialog: React.FC<{
           <span style={{ fontSize: 14, fontWeight: 700 }}>{t('op.pmTitle')}</span>
           <span style={{ fontSize: 12, fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent)' }}>{providerName || providerId}</span>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-            {t('op.modelsCount', { n: rows.length })}
+            {filterText
+              ? `${filteredRows.length} / ${rows.length}`
+              : t('op.modelsCount', { n: rows.length })}
           </span>
           {loading && rows.length > 0 && <Loader2 size={12} style={{ ...spin, color: 'var(--text-dim)' }} />}
           <button
@@ -552,17 +567,62 @@ export const ProviderModelsDialog: React.FC<{
           </button>
         </div>
 
+        {/* ---- Filter ---- */}
+        {rows.length > 0 && (
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <Search
+              size={11}
+              style={{ position: 'absolute', left: 8, color: 'var(--text-dim)', pointerEvents: 'none' }}
+            />
+            <input
+              className="input"
+              style={{ fontSize: 11.5, padding: '4px 24px 4px 24px', width: '100%' }}
+              placeholder={t('op.pmFilterPlaceholder')}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+            {filter && (
+              <button
+                type="button"
+                onClick={() => setFilter('')}
+                title={t('common.clear')}
+                style={{
+                  position: 'absolute',
+                  right: 4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 18,
+                  height: 18,
+                  padding: 0,
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-dim)',
+                  cursor: 'pointer',
+                  borderRadius: 4,
+                }}
+              >
+                <X size={11} />
+              </button>
+            )}
+          </div>
+        )}
+
         {/* ---- Model list ---- */}
         {rows.length === 0 ? (
           <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--text-dim)' }}>
             {loading ? t('common.loading') : t('op.pmEmpty')}
+          </div>
+        ) : filteredRows.length === 0 ? (
+          <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--text-dim)' }}>
+            {t('op.pmNoMatch')}
           </div>
         ) : (
           <div
             style={{ flex: 1, minHeight: 120, display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto', opacity: loading ? 0.55 : 1, transition: 'opacity 0.15s ease' }}
             onScroll={() => setHover(null)}
           >
-            {rows.map((row) => {
+            {filteredRows.map((row) => {
               const d = row.def || {};
               const effort = d.settings?.reasoningEffort;
               return (

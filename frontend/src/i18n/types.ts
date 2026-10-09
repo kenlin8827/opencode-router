@@ -78,6 +78,7 @@ export interface TranslationDict {
     tokensSaved: string;
     avgLatency: string;
     latencySub: string;
+    windowScope: string;
     pipelineTitle: string;
     pipelineBtn: string;
     stage1: string;
@@ -128,6 +129,13 @@ export interface TranslationDict {
     routingCache: string;
     routingCacheSub: string;
     routingCacheOff: string;
+    rangeLabel: string;
+    range: {
+      '24h': string;
+      '1h': string;
+      '7d': string;
+    };
+    rangeRetentionHint: string;
   };
   tierPolicy: {
     title: string;
@@ -301,6 +309,8 @@ export interface TranslationDict {
     pmAutofillAmbiguous: string;
     pmAutofillNone: string;
     pmAutofillNoId: string;
+    pmFilterPlaceholder: string;
+    pmNoMatch: string;
   };
   models: {
     title: string;
