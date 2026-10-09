@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { loadConfig } from './config/index.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -10,6 +11,8 @@ import { Layer1Classifier } from './router/layer1-classifier.js';
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
+import { openFinOpsStore } from './trace/persist.js';
+import { getOcrHomeDir } from './cli/paths.js';
 
 async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
@@ -32,11 +35,22 @@ async function main() {
   await Layer1Classifier.init(config.classifier?.localModel);
   console.log(`[OCR] Layer 1 classifier ready: ${Layer1Classifier.getModelStatus()}`);
 
-  // 1. ADR-0011: pure direct execution. The opencode daemon is NOT in the
-  //    request path; truth sources are opencode.jsonc + auth.json + models.dev
-  //    catalog (all files, resolved at boot). Wire per model comes from the
-  //    shared wireFor() the console probe uses — test ≡ inference by structure.
-  const tracker = new FinOpsTracker();
+  // 0.5 FinOps cumulative-totals persistence — shared SQLite file under
+  //     <ocrHome>/traces/traces.db (same file the trace store uses, but
+  //     an independent handle for fault isolation). On non-bun runtimes
+  //     `openFinOpsStore` returns null and the tracker silently falls back
+  //     to in-memory-only (legacy behavior).
+  const finopsStore = await openFinOpsStore(path.join(getOcrHomeDir(), 'traces'));
+  const tracker = new FinOpsTracker(finopsStore);
+  tracker.hydrate();
+  if (finopsStore) {
+    const snap = tracker.getStats();
+    console.log(
+      `[OCR] FinOps cumulative: ${snap.totalRequests} requests / ${snap.fallbackCount} fallbacks (since ${new Date(snap.persistence.since).toISOString()})`
+    );
+  } else {
+    console.log('[OCR] FinOps persistence: in-memory only (no bun:sqlite)');
+  }
 
   let registry: ProviderRegistry;
   try {

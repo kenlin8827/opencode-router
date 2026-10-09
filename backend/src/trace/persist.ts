@@ -110,3 +110,165 @@ export async function openTraceStore(dir: string): Promise<TraceStore | null> {
     return null; // db open/init failed — memory-only mode
   }
 }
+
+/**
+ * Open the FinOps cumulative-totals store on the SAME on-disk file the
+ * trace store uses (`<dir>/traces.db`) but with an independent `bun:sqlite`
+ * handle. The two stores never need cross-table transactions — the trace
+ * store only writes the `traces` table and the FinOps store only writes
+ * `finops_totals` / `finops_meta` — so separate handles give us fault
+ * isolation (one handle's WAL contention can never block the other) and
+ * let the trace store's `db` stay a private implementation detail.
+ *
+ * Schema (idempotent CREATE):
+ *   finops_totals(key TEXT PK, value REAL) — only 2 rows: totalRequests,
+ *                                            fallbackCount (cumulative
+ *                                            counters that must survive
+ *                                            restart; per-request tier /
+ *                                            token / cost / latency
+ *                                            numbers stay in process
+ *                                            memory and reset to zero
+ *                                            on restart)
+ *   finops_meta(key TEXT PK, value TEXT)   — since / lastWriteTs
+ *
+ * The store is fail-open: every write is in a try/catch and an SQLite
+ * error must never break the inference hot path. Hydration reports back
+ * the snapshot so the caller can mark `getStats().persistence.persistent`
+ * accurately for the console UI.
+ */
+export interface FinOpsStore {
+  /** Load the current totals snapshot (returns {} when the table is empty). */
+  hydrate(): { totals: Record<string, number>; meta: { since: number; lastWriteTs: number | null } };
+  /**
+   * Increment totalRequests by 1; if `fallback` is true also increment
+   * fallbackCount by 1. Always bumps `lastWriteTs` to `ts`. One UPSERT
+   * pair + one meta UPDATE, all in a single transaction.
+   */
+  bumpRequestCount(fallback: boolean, ts: number): void;
+  /** Clear all counters; reset `since` to now; remove `lastWriteTs`. */
+  reset(now: number): void;
+  close(): void;
+}
+
+export async function openFinOpsStore(dir: string): Promise<FinOpsStore | null> {
+  let Database: typeof import('bun:sqlite').Database;
+  try {
+    ({ Database } = await import('bun:sqlite'));
+  } catch {
+    return null; // non-bun runtime — caller falls back to memory-only mode
+  }
+
+  let db: import('bun:sqlite').Database;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    db = new Database(path.join(dir, 'traces.db'), { create: true });
+    db.run('PRAGMA journal_mode = WAL;');
+    db.run(`CREATE TABLE IF NOT EXISTS finops_totals (
+      key TEXT PRIMARY KEY,
+      value REAL NOT NULL
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS finops_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
+  } catch {
+    return null; // db open/init failed — caller falls back to memory-only mode
+  }
+
+  return {
+    hydrate() {
+      const totals: Record<string, number> = {};
+      try {
+        const rows = db
+          .query('SELECT key, value FROM finops_totals')
+          .all() as { key: string; value: number }[];
+        for (const r of rows) totals[r.key] = r.value;
+      } catch {
+        // ignore — start from zero
+      }
+      const meta = { since: 0, lastWriteTs: null as number | null };
+      try {
+        const rows = db
+          .query("SELECT key, value FROM finops_meta WHERE key IN ('since','lastWriteTs')")
+          .all() as { key: string; value: string }[];
+        for (const r of rows) {
+          const n = Number(r.value);
+          if (r.key === 'since') meta.since = Number.isFinite(n) ? n : 0;
+          else if (r.key === 'lastWriteTs') meta.lastWriteTs = Number.isFinite(n) ? n : null;
+        }
+      } catch {
+        // ignore
+      }
+      // First-boot marker: if `since` is missing (fresh install or a
+      // previous run never wrote it), write one now so the value is
+      // stable across subsequent `record()` calls. INSERT OR IGNORE is
+      // safe — if `since` already exists we leave it alone. This means
+      // the very first `record()` of a fresh gateway seeds `since` to
+      // roughly the construction time, which is what the console
+      // surfaces as "数据自 X 起累计".
+      if (meta.since === 0) {
+        const now = Date.now();
+        try {
+          db.query(
+            'INSERT OR IGNORE INTO finops_meta(key,value) VALUES(?, ?)'
+          ).run(['since', String(now)]);
+          meta.since = now;
+        } catch {
+          // ignore — caller will fall back to in-memory construction time
+        }
+      }
+      return { totals, meta };
+    },
+
+    bumpRequestCount(fallback, ts) {
+      try {
+        const txn = db.transaction(() => {
+          // totalRequests — always +1
+          db.query(
+            'INSERT INTO finops_totals(key, value) VALUES(?, 1) ' +
+              'ON CONFLICT(key) DO UPDATE SET value = value + 1'
+          ).run(['totalRequests']);
+          // fallbackCount — +1 only when this request fell back
+          if (fallback) {
+            db.query(
+              'INSERT INTO finops_totals(key, value) VALUES(?, 1) ' +
+                'ON CONFLICT(key) DO UPDATE SET value = value + 1'
+            ).run(['fallbackCount']);
+          }
+          // lastWriteTs — bump to the current wall clock
+          db.query(
+            'INSERT INTO finops_meta(key,value) VALUES(?,?) ' +
+              'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+          ).run(['lastWriteTs', String(ts)]);
+        });
+        txn();
+      } catch {
+        // fail open — observability must not break the hot path
+      }
+    },
+
+    reset(now) {
+      try {
+        const txn = db.transaction(() => {
+          db.run('DELETE FROM finops_totals');
+          db.run('DELETE FROM finops_meta WHERE key = ?', ['lastWriteTs']);
+          db.query(
+            'INSERT INTO finops_meta(key,value) VALUES(?,?) ' +
+              'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+          ).run(['since', String(now)]);
+        });
+        txn();
+      } catch {
+        // ignore
+      }
+    },
+
+    close() {
+      try {
+        db.close();
+      } catch {
+        // ignore
+      }
+    },
+  };
+}
