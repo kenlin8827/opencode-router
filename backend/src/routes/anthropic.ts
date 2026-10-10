@@ -10,6 +10,7 @@ import {
   appendGatewayResponseChunk,
   getClientExchangeContext,
 } from '../observability/http-exchange.js';
+import { EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 
 /**
  * Anthropic Messages API compatibility layer (POST /v1/messages).
@@ -86,6 +87,14 @@ interface AnthropicMessagesRequest {
   // Opus 5.5+ reject `disabled` with 400; the gateway doesn't second-guess
   // the client — it forwards faithfully and lets the upstream answer.
   thinking?: { type?: 'enabled' | 'adaptive' | 'disabled'; budget_tokens?: number };
+  // output_config.effort — Anthropic's newer high-level effort knob
+  // (Opus 5.5 / Sonnet 5.5+). Vocabulary: `low` / `medium` / `high` / `max`.
+  // When present alongside `thinking`, output_config.effort takes precedence.
+  // Typed loosely so an upstream vocabulary change doesn't need a code
+  // change here; an unknown value simply doesn't match anything in the
+  // internal effort ladder and is treated as "no preference" (equivalent
+  // to the field being omitted).
+  output_config?: { effort?: string };
 }
 
 /** Anthropic requires max_tokens; mirror the SDK default when omitted. */
@@ -195,12 +204,19 @@ export function anthropicToOpenAI(body: AnthropicMessagesRequest): {
       // Gemini thinkingConfig.thinkingBudget). `type:'adaptive'` lets the
       // upstream pick the model default (Anthropic Opus 5.5+); we just
       // skip the type marker. `type:'disabled'` maps to `reasoning_effort=
-      // 'none'` so the providers skip thinking-block construction entirely.
+      // 'none'` (the lowest tier — explicit "no thinking"). output_config
+      // .effort (Anthropic's high-level knob, Opus 5.5+) takes precedence
+      // when both are present — it is the more explicit signal. A value
+      // outside the 6-level vocabulary (e.g. a future Anthropic tier) is
+      // dropped to "no preference" so the gateway keeps working through
+      // upstream vocabulary changes.
       max_thinking_tokens: body.thinking?.type === 'enabled' ? body.thinking?.budget_tokens : undefined,
-      reasoning_effort:
-        body.thinking?.type === 'disabled'
-          ? 'none'
-          : undefined,
+      reasoning_effort: (() => {
+        const oc = body.output_config?.effort;
+        if (oc && (EFFORT_LADDER as readonly string[]).includes(oc)) return oc as ReasoningEffort;
+        if (body.thinking?.type === 'disabled') return 'none';
+        return undefined;
+      })(),
       ...(body.tools?.length
         ? {
             tools: body.tools.map((t) => ({

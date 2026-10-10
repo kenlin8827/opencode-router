@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './router.js';
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool' | 'developer';
   content: string | ChatMessageContentPart[];
@@ -60,16 +62,15 @@ export interface ChatCompletionRequest {
   tools?: Tool[];
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 
-  // Extended thinking-effort controls. 5 levels aligned with Anthropic's effort
-  // vocabulary (low / medium / high / xhigh + the implicit "none" default).
-  // `none` is the implicit value when this field is omitted — the gateway
-  // does NOT construct any thinking block on the upstream wire, so the model
-  // falls back to its built-in default (Anthropic Opus 5.5+ defaults to
-  // adaptive thinking on; older Claude and most non-thinking models default
-  // off). `xhigh` exists for Claude Opus 5.5 / Sonnet 5.5+ and is mapped to
-  // a larger thinking budget for older Anthropic models that don't speak
-  // effort natively.
-  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+  // Extended thinking-effort controls. The internal representation is
+  // the full EFFORT_LADDER; the OpenAI Chat Completions wire only accepts
+  // 5 levels (no `max` — that's Anthropic-only). The orchestrator's
+  // downgrade step collapses any `max` before the openai-compatible
+  // provider builder sees it, so it never reaches an OpenAI wire. `none`
+  // is the lowest tier — a real value the client sends to mean
+  // "do not think", NOT a default or marker for an omitted field
+  // (omitted = `undefined`).
+  reasoning_effort?: ReasoningEffort;
   max_thinking_tokens?: number;
 
   // Custom router bypass or debug

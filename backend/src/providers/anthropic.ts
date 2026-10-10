@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
+import type { ReasoningEffort } from '../types/router.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 import { anthropicMessagesUrl } from './wire.js';
@@ -107,28 +108,28 @@ export function buildAnthropicPayload(request: ChatCompletionRequest, model: Mod
   // Extended thinking: Anthropic requires `thinking.type=enabled` plus a positive
   // `budget_tokens`; budget is the upper bound on thinking tokens consumed
   // before the final answer (must be < max_tokens). Map the gateway's 5-level
-  // effort vocabulary → token budgets when an exact budget isn't given.
-  // `none` (or omitted) means "do not construct a thinking block" — the
-  // upstream decides on its own (Opus 5.5+ defaults to adaptive thinking;
-  // older models default off). Reference: Anthropic Messages API
-  // "Extended thinking" + the new `output_config.effort` parameter.
-  const EFFORT_TO_BUDGET: Record<'low' | 'medium' | 'high' | 'xhigh', number> = {
+  // effort level → token budget. The full 6-level table; `none` maps
+  // to 0 as a defensive value even though the guard below skips the
+  // thinking block for it. Numbers for the other 5 are engineering
+  // estimates; operators with strict cost caps should pass an explicit
+  // `max_thinking_tokens` instead.
+  const EFFORT_TO_BUDGET: Record<ReasoningEffort, number> = {
+    none: 0,
     low: 1024,
     medium: 4096,
     high: 16384,
     xhigh: 32768,
+    max: 65536,
   };
-  // `none` (or no field at all) → leave `thinking` unset; every other level
-  // explicitly turns thinking on with a budget. `xhigh` is only honored by
-  // Opus 5.5 / Sonnet 5.5 / Fable 5.1 — on older models the budget is
-  // accepted but the model spends less than it would at the corresponding
-  // native effort level.
-  const wantsThinking = request.reasoning_effort && request.reasoning_effort !== 'none';
-  if (wantsThinking || request.max_thinking_tokens != null) {
-    const budget =
-      request.max_thinking_tokens != null && request.max_thinking_tokens > 0
-        ? request.max_thinking_tokens
-        : EFFORT_TO_BUDGET[request.reasoning_effort as 'low' | 'medium' | 'high' | 'xhigh'];
+  const effort = request.reasoning_effort;
+  const explicitBudget = request.max_thinking_tokens != null && request.max_thinking_tokens > 0
+    ? request.max_thinking_tokens
+    : undefined;
+  // `effort === undefined` (client omitted) and `effort === 'none'`
+  // (client explicitly asked for no thinking) both skip the thinking
+  // block — the upstream picks its own default. Mirrors google.ts.
+  if ((effort && effort !== 'none') || explicitBudget != null) {
+    const budget = explicitBudget ?? EFFORT_TO_BUDGET[effort as Exclude<ReasoningEffort, 'none'>];
     // Anthropic requires budget_tokens < max_tokens; bump max_tokens to leave headroom.
     if (typeof budget === 'number' && budget > 0) {
       const headroom = Math.max(payload.max_tokens, budget + 1024);

@@ -50,6 +50,16 @@ describe('Effort downgrade → provider payload: link contract', () => {
       googleExpected: { thinkingConfig: { thinkingBudget: 1024, includeThoughts: true } },
       responsesExpected: { reasoning: { effort: 'low' } },
     },
+    {
+      // `max` (Anthropic top tier) requested, downgraded to `high` (the
+      // model's actual top). Verifies the full vocabulary works end-to-end
+      // through every provider's payload builder.
+      requested: 'max',
+      downgraded: 'high',
+      anthropicExpected: { thinking: { type: 'enabled', budget_tokens: 16384 } },
+      googleExpected: { thinkingConfig: { thinkingBudget: 16384, includeThoughts: true } },
+      responsesExpected: { reasoning: { effort: 'high' } },
+    },
   ];
 
   for (const c of cases) {

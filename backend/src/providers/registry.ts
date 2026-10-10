@@ -4,7 +4,7 @@ import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
 import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig, ComboConfig, ComboModelRef } from '../config/types.js';
-import { PoolMembership, ReasoningEffort, TierLevel, REASONING_EFFORT_RANK, downgradeReasoning } from '../types/router.js';
+import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { CircuitBreakerManager, UpstreamError } from '../resilience/index.js';
 import { globMatch, globMatchAny } from '../utils/glob.js';
@@ -365,7 +365,7 @@ export class ProviderRegistry {
       return null;
     }
 
-    const reqRank = REASONING_EFFORT_RANK[requested];
+    const reqRank = EFFORT_LADDER.indexOf(requested);
 
     // Pass 1: pick from the requested tier. Prefer models whose supported
     // set actually contains the requested effort (perfect match). Fall back
@@ -412,7 +412,7 @@ export class ProviderRegistry {
       if (!supported) continue;
       const actual = downgradeReasoning(requested, supported);
       if (actual === 'none') continue;
-      const gap = reqRank - REASONING_EFFORT_RANK[actual];
+      const gap = reqRank - EFFORT_LADDER.indexOf(actual);
       if (best === null || gap < best.gap) {
         best = { model: m, actualEffort: actual, gap };
       }
@@ -423,15 +423,15 @@ export class ProviderRegistry {
 
   /**
    * Resolve a model's `supportedReasoningEfforts` from the new field, falling
-   * back to the legacy boolean (`true` ⇒ all 4 non-default levels), then to
+   * back to the legacy boolean (`true` ⇒ the full EFFORT_LADDER), then to
    * undefined when nothing is declared.
    */
-  private normalizeEfforts(m: ModelRegistration): ReasoningEffort[] | undefined {
+  private normalizeEfforts(m: ModelRegistration): readonly ReasoningEffort[] | undefined {
     if (m.supportedReasoningEfforts && m.supportedReasoningEfforts.length > 0) {
       return m.supportedReasoningEfforts;
     }
     if (m.supportsReasoningEffort === true) {
-      return ['low', 'medium', 'high', 'xhigh'];
+      return EFFORT_LADDER;
     }
     return undefined;
   }

@@ -121,6 +121,36 @@ describe('Anthropic inbound wire: request conversion with tools', () => {
     assert.strictEqual(request?.max_thinking_tokens, undefined);
     assert.strictEqual(request?.reasoning_effort, undefined);
   });
+
+  // output_config.effort (Anthropic's high-level knob, Opus 5.5+) maps
+  // to the internal reasoning_effort so the rest of the pipeline sees
+  // the same value the client asked for. Without this translation, a
+  // request with `output_config.effort: 'max'` would silently fall through
+  // to the default thinking path and the client's `max` request would be
+  // dropped on the floor.
+  it('output_config.effort maps to reasoning_effort', () => {
+    for (const effort of ['low', 'medium', 'high', 'max'] as const) {
+      const { request } = anthropicToOpenAI({
+        model: 'claude-x',
+        max_tokens: 100,
+        output_config: { effort },
+        messages: [{ role: 'user', content: 'hi' }],
+      } as any);
+      assert.strictEqual(request?.reasoning_effort, effort, `effort=${effort}`);
+    }
+  });
+
+  it('output_config.effort with unknown value is dropped (no reasoning_effort set)', () => {
+    // Future Anthropic vocabulary changes don't break the gateway; an
+    // unrecognized effort is simply treated as "no preference".
+    const { request } = anthropicToOpenAI({
+      model: 'claude-x',
+      max_tokens: 100,
+      output_config: { effort: 'ultra' },
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any);
+    assert.strictEqual(request?.reasoning_effort, undefined);
+  });
 });
 
 describe('Anthropic inbound wire: response conversion with tools', () => {

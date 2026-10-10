@@ -16,7 +16,7 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
-import { classifyTierDetailed, DEFAULT_TIER_MATCH, type ResolvedTierMatch, type TierReasonCode } from '../lib/tierMatch';
+import { classifyTierDetailed, DEFAULT_TIER_MATCH, type ResolvedTierMatch, type TierMatchCfg, type TierReasonCode } from '../lib/tierMatch';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 
 const TIER_REASON_KEYS: Record<TierReasonCode, string> = {
@@ -856,13 +856,39 @@ const OcrEditModal: React.FC<{
   // rules merged over the built-in baseline) comes from /tier-pools; the
   // static DEFAULT mirror is only the offline fallback — never re-implement
   // the heuristic here (it would drift from providers/tier-match.ts).
+  //
+  // r.match is declared `Partial<Record<Tier, TierMatchCfg>>` on the wire
+  // (TierPoolsResponse.match? in lib/api.ts); layer the partial over the
+  // baseline so any missing tier falls back to the built-in default — both
+  // for preview correctness and to keep `match[tier].X` from blowing up when
+  // a tier is absent in the live payload. We only overlay KEYS that are
+  // actually present (not just set to `undefined`); the backend's
+  // resolveTierMatch omits unset fields, but defensive copying costs nothing.
+  const mergeMatch = (wire: Partial<Record<keyof ResolvedTierMatch, Partial<TierMatchCfg>>> | undefined): ResolvedTierMatch => {
+    const out = {} as ResolvedTierMatch;
+    (['lite', 'plus', 'pro', 'ultra'] as const).forEach((tier) => {
+      const base = { ...DEFAULT_TIER_MATCH[tier] };
+      const patch = wire?.[tier];
+      if (patch) {
+        for (const k of Object.keys(patch) as (keyof TierMatchCfg)[]) {
+          const v = (patch as Record<string, unknown>)[k];
+          if (v !== undefined) (base as Record<string, unknown>)[k] = v;
+        }
+      }
+      out[tier] = base;
+    });
+    return out;
+  };
   const [matchCfg, setMatchCfg] = useState<ResolvedTierMatch | null>(null);
   useEffect(() => {
     api
       .getTierPools()
-      .then((r) => setMatchCfg((r.match as ResolvedTierMatch) ?? null))
+      .then((r) => setMatchCfg(mergeMatch(r.match as Partial<Record<keyof ResolvedTierMatch, TierMatchCfg>> | undefined)))
       .catch(() => setMatchCfg(null));
   }, []);
+  // Until the live config lands (or if the request fails), fall back to the
+  // static baseline. After the load, mergeMatch guarantees every tier is a
+  // real object — so match[tier].patterns never throws on the preview.
   const sug = classifyTierDetailed(cur.id, cur.cost?.input, cur.reasoning === true, matchCfg ?? DEFAULT_TIER_MATCH);
   const suggest = { tier: sug.tier, why: [t(TIER_REASON_KEYS[sug.reason])] };
 

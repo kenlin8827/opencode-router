@@ -283,6 +283,12 @@ export interface TranslationDict {
     pmVariants: string;
     pmDisabled: string;
     pmUnset: string;
+    pmEffortNone: string;
+    pmEffortLow: string;
+    pmEffortMedium: string;
+    pmEffortHigh: string;
+    pmEffortXhigh: string;
+    pmEffortMax: string;
     pmBodyInvalid: string;
     pmAddName: string;
     pmAdd: string;

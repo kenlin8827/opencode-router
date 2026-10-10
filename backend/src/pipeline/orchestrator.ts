@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { ExecutionResult, ModelPricing, ReasoningEffort, REASONING_EFFORT_RANK, RoutingDecision, TierLevel, downgradeReasoning } from '../types/router.js';
+import { ExecutionResult, ModelPricing, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
@@ -433,18 +433,25 @@ export class PipelineOrchestrator {
 
     let finalResponse: ChatCompletionResponse;
     let actualModel: ModelRegistration = preferredModel || this.registry.getModelForTier(actualTier, true);
-    // Reasoning-effort matching. When the client requested a specific effort
-    // level, registry picks the closest model and may downgrade to whatever
-    // that model can serve. The actual served level is written back onto the
-    // request so the upstream payload builder sees the truth (no client-side
-    // hints contradict what's actually sent). `reasoningDegraded` is surfaced
-    // to the client via `X-OCR-Thinking-Actual` / `X-OCR-Thinking-Degraded`
-    // response headers (see server.ts).
-    const requestedEffort: ReasoningEffort = normalizedRequest.reasoning_effort ?? 'none';
-    let actualEffort: ReasoningEffort = 'none';
+    // Reasoning-effort matching. `requestedEffort` is the literal value the
+    // client sent (undefined if the field was omitted — distinct from
+    // `'none'`, which is the client EXPLICITLY asking for no thinking).
+    // `actualEffort` is what we actually served: undefined when the client
+    // didn't ask at all, `'none'` when the client asked for no thinking,
+    // or the (possibly downgraded) level when the client asked for a level.
+    // The actual served level is written back onto the request so the
+    // upstream payload builder sees the truth. `reasoningDegraded` is
+    // surfaced to the client via `X-OCR-Thinking-Actual` /
+    // `X-OCR-Thinking-Degraded` response headers (see server.ts).
+    const requestedEffort: ReasoningEffort | undefined = normalizedRequest.reasoning_effort;
+    let actualEffort: ReasoningEffort | undefined;
     let reasoningDegraded = false;
     const effortPick = (() => {
-      if (requestedEffort === 'none') return null;
+      // No effort requested AND no explicit model pinned — leave the
+      // default tier pick alone. `actualEffort` stays undefined; the
+      // provider builder sees `request.reasoning_effort === undefined`
+      // and does not construct a thinking block.
+      if (requestedEffort === undefined) return null;
       // Skip effort-based pick when the request is an explicit model choice
       // OR a combo — both are pinned by the caller and must not be re-routed.
       if (preferredModel || comboId) return null;
@@ -460,14 +467,15 @@ export class PipelineOrchestrator {
       if (actualEffort !== requestedEffort) {
         normalizedRequest.reasoning_effort = actualEffort;
       }
-    } else if (preferredModel && requestedEffort !== 'none') {
-      // Explicit model choice (or pinned combo): the caller pinned the
-      // model, but the effort match must STILL downgrade to whatever that
-      // model can serve — same honesty contract. We never re-route, but we
-      // do write back the lower effort so the upstream sees the truth.
+    } else if (preferredModel && requestedEffort !== undefined && requestedEffort !== 'none') {
+      // Explicit model choice (or pinned combo) with a level request: the
+      // caller pinned the model, but the effort match must STILL downgrade
+      // to whatever that model can serve — same honesty contract. We
+      // never re-route, but we do write back the lower effort so the
+      // upstream sees the truth.
       const supported = preferredModel.supportedReasoningEfforts
         ?? (preferredModel.supportsReasoningEffort
-          ? ['low', 'medium', 'high', 'xhigh']
+          ? EFFORT_LADDER
           : []);
       const recomputed = downgradeReasoning(requestedEffort, supported);
       actualEffort = recomputed;
@@ -476,6 +484,8 @@ export class PipelineOrchestrator {
         normalizedRequest.reasoning_effort = recomputed;
       }
     } else {
+      // No effort-based pick: client asked for `none` explicitly, or
+      // didn't ask at all. `actualEffort` mirrors that exactly.
       actualEffort = requestedEffort;
     }
     let fallbackOccurred = false;
@@ -524,11 +534,13 @@ export class PipelineOrchestrator {
           actualModel = liteResult.modelUsed!;
           // Same post-execution recompute as the direct path — lite failover
           // may have served a model whose supported set differs from the
-          // tier-pick prediction.
-          if (requestedEffort !== 'none') {
+          // tier-pick prediction. Only meaningful for a level request;
+          // `undefined` (client didn't ask) and `'none'` (client asked
+          // for no thinking) are both passed through unchanged.
+          if (requestedEffort !== undefined && requestedEffort !== 'none') {
             const servedSupported = actualModel.supportedReasoningEfforts
               ?? (actualModel.supportsReasoningEffort
-                ? ['low', 'medium', 'high', 'xhigh']
+                ? EFFORT_LADDER
                 : []);
             const recomputed = downgradeReasoning(requestedEffort, servedSupported);
             actualEffort = recomputed;
@@ -579,10 +591,10 @@ export class PipelineOrchestrator {
         actualModel = plusResult.modelUsed!;
         // Recompute effort against the actually-served model (same contract
         // as the direct path).
-        if (requestedEffort !== 'none') {
+        if (requestedEffort !== undefined && requestedEffort !== 'none') {
           const servedSupported = actualModel.supportedReasoningEfforts
             ?? (actualModel.supportsReasoningEffort
-              ? ['low', 'medium', 'high', 'xhigh']
+              ? EFFORT_LADDER
               : []);
           const recomputed = downgradeReasoning(requestedEffort, servedSupported);
           actualEffort = recomputed;
@@ -649,10 +661,10 @@ export class PipelineOrchestrator {
       // request — failover may have shifted to a different model than the
       // one `pickModelForEffort` originally picked, with a different effort
       // ceiling. The header / ExecutionResult must reflect reality.
-      if (requestedEffort !== 'none') {
+      if (requestedEffort !== undefined && requestedEffort !== 'none') {
         const servedSupported = actualModel.supportedReasoningEfforts
           ?? (actualModel.supportsReasoningEffort
-            ? ['low', 'medium', 'high', 'xhigh']
+            ? EFFORT_LADDER
             : []);
         const recomputed = downgradeReasoning(requestedEffort, servedSupported);
         actualEffort = recomputed;
@@ -703,13 +715,19 @@ export class PipelineOrchestrator {
     //      reach `actualEffort` (downgraded). This is by design (per
     //      operator policy 2026-10), but a separate warn + response header
     //      keeps the client honest about what they got.
-    const wantsThinking = Boolean(
-      normalizedRequest.reasoning_effort ||
-        (typeof normalizedRequest.max_thinking_tokens === 'number' && normalizedRequest.max_thinking_tokens > 0)
-    );
+    // `wantsThinking` = the client actually wants the model to think, which
+    // means they sent a real level (low..max) or an explicit `max_thinking_tokens`.
+    // `'none'` is a real effort value meaning "no thinking" — NOT a request
+    // for thinking that the model failed to honor. An omitted field is also
+    // not a request for thinking (model uses its own default).
+    const wantsThinking =
+      (normalizedRequest.reasoning_effort != null &&
+        normalizedRequest.reasoning_effort !== 'none') ||
+      (typeof normalizedRequest.max_thinking_tokens === 'number' && normalizedRequest.max_thinking_tokens > 0);
+    // 5-level default: `none` is a client toggle, not a capability.
     const modelEfforts = actualModel.supportedReasoningEfforts
-      ?? (actualModel.supportsReasoningEffort ? ['low', 'medium', 'high', 'xhigh'] : []);
-    const supportsAnyThinking = modelEfforts.length > 0;
+      ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : []);
+    const supportsAnyThinking = modelEfforts.some((e) => e !== 'none');
     // Both warn paths go through the dedup + rate-limit warn throttle: at
     // QPS a misconfigured pool would otherwise print one warn per request.
     // Key = (condition, model, requested-effort) so operators can pin the
@@ -725,9 +743,14 @@ export class PipelineOrchestrator {
           `model has no thinking-effort capability, thinking controls were silently dropped.`
       );
     }
-    if (reasoningDegraded && requestedEffort !== actualEffort) {
-      const requestedRank = REASONING_EFFORT_RANK[requestedEffort];
-      const actualRank = REASONING_EFFORT_RANK[actualEffort];
+    if (
+      reasoningDegraded &&
+      requestedEffort !== undefined &&
+      actualEffort !== undefined &&
+      requestedEffort !== actualEffort
+    ) {
+      const requestedRank = EFFORT_LADDER.indexOf(requestedEffort);
+      const actualRank = EFFORT_LADDER.indexOf(actualEffort);
       const gap = requestedRank - actualRank;
       const key = `downgrade|${actualModel.id}|${requestedEffort}->${actualEffort}`;
       throttle.warn(

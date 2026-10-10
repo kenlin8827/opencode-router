@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ModelRegistration } from '../config/types.js';
-import { PoolMembership, TierLevel } from '../types/router.js';
+import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from '../providers/tier-match.js';
 import { readOverridesStore } from './catalog/overrides-store.js';
@@ -116,16 +116,14 @@ export class OpenCodeConnector {
         m.variants?.some((v: any) => v.settings?.thinking || v.settings?.effort);
       // 1b. Per-level effort override: if an operator has stored a finer
       // truth in the overrides store, use that. Absent = catalog default
-      // (all 4 non-default levels, when the model is thinking-capable).
+      // (all 5 non-default levels, when the model is thinking-capable).
       // Narrow the untyped JSON values to the typed vocabulary; silently drop
       // anything that doesn't match a known level (catastrophic input
       // hygiene, but the catalog store is operator-controlled).
       const rawOverride = readOverridesStore()?.models[`${m.providerID}||${m.id}`]?.reasoningEfforts;
-      const allowedEfforts = new Set(['none', 'low', 'medium', 'high', 'xhigh']);
+      const allowedEfforts = new Set<ReasoningEffort>(EFFORT_LADDER);
       const effortOverride = Array.isArray(rawOverride)
-        ? (rawOverride.filter((v) => typeof v === 'string' && allowedEfforts.has(v)) as
-          | Array<'none' | 'low' | 'medium' | 'high' | 'xhigh'>
-          | undefined)
+        ? (rawOverride.filter((v): v is ReasoningEffort => typeof v === 'string' && allowedEfforts.has(v as ReasoningEffort)))
         : undefined;
 
       // 2. Extract pricing (OpenCode cost array is per 1M tokens)
@@ -151,12 +149,15 @@ export class OpenCodeConnector {
         isDefaultInTier: false, // will be dynamically assigned below
         // Per-level effort support: catalog sources today only declare a
         // boolean "thinking-effort" capability, so we treat any thinking-capable
-        // model as supporting all 4 non-default levels by default. Operators
-        // who need finer truth (e.g. "gpt-5.1 has no xhigh") override via
-        // the catalog overrides-store `reasoningEfforts` field, read in
-        // step 1b above and applied here.
+        // model as supporting the full 6-level EFFORT_LADDER by default
+        // (`none` included — it is rank 0 and always servable; the provider
+        // builders skip the thinking block for it, so listing it costs nothing).
+        // Operators who need finer truth (e.g. "gpt-5.1 has no xhigh" or
+        // "Claude Sonnet 4.5 has no max") override via the catalog
+        // overrides-store `reasoningEfforts` field, read in step 1b above and
+        // applied here.
         supportedReasoningEfforts: isReasoning
-          ? effortOverride ?? (['low', 'medium', 'high', 'xhigh'] as const)
+          ? effortOverride ?? EFFORT_LADDER
           : undefined,
         supportsReasoningEffort: isReasoning || undefined,
         supportsPromptCaching: true,

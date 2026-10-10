@@ -60,6 +60,13 @@ function globMatch(pattern: string, value: string): boolean {
 const globMatchAny = (patterns: string[] | undefined, value: string): boolean =>
   Boolean(patterns?.length) && patterns!.some((p) => globMatch(p, value));
 
+/** Safe access — the runtime payload from /api/ui/tier-pools is `Partial<Record<Tier,
+ * TierMatchCfg>>` (per TierPoolsResponse.match? in lib/api.ts), and even the
+ * baseline can hand a half-configured object to us. Fill in the missing tier
+ * with the built-in default so match[tier].X is always a real object. */
+const tierOf = (match: ResolvedTierMatch | Partial<ResolvedTierMatch>, tier: Tier): TierMatchCfg =>
+  match[tier] ?? DEFAULT_TIER_MATCH[tier];
+
 function bandHit(band: TierMatchCfg, price?: number): boolean {
   if (price == null) return false;
   if (band.minInputPerM == null && band.maxInputPerM == null) return false;
@@ -71,11 +78,14 @@ function bandHit(band: TierMatchCfg, price?: number): boolean {
 /** Mirror of backend bandOrder(): a band without a ceiling is a WEAK condition
  * — consulted after every closed band (ascending floor), then open-ended bands
  * by DESCENDING floor so an unbounded band cannot eat the tier above it. */
-export function bandOrder(match: ResolvedTierMatch): Tier[] {
-  const configured = PATTERN_ORDER.filter((t) => match[t].minInputPerM != null || match[t].maxInputPerM != null);
-  const floor = (t: Tier) => match[t].minInputPerM ?? 0;
-  const closed = configured.filter((t) => match[t].maxInputPerM != null).sort((a, b) => floor(a) - floor(b));
-  const open = configured.filter((t) => match[t].maxInputPerM == null).sort((a, b) => floor(b) - floor(a));
+export function bandOrder(match: ResolvedTierMatch | Partial<ResolvedTierMatch>): Tier[] {
+  const configured = PATTERN_ORDER.filter((t) => {
+    const cfg = tierOf(match, t);
+    return cfg.minInputPerM != null || cfg.maxInputPerM != null;
+  });
+  const floor = (t: Tier) => tierOf(match, t).minInputPerM ?? 0;
+  const closed = configured.filter((t) => tierOf(match, t).maxInputPerM != null).sort((a, b) => floor(a) - floor(b));
+  const open = configured.filter((t) => tierOf(match, t).maxInputPerM == null).sort((a, b) => floor(b) - floor(a));
   return [...closed, ...open];
 }
 
@@ -86,11 +96,12 @@ export function matchesTierConditions(
   modelId: string,
   inputPerM: number | undefined,
   reasoningFlag: boolean,
-  match: ResolvedTierMatch,
+  match: ResolvedTierMatch | Partial<ResolvedTierMatch>,
 ): boolean {
   const mid = modelId.toLowerCase();
-  if (globMatchAny(match[tier].patterns, mid)) return true;
-  if (bandHit(match[tier], inputPerM)) return true;
+  const cfg = tierOf(match, tier);
+  if (globMatchAny(cfg.patterns, mid)) return true;
+  if (bandHit(cfg, inputPerM)) return true;
   if (tier === 'pro' && reasoningFlag) return true;
   return false;
 }
@@ -101,17 +112,17 @@ export function classifyTierDetailed(
   modelId: string,
   inputPerM: number | undefined,
   reasoningFlag: boolean,
-  match: ResolvedTierMatch,
+  match: ResolvedTierMatch | Partial<ResolvedTierMatch>,
 ): { tier: Membership; reason: TierReasonCode } {
   const mid = modelId.toLowerCase();
   const anchorVetoed = (tier: Tier) =>
-    (match[tier].excludeTiers ?? []).some((other) => other !== tier && matchesTierConditions(other, modelId, inputPerM, reasoningFlag, match));
-  const claim = (tier: Tier, hits: boolean) =>
-    hits &&
-    !(match[tier].exclude?.length && globMatchAny(match[tier].exclude, mid)) &&
-    !anchorVetoed(tier);
-  for (const tier of PATTERN_ORDER) if (claim(tier, globMatchAny(match[tier].patterns, mid))) return { tier, reason: 'name' };
-  for (const tier of bandOrder(match)) if (claim(tier, bandHit(match[tier], inputPerM))) return { tier, reason: 'cost' };
+    (tierOf(match, tier).excludeTiers ?? []).some((other) => other !== tier && matchesTierConditions(other, modelId, inputPerM, reasoningFlag, match));
+  const claim = (tier: Tier, hits: boolean) => {
+    const cfg = tierOf(match, tier);
+    return hits && !(cfg.exclude?.length && globMatchAny(cfg.exclude, mid)) && !anchorVetoed(tier);
+  };
+  for (const tier of PATTERN_ORDER) if (claim(tier, globMatchAny(tierOf(match, tier).patterns, mid))) return { tier, reason: 'name' };
+  for (const tier of bandOrder(match)) if (claim(tier, bandHit(tierOf(match, tier), inputPerM))) return { tier, reason: 'cost' };
   if (claim('pro', reasoningFlag)) return { tier: 'pro', reason: 'flag' };
   return { tier: 'unclassified', reason: 'unclassified' };
 }

@@ -5,6 +5,7 @@ import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { RouterConfig } from '../src/config/types.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
+import type { ReasoningEffort } from '../src/types/router.js';
 import { injectWarnThrottle } from '../src/observability/warn-throttle.js';
 
 // ---------------------------------------------------------------------------
@@ -16,7 +17,7 @@ function configWithEffortTiers(
   models: Array<{
     id: string;
     tier: 'lite' | 'plus' | 'pro' | 'ultra';
-    supportedReasoningEfforts?: ('none' | 'low' | 'medium' | 'high' | 'xhigh')[];
+    supportedReasoningEfforts?: readonly ReasoningEffort[];
   }>
 ): RouterConfig {
   return {
@@ -79,7 +80,11 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     assert.strictEqual(result.modelUsed, 'plus-only-medium');
   });
 
-  it('no reasoning_effort requested → ExecutionResult reflects requestedEffort=none', async () => {
+  it('omitted reasoning_effort field → ExecutionResult leaves requestedEffort/actualEffort undefined', async () => {
+    // `reasoning_effort` is omitted entirely. The gateway must not
+    // synthesize `'none'` (which is the explicit "do not think" tier, NOT
+    // a default for an absent field). Both observability fields stay
+    // `undefined` to faithfully record "the client didn't ask".
     const cfg = configWithEffortTiers([
       { id: 'pro', tier: 'pro', supportedReasoningEfforts: ['high'] },
     ]);
@@ -88,6 +93,26 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     const result = await orch.process({
       model: 'auto',
       messages: [{ role: 'user', content: 'hi' }],
+    } as ChatCompletionRequest);
+    assert.strictEqual(result.requestedEffort, undefined);
+    assert.strictEqual(result.actualEffort, undefined);
+    assert.strictEqual(result.reasoningDegraded, false);
+  });
+
+  it('explicit reasoning_effort: "none" → ExecutionResult records the client choice', async () => {
+    // `'none'` IS a real effort value meaning "do not think" — the client
+    // picked it on purpose. The orchestrator must surface that explicitly
+    // in `requestedEffort` and `actualEffort` (and not collapse to
+    // `undefined` like an omitted field would).
+    const cfg = configWithEffortTiers([
+      { id: 'pro', tier: 'pro', supportedReasoningEfforts: ['high'] },
+    ]);
+    const reg = new ProviderRegistry(cfg, true);
+    const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
+    const result = await orch.process({
+      model: 'auto',
+      messages: [{ role: 'user', content: 'hi' }],
+      reasoning_effort: 'none',
     } as ChatCompletionRequest);
     assert.strictEqual(result.requestedEffort, 'none');
     assert.strictEqual(result.actualEffort, 'none');

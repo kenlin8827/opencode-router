@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, X, Plus, Loader2, Wand2 } from 'lucide-react';
 import { opencodeApi } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
+import { effortOptionList } from '../lib/effort';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
@@ -62,7 +63,10 @@ const fieldLabelStyle: React.CSSProperties = {
 };
 
 const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
-const EFFORT_OPTIONS = ['', 'minimal', 'low', 'medium', 'high'] as const;
+// Effort dropdown options come from lib/effort.ts (single source of truth):
+// 6-level ladder + a UI "unset" sentinel, labels rendered as
+// `<wire> (<localized>)` so users see the protocol token they will send
+// on the wire, with a short hint in their language.
 
 interface ModelFormState {
   modelKey: string;
@@ -401,7 +405,7 @@ export const ModelEditDialog: React.FC<{
                   style={{ fontSize: 12, width: '100%', cursor: 'pointer' }}
                   value={form.reasoningEffort}
                   onChange={(v) => setForm({ ...form, reasoningEffort: v })}
-                  options={EFFORT_OPTIONS.map((o) => ({ value: o, label: o || t('op.pmUnset') }))}
+                  options={effortOptionList(t)}
                 />
               </div>
 
@@ -415,7 +419,7 @@ export const ModelEditDialog: React.FC<{
                         style={{ fontSize: 11.5, width: 110, cursor: 'pointer' }}
                         value={v.effort}
                         onChange={(effort) => { const variants = [...form.variants]; variants[i] = { ...v, effort }; setForm({ ...form, variants }); }}
-                        options={EFFORT_OPTIONS.map((o) => ({ value: o, label: o || t('op.pmUnset') }))}
+                        options={effortOptionList(t)}
                       />
                       <button className="btn btn-sm" style={{ padding: '3px 6px' }} onClick={() => setForm({ ...form, variants: form.variants.filter((_, j) => j !== i) })}>
                         <X size={11} />

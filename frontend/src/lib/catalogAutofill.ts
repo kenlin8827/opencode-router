@@ -1,4 +1,5 @@
 import { opencodeApi, type OpenCodeModelView } from './api';
+import { EFFORT_LADDER, type ReasoningEffort } from './effort';
 
 /**
  * Catalog auto-fill for the manual model editor: match a user-entered model id
@@ -11,18 +12,29 @@ import { opencodeApi, type OpenCodeModelView } from './api';
 const MIN_SUFFIX_LEN = 3;
 
 /** Reasoning-effort suffixes commonly embedded in gateway model ids
- *  ('ag/gemini-3.8-flash-high' → bare 'gemini-3.8-flash-high' → 'gemini-3.8-flash'). */
-const EFFORT_SUFFIXES = ['xhigh', 'high', 'medium', 'low', 'minimal', 'fast', 'thinking', 'reasoning'];
+ *  ('ag/gemini-3.8-flash-high' → bare 'gemini-3.8-flash-high' → 'gemini-3.8-flash').
+ *  Derived from the shared `EFFORT_LADDER` (the wire vocabulary) minus
+ *  `none` (which is never a model-id suffix); the additional entries
+ *  (`minimal`, `fast`, `thinking`, `reasoning`) are catalog-vendor noise
+ *  that the autofill strips when matching but does not set as the
+ *  editor's effort. */
+const EFFORT_DETECTABLE_LEVELS: readonly ReasoningEffort[] = EFFORT_LADDER.filter(
+  (e) => e !== 'none',
+);
+const EFFORT_SUFFIXES = [...EFFORT_DETECTABLE_LEVELS, 'minimal', 'fast', 'thinking', 'reasoning'];
 
-/** Effort suffixes that map 1:1 onto the editor's reasoningEffort dropdown. */
-const EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high'];
+/** Subset of `EFFORT_SUFFIXES` that maps 1:1 onto the editor's
+ * reasoningEffort dropdown. */
+const EFFORT_LEVELS = EFFORT_DETECTABLE_LEVELS;
 
 /**
  * Reasoning-effort level encoded in the user-entered model id, if any
- * ('my-relay/gemini-3.8-flash-high' → 'high'). Only suffixes that are valid
- * dropdown levels map; others (xhigh/flash/lite/thinking) are match-only.
+ * ('my-relay/gemini-3.8-flash-high' → 'high'). Only the 5 dropdown levels
+ * (everything except `none`) are returned; vendor-noise suffixes
+ * (`minimal` / `fast` / `thinking` / `reasoning`) are stripped by
+ * `candidateKeys` but never surfaced as the detected level.
  */
-export function detectEffortLevel(keys: (string | undefined)[]): string | undefined {
+export function detectEffortLevel(keys: (string | undefined)[]): ReasoningEffort | undefined {
   for (const raw of keys) {
     const trimmed = (raw || '').trim().toLowerCase();
     if (!trimmed) continue;

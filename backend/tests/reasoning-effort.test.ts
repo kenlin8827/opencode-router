@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { downgradeReasoning, REASONING_EFFORT_RANK, ReasoningEffort } from '../src/types/router.js';
+import { downgradeReasoning, EFFORT_LADDER, ReasoningEffort } from '../src/types/router.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import { RouterConfig } from '../src/config/types.js';
 
@@ -25,6 +25,9 @@ describe('downgradeReasoning — pure ranking', () => {
   });
 
   it('returns "none" when model only supports "none" itself', () => {
+    // A model that only declares "explicit no thinking" can't serve any
+    // level request — honesty contract forces downgrade to `none` (and
+    // the registry will refuse the model entirely for level requests).
     assert.strictEqual(downgradeReasoning('xhigh', ['none']), 'none');
   });
 
@@ -34,17 +37,40 @@ describe('downgradeReasoning — pure ranking', () => {
   });
 
   it('handles full ladder requests correctly', () => {
-    const all: ReasoningEffort[] = ['none', 'low', 'medium', 'high', 'xhigh'];
-    for (const req of all) {
-      assert.strictEqual(downgradeReasoning(req, all), req, `request=${req}`);
+    // Every tier in the ladder served by a model that supports the full
+    // ladder: request passes through unchanged.
+    for (const req of EFFORT_LADDER) {
+      assert.strictEqual(downgradeReasoning(req, EFFORT_LADDER), req, `request=${req}`);
     }
   });
 
-  it('REASONING_EFFORT_RANK is monotonically increasing', () => {
-    const ranks = ['none', 'low', 'medium', 'high', 'xhigh'].map((l) => REASONING_EFFORT_RANK[l as ReasoningEffort]);
+  it('undefined supported set falls back to the full ladder; explicit empty array downgrades to none', () => {
+    // `undefined` means "no capability declared" → assume the model
+    // supports everything, so the request passes through unchanged.
+    // An explicit EMPTY array is the opposite: "serves no explicit level"
+    // → 'none'. The registry's normalizeEfforts collapses empty arrays
+    // to `undefined`-or-legacy before this runs, so `[]` only reaches
+    // here from the orchestrator's pinned-model path.
+    assert.strictEqual(downgradeReasoning('high', undefined), 'high');
+    assert.strictEqual(downgradeReasoning('high', []), 'none');
+  });
+
+  it('EFFORT_LADDER is the 6-level vocabulary aligned with OpenCode', () => {
+    assert.deepStrictEqual([...EFFORT_LADDER], [
+      'none', 'low', 'medium', 'high', 'xhigh', 'max',
+    ]);
+  });
+
+  it('EFFORT_LADDER index is the canonical rank (and is monotonic)', () => {
+    // The ladder array IS the rank — indexOf doubles as rank. Add a new
+    // level by appending to EFFORT_LADDER; don't reintroduce a parallel
+    // numeric map.
+    const ranks = EFFORT_LADDER.map((l) => EFFORT_LADDER.indexOf(l));
     for (let i = 1; i < ranks.length; i++) {
       assert.ok(ranks[i] > ranks[i - 1], `rank[${i}] must be > rank[${i - 1}]`);
     }
+    assert.strictEqual(EFFORT_LADDER[0], 'none');
+    assert.strictEqual(EFFORT_LADDER[EFFORT_LADDER.length - 1], 'max');
   });
 });
 

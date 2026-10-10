@@ -385,6 +385,20 @@ describe('Thinking controls across upstreams', () => {
     assert.ok(p.max_tokens > 32768);
   });
 
+  // P1.2: `max` is Anthropic's top-tier effort (Opus 5.5+). The 65536
+  // budget is the engineering estimate for the top tier — operators with
+  // strict cost caps should pass an explicit `max_thinking_tokens` instead
+  // of relying on the ladder. This assertion locks the current estimate so
+  // changes to the table are caught by review.
+  it('Anthropic: reasoning_effort=max maps to budget_tokens=65536', () => {
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'max' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.thinking, { type: 'enabled', budget_tokens: 65536 });
+    assert.ok(p.max_tokens > 65536);
+  });
+
   it('Google: reasoning_effort=none leaves thinkingConfig unset', () => {
     const p = buildGooglePayload(
       { ...chatRequest, reasoning_effort: 'none' } as ChatCompletionRequest,
@@ -400,6 +414,21 @@ describe('Thinking controls across upstreams', () => {
     ) as any;
     assert.deepStrictEqual(p.generationConfig.thinkingConfig, {
       thinkingBudget: 32768,
+      includeThoughts: true,
+    });
+  });
+
+  // P1.2: `max` on the Google wire is an interop alias — Gemini natively
+  // only honors `low` and `high`; we accept it for vocabulary uniformity
+  // and translate to a high budget. Operators should pass explicit
+  // `max_thinking_tokens` for production cost control.
+  it('Google: reasoning_effort=max maps to thinkingBudget=65536', () => {
+    const p = buildGooglePayload(
+      { ...chatRequest, reasoning_effort: 'max' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.generationConfig.thinkingConfig, {
+      thinkingBudget: 65536,
       includeThoughts: true,
     });
   });

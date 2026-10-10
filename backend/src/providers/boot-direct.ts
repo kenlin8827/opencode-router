@@ -1,5 +1,5 @@
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
-import { PoolMembership, TierLevel } from '../types/router.js';
+import { PoolMembership, TierLevel, EFFORT_LADDER } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from './tier-match.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
@@ -127,11 +127,10 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         tier,
         isDefaultInTier: false,
         // See opencode/sync.ts for the same convention: catalog only declares
-        // a boolean thinking-effort capability flag (catalog key historically
-        // named 'reasoning' for compatibility with upstream catalogs), so we
-        // map that to all 4 non-default levels. Operators refine via
+        // a boolean thinking-effort capability flag, so we map that to the
+        // full EFFORT_LADDER. Operators narrow the supported set via
         // supportedReasoningEfforts in opencode.jsonc overrides.
-        supportedReasoningEfforts: isReasoning ? ['low', 'medium', 'high', 'xhigh'] : undefined,
+        supportedReasoningEfforts: isReasoning ? EFFORT_LADDER : undefined,
         supportsReasoningEffort: isReasoning || undefined,
         supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
         wire,

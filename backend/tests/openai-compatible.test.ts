@@ -188,4 +188,49 @@ describe('OpenAICompatibleProvider payload shaping', () => {
       server.stop(true);
     }
   });
+
+  // P1.3 regression removed: the openai-compatible provider used to
+  // translate `max` → `xhigh` here, but the orchestrator's downgrade step
+  // already collapses `max` to the model's highest supported tier before
+  // reaching this provider. A `max` that survives is a config error and
+  // should surface as an upstream 400, not be silently masked.
+  test('createCompletion forwards reasoning_effort verbatim', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        return Response.json({
+          id: 'chatcmpl-test',
+          object: 'chat.completion',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        reasoning_effort: 'high',
+      } as ChatCompletionRequest;
+
+      await provider.createCompletion(request, makeModel());
+      expect(received.reasoning_effort).toBe('high');
+    } finally {
+      server.stop(true);
+    }
+  });
 });

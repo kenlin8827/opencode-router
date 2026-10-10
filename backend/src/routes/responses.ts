@@ -7,6 +7,7 @@ import {
   ChatMessage,
   Tool,
 } from '../types/openai.js';
+import type { ReasoningEffort } from '../types/router.js';
 import { ChatMessageLite, RespNode, RespStore, newResponseId } from '../session/resp-store.js';
 import {
   appendGatewayResponseChunk,
@@ -99,9 +100,15 @@ export interface ResponsesRequest {
   top_p?: number;
   max_output_tokens?: number;
   tools?: Tool[];
-  // 5-level effort vocabulary; OpenAI Responses rejects unsupported values
-// per-model (e.g. GPT-6.1 Sol rejects `none` and `minimal` with 400).
-reasoning?: { effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh'; max_tokens?: number };
+  // 5-level effort vocabulary (the OpenAI Responses wire mirrors the
+  // OpenAI Chat Completions ladder — `max` is Anthropic-only and never
+  // crosses this wire). OpenAI Responses rejects unsupported values
+  // per-model (e.g. a never-thinking model rejects `none` with 400).
+// OpenAI Responses wire: 5 levels (no `max` — that's Anthropic-only).
+// The internal ReasoningEffort type also includes `max` so the orchestrator
+// can carry it through the downgrade pipeline; the openai-compatible
+// provider builder collapses it before this wire is touched.
+reasoning?: { effort?: Exclude<ReasoningEffort, 'max'>; max_tokens?: number };
 }
 
 // ---------------------------------------------------------------------------

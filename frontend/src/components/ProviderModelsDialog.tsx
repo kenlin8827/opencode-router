@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Trash2, Download, Eye, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
+import { effortOptionList } from '../lib/effort';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -108,7 +109,10 @@ const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string
 };
 
 const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
-const EFFORT_OPTIONS = ['', 'minimal', 'low', 'medium', 'high'] as const;
+// Effort dropdown options come from lib/effort.ts (single source of truth):
+// 6-level ladder + a UI "unset" sentinel, labels rendered as
+// `<wire> (<localized>)` so users see the protocol token they will send
+// on the wire, with a short hint in their language.
 
 const fmtContext = (n?: number): string => {
   if (!n || n <= 0) return '';
@@ -926,7 +930,7 @@ export const ProviderModelsDialog: React.FC<{
                 style={{ fontSize: 12, width: '100%', cursor: 'pointer' }}
                 value={form.data.reasoningEffort}
                 onChange={(v) => setForm({ ...form, data: { ...form.data, reasoningEffort: v } })}
-                options={EFFORT_OPTIONS.map((o) => ({ value: o, label: o || t('op.pmUnset') }))}
+                options={effortOptionList(t)}
               />
             </div>
 
@@ -950,12 +954,12 @@ export const ProviderModelsDialog: React.FC<{
                     <Combobox
                       style={{ fontSize: 11.5, width: 110, cursor: 'pointer' }}
                       value={v.effort}
+                      options={effortOptionList(t)}
                       onChange={(effort) => {
                         const variants = [...form.data.variants];
                         variants[i] = { ...v, effort };
                         setForm({ ...form, data: { ...form.data, variants } });
                       }}
-                      options={EFFORT_OPTIONS.map((o) => ({ value: o, label: o || t('op.pmUnset') }))}
                     />
                     <button className="btn btn-sm" style={{ padding: '3px 6px' }} onClick={() => setForm({ ...form, data: { ...form.data, variants: form.data.variants.filter((_, j) => j !== i) } })}>
                       <X size={11} />

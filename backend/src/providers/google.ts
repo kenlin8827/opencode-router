@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
+import type { ReasoningEffort } from '../types/router.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 import {
@@ -106,25 +107,28 @@ export function buildGooglePayload(request: ChatCompletionRequest, model: ModelR
   if (request.temperature != null) generationConfig.temperature = request.temperature;
   if (request.top_p != null) generationConfig.topP = request.top_p;
   if (request.stop?.length) generationConfig.stopSequences = request.stop;
-  // Gemini extended thinking: map the gateway's 5-level effort vocabulary (or
-  // explicit max_thinking_tokens) to thinkingConfig.thinkingBudget. `none`
-  // (or no field at all) means "do not construct thinkingConfig" — the
-  // upstream model decides on its own. Reference: Gemini API "Thinking" docs.
-  const EFFORT_TO_BUDGET: Record<'low' | 'medium' | 'high' | 'xhigh', number> = {
+  // effort level → thinkingConfig.thinkingBudget. The full 6-level
+  // table; `none` maps to 0 as a defensive value even though the guard
+  // below skips the thinking block for it. Numbers for the other 5 are
+  // engineering estimates; operators with strict cost caps should pass
+  // an explicit `max_thinking_tokens` instead.
+  const EFFORT_TO_BUDGET: Record<ReasoningEffort, number> = {
+    none: 0,
     low: 1024,
     medium: 4096,
     high: 16384,
     xhigh: 32768,
+    max: 65536,
   };
-  const wantsThinking = request.reasoning_effort && request.reasoning_effort !== 'none';
+  const effort = request.reasoning_effort;
   if (request.max_thinking_tokens != null && request.max_thinking_tokens >= 0) {
     generationConfig.thinkingConfig = {
       thinkingBudget: request.max_thinking_tokens,
       includeThoughts: true,
     };
-  } else if (wantsThinking) {
+  } else if (effort && effort !== 'none') {
     generationConfig.thinkingConfig = {
-      thinkingBudget: EFFORT_TO_BUDGET[request.reasoning_effort as 'low' | 'medium' | 'high' | 'xhigh'],
+      thinkingBudget: EFFORT_TO_BUDGET[effort],
       includeThoughts: true,
     };
   }

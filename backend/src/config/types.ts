@@ -26,8 +26,9 @@ export interface ModelRegistration {
    * Subset of `ReasoningEffort` this model can natively serve. Empty / missing
    * means "model-default only". Used by the routing layer to filter + downgrade
    * the candidate pool when the client requests a specific effort level.
+   * Default for thinking-capable models is the full EFFORT_LADDER.
    */
-  supportedReasoningEfforts?: ReasoningEffort[];
+  supportedReasoningEfforts?: readonly ReasoningEffort[];
   /** Legacy boolean; if true and `supportedReasoningEfforts` is unset, the model
    *  is treated as supporting all 4 non-default levels (low/medium/high/xhigh). */
   supportsReasoningEffort?: boolean;
