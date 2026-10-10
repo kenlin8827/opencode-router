@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { parseClientHelloSNI } from '../src/forward-proxy/sni.js';
-import { isLoopbackHost, shouldBypassHost, matchBypass } from '../src/forward-proxy/bypass.js';
+import { isLoopbackHost, matchBypass } from '../src/forward-proxy/bypass.js';
 import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
@@ -95,12 +95,12 @@ describe('forward-proxy: SNI probing + bypass policy', () => {
     assert.equal(isLoopbackHost('::1'), true);
     assert.equal(isLoopbackHost('api.openai.com'), false);
 
-    assert.equal(shouldBypassHost('api.openai.com', []), false);
-    assert.equal(shouldBypassHost('api.openai.com', undefined), false);
-    assert.equal(shouldBypassHost('api.openai.com', ['*.internal']), false);
-    assert.equal(shouldBypassHost('db.internal', ['*.internal']), true);
-    assert.equal(shouldBypassHost('1.2.3.4', []), false);
-    assert.equal(shouldBypassHost('127.0.0.1', ['nothing-matches']), true);
+    assert.equal(matchBypass('api.openai.com', []).bypassed, false);
+    assert.equal(matchBypass('api.openai.com', undefined).bypassed, false);
+    assert.equal(matchBypass('api.openai.com', ['*.internal']).bypassed, false);
+    assert.equal(matchBypass('db.internal', ['*.internal']).bypassed, true);
+    assert.equal(matchBypass('1.2.3.4', []).bypassed, false);
+    assert.equal(matchBypass('127.0.0.1', ['nothing-matches']).bypassed, true);
 
     // matchBypass: per-host egress flag (object entries); loopback stays direct
     assert.deepEqual(matchBypass('api.openai.com', []), { bypassed: false, viaProxy: false });

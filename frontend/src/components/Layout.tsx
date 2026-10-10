@@ -206,11 +206,6 @@ export const Layout: React.FC = () => {
         toast.error(res.message || t('header.restartFailed'));
         return;
       }
-      if (res.status === 'stopping') {
-        toast.error(res.message || t('header.restartFailed'));
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
       toast.info(t('header.restarting'));
     } catch {
       toast.error(t('header.restartFailed'));

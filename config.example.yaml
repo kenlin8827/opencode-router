@@ -43,7 +43,7 @@ opencode:
 # is routed through this gateway, everything else is forwarded transparently.
 # Only loopback targets and bypassHosts matches are blind-tunneled (never
 # decrypted). The generated CA (<caDir>/ca.pem) must be trusted by the clients
-# that use this proxy — export it from the console Proxy page. Restart required.
+# that use this proxy — export it from the console Proxy Access page. Restart required.
 # forwardProxy:
 #   enabled: false
 #   port: 4555                      # clients: HTTP_PROXY=http://127.0.0.1:4555

@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import tls from 'node:tls';
 import forge from 'node-forge';
 
 /**
@@ -90,7 +89,6 @@ export function ensureCa(caDir: string): CaMaterial {
 interface MintedCert {
   key: string;
   cert: string;
-  ctx: tls.SecureContext;
 }
 
 export class CertMinter {
@@ -98,7 +96,7 @@ export class CertMinter {
 
   constructor(private ca: CaMaterial) {}
 
-  /** Cached per-host leaf cert + SecureContext for `tls.createServer`. */
+  /** Cached per-host leaf cert for the per-host `tls.createServer` (server.ts). */
   get(host: string): MintedCert {
     const hit = this.cache.get(host);
     if (hit) return hit;
@@ -106,7 +104,6 @@ export class CertMinter {
     const out: MintedCert = {
       key: this.ca.leafKeyPem,
       cert: certPem,
-      ctx: tls.createSecureContext({ key: this.ca.leafKeyPem, cert: certPem }),
     };
     this.cache.set(host, out);
     return out;

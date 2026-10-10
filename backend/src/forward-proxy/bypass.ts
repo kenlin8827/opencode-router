@@ -1,4 +1,4 @@
-import { globMatchAny, globMatch } from '../utils/glob.js';
+import { globMatch } from '../utils/glob.js';
 
 /** True for loopback / unspecified hosts — never MITM'd (cycle safety + local dev). */
 export function isLoopbackHost(host: string): boolean {
@@ -39,12 +39,4 @@ export function matchBypass(
     if (pattern && globMatch(pattern, host)) return { bypassed: true, viaProxy };
   }
   return { bypassed: false, viaProxy: false };
-}
-
-/**
- * Pure-tunnel decision (legacy shape): loopback targets always bypass;
- * `bypassHosts` glob patterns match against the bare hostname.
- */
-export function shouldBypassHost(host: string, bypassHosts?: (string | BypassEntry)[]): boolean {
-  return matchBypass(host, bypassHosts).bypassed;
 }

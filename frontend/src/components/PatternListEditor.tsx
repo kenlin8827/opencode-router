@@ -2,8 +2,9 @@ import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 
 /**
- * Editable list of glob patterns (one input per row) — shared by the outbound
- * proxy include/exclude rules and the inbound forward-proxy bypass list.
+ * Editable list of glob patterns (one input per row) — used by the outbound
+ * proxy include/exclude rules. The Proxy Access page's bypass list has its own
+ * richer row editor (per-row "via outbound proxy" checkbox).
  */
 export const PatternListEditor: React.FC<{
   label: string;
