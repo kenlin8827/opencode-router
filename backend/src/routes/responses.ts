@@ -373,6 +373,8 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
         reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
         reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
       }
+      // Variant observability — sibling / `#variant` id resolved for this request.
+      if (result.variantUsed) reply.header('X-OCR-Variant', result.variantUsed);
 
       const respId = newResponseId();
       const assistant = result.response.choices[0]?.message;
@@ -414,6 +416,11 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
       return reply.status(200).send(chatToResponseObject(result.response, respId, result.modelUsed));
     } catch (err: any) {
       req.log?.error?.(err);
+      // Explicitly tagged 4xx errors (e.g. variant resolution) keep their
+      // status; everything else stays the route's upstream_error 502.
+      if (Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 500) {
+        return reply.status(err.statusCode).send(errorReply(err.message, 'invalid_request_error'));
+      }
       return reply.status(502).send(errorReply(err?.message || 'Upstream execution failed.', 'upstream_error'));
     }
   });

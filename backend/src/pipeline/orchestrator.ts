@@ -257,6 +257,7 @@ export class PipelineOrchestrator {
     };
 
     let explicitModel: ModelRegistration | undefined;
+    let variantUsed: string | undefined;
     if (request.model === 'auto-lite') {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'lite' };
     } else if (request.model === 'auto-plus') {
@@ -275,10 +276,36 @@ export class PipelineOrchestrator {
         // within the tier.
         explicitModel = specific;
         normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: specific.tier };
+      } else {
+        const variantRef = this.registry.resolveVariantRef(request.model);
+        if (variantRef) {
+          // Variant request (sibling id `base-variant` or `base#variant`):
+          // route to the BASE model exactly and pin the variant's effort as
+          // if the client had asked for that level. The variant choice is
+          // the more explicit signal, so it wins over any client-sent
+          // `reasoning_effort`; the effort-matching block below still
+          // applies its downgrade/honesty contract.
+          explicitModel = variantRef.base;
+          variantUsed = variantRef.variant.id;
+          normalizedRequest.reasoning_effort = variantRef.variant.reasoningEffort;
+          normalizedRequest.model = variantRef.base.id;
+          normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: variantRef.base.tier };
+        } else if (request.model.includes('#')) {
+          // `#variant` is explicit syntax — a typo must fail loud instead of
+          // silently classifier-routing (invisible model drift is exactly
+          // the failure mode variant ids exist to prevent).
+          const hash = request.model.indexOf('#');
+          throw Object.assign(
+            new Error(
+              `Variant '${request.model.slice(hash + 1)}' not found for model '${request.model.slice(0, hash)}'`
+            ),
+            { statusCode: 404 }
+          );
+        }
+        // Other unregistered names (e.g. native `claude-opus-*` after a /model
+        // switch inside Claude Code) are left untouched — the classifier
+        // decides, which IS the intelligent-routing product behavior.
       }
-      // Unregistered names (e.g. native `claude-opus-*` after a /model switch
-      // inside Claude Code) are left untouched — the classifier decides,
-      // which IS the intelligent-routing product behavior.
     }
 
     // 1A. Custom model combo: the client named a configured combo id — the
@@ -869,6 +896,9 @@ export class PipelineOrchestrator {
       requestedEffort,
       actualEffort,
       reasoningDegraded,
+      // Variant observability — route handlers read this to set the
+      // X-OCR-Variant header (sibling `base-variant` / `base#variant`).
+      variantUsed,
     };
   }
 

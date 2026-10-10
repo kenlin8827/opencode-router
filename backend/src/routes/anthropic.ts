@@ -408,6 +408,8 @@ export function registerAnthropicRoutes(
         reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
         reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
       }
+      // Variant observability — sibling / `#variant` id resolved for this request.
+      if (result.variantUsed) ocrHeaders['X-OCR-Variant'] = result.variantUsed;
       for (const [k, v] of Object.entries(ocrHeaders)) {
         reply.header(k, v);
       }

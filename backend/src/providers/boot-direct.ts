@@ -1,5 +1,5 @@
-import { ModelRegistration, ProviderConfig } from '../config/types.js';
-import { PoolMembership, TierLevel, EFFORT_LADDER } from '../types/router.js';
+import { ModelRegistration, ModelVariant, ProviderConfig } from '../config/types.js';
+import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from './tier-match.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
@@ -26,6 +26,31 @@ export interface DirectBootResult {
   instances: { name: string; config: ProviderConfig; wires: WireKind[]; wireBases: Partial<Record<WireKind, string>> }[];
   models: ModelRegistration[];
   excluded: { provider: string; model?: string; reason: string }[];
+}
+
+/**
+ * Normalize a model def's `variants` array into the gateway's routable form.
+ * Only effort-bearing variants are kept — the gateway serves a variant by
+ * pinning a reasoning effort, so variants without `settings.reasoningEffort` /
+ * `settings.effort` have nothing routable to contribute. Unknown effort
+ * values and duplicate ids are dropped; undefined = no variants.
+ */
+export function routableVariants(raw: unknown): ModelVariant[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  const out: ModelVariant[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const id = typeof (entry as any).id === 'string' ? (entry as any).id.trim() : '';
+    if (!id || seen.has(id)) continue;
+    const settings =
+      (entry as any).settings && typeof (entry as any).settings === 'object' ? (entry as any).settings : {};
+    const effortRaw = settings.reasoningEffort ?? settings.effort;
+    if (typeof effortRaw !== 'string' || !(EFFORT_LADDER as readonly string[]).includes(effortRaw)) continue;
+    seen.add(id);
+    out.push({ id, reasoningEffort: effortRaw as ReasoningEffort });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
@@ -119,6 +144,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         classifyTier({ modelId: mid, inputPerM: rawInputPerM, reasoningFlag: isReasoning }, tierMatch);
       const unclassified = membership === 'unclassified';
       const tier: TierLevel = unclassified ? 'plus' : membership;
+      const variants = routableVariants((d as any)?.variants ?? (catModel as any)?.variants);
 
       models.push({
         id: `${rec.id}/${mid}`,
@@ -133,6 +159,9 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         supportedReasoningEfforts: isReasoning ? EFFORT_LADDER : undefined,
         supportsReasoningEffort: isReasoning || undefined,
         supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
+        // Variants become routable sibling ids (`<id>-<variant>`) + `#variant`
+        // syntax; the jsonc def is the source (catalog records may mirror it).
+        variants,
         wire,
         // Classification inputs → the registry replays tier membership live
         // (config match + catalog overrides) without a gateway restart.

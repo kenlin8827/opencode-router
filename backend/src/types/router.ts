@@ -154,6 +154,11 @@ export interface ExecutionResult {
   inplaceRetries?: number;
   breakerState?: string;
   /**
+   * Variant id resolved from a sibling `base-variant` / `base#variant` model
+   * request (undefined when the client named a plain model).
+   */
+  variantUsed?: string;
+  /**
    * Reasoning-effort observability. `requestedEffort` is the value the
    * client sent (or undefined if the client omitted the field).
    * `actualEffort` is what the gateway actually served (may be lower

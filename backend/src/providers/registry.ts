@@ -3,7 +3,7 @@ import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
-import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig, ComboConfig, ComboModelRef } from '../config/types.js';
+import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, ComboConfig, ComboModelRef } from '../config/types.js';
 import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { CircuitBreakerManager, UpstreamError } from '../resilience/index.js';
@@ -21,6 +21,8 @@ export class ProviderRegistry {
   private rrCursor = new Map<TierLevel, number>();
   private combos = new Map<string, ComboConfig>();
   private comboRrCursor = new Map<string, number>();
+  /** Sibling-id index for model variants: `<baseId>-<variantId>` → base + variant. */
+  private variantIndex = new Map<string, { baseId: string; variant: ModelVariant }>();
   private mockMode = false;
   private autoRefreshTierMatch = true;
   private lastMatchRefreshAt = 0;
@@ -103,6 +105,7 @@ export class ProviderRegistry {
     }
     this.models.set(model.id, model);
     this.circuitBreakerManager.registerModel(model);
+    this.indexVariants(model);
     // ADR-0012: an UNCLAIMED model must never become a tier's representative —
     // it joins no pool, so promoting it would hand routing a model the pools
     // themselves filter out. Explicit `isDefault` pinning stays authoritative.
@@ -120,6 +123,7 @@ export class ProviderRegistry {
     this.models.set(model.id, model);
     this.tierDefaults.set(tier, model);
     this.circuitBreakerManager.registerModel(model);
+    this.indexVariants(model);
   }
 
   public getModel(modelId: string): ModelRegistration | undefined {
@@ -472,6 +476,75 @@ export class ProviderRegistry {
 
   public getAllModels(): ModelRegistration[] {
     return Array.from(this.models.values());
+  }
+
+  // ─── Model variants (sibling ids) ───────────────────────────────────────
+
+  /**
+   * Maintain the sibling-id index for a (re)registered model:
+   *  - a REAL registered model id always beats a sibling id (registering
+   *    `base-low` as a model drops the `base-low` sibling mapping);
+   *  - re-registration replaces the model's previous sibling set;
+   *  - sibling ids shadowed by models / reserved virtual ids are skipped.
+   */
+  private indexVariants(model: ModelRegistration): void {
+    if (this.variantIndex.has(model.id)) {
+      console.warn(`[Registry] Model id '${model.id}' shadows a variant sibling id — the sibling mapping was dropped.`);
+      this.variantIndex.delete(model.id);
+    }
+    for (const [siblingId, ref] of this.variantIndex) {
+      if (ref.baseId === model.id) this.variantIndex.delete(siblingId);
+    }
+    for (const variant of model.variants || []) {
+      const siblingId = `${model.id}-${variant.id}`;
+      if (
+        this.models.has(siblingId) ||
+        this.variantIndex.has(siblingId) ||
+        ProviderRegistry.RESERVED_COMBO_IDS.has(siblingId)
+      ) {
+        continue;
+      }
+      this.variantIndex.set(siblingId, { baseId: model.id, variant });
+    }
+  }
+
+  /**
+   * Resolve a variant reference to its base model + variant:
+   *  - sibling id form `<baseId>-<variantId>` (as advertised by /v1/models);
+   *  - explicit syntax form `<baseId>#<variantId>`.
+   * Callers check exact registered models FIRST — a real id always wins.
+   * Returns null when nothing matches; the caller decides whether that means
+   * a hard error (`#` syntax must not silently degrade) or plain classifier
+   * fallback (unregistered names keep the existing contract).
+   */
+  public resolveVariantRef(modelId: string): { base: ModelRegistration; variant: ModelVariant } | null {
+    if (!modelId) return null;
+    // A user-authored combo id keeps its own semantics on collision.
+    if (this.combos.has(modelId)) return null;
+    const sibling = this.variantIndex.get(modelId);
+    if (sibling) {
+      const base = this.models.get(sibling.baseId);
+      if (base) return { base, variant: sibling.variant };
+    }
+    const hash = modelId.indexOf('#');
+    if (hash > 0 && hash < modelId.length - 1) {
+      const base = this.models.get(modelId.slice(0, hash));
+      const variant = base?.variants?.find((v) => v.id === modelId.slice(hash + 1));
+      if (base && variant) return { base, variant };
+    }
+    return null;
+  }
+
+  /** Variant sibling entries advertised by /v1/models (shadowed ids excluded). */
+  public getVariantExposures(): { id: string; base: ModelRegistration; variant: ModelVariant }[] {
+    const out: { id: string; base: ModelRegistration; variant: ModelVariant }[] = [];
+    for (const [id, ref] of this.variantIndex) {
+      const base = this.models.get(ref.baseId);
+      if (!base) continue;
+      if (this.combos.has(id)) continue;
+      out.push({ id, base, variant: ref.variant });
+    }
+    return out;
   }
 
   // ─── Custom model combos ────────────────────────────────────────────────

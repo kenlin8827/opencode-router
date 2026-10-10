@@ -293,9 +293,26 @@ export function createServer(
       description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
     }));
 
+    // Model variant siblings: `base-variant` ids that resolve to the base
+    // model with the variant's reasoning effort pinned (registry-built from
+    // boot-direct variants — see providers/registry.ts resolveVariantRef).
+    const variantModels = registry.getVariantExposures().map(({ id, base, variant }) => ({
+      id,
+      object: 'model',
+      created: 1700000000,
+      owned_by: base.provider,
+      description: `Variant '${variant.id}' of ${base.id} (reasoningEffort=${variant.reasoningEffort})`,
+      metadata: {
+        tier: base.tier,
+        pricing: base.pricing,
+        parent: base.id,
+        variant: { id: variant.id, reasoningEffort: variant.reasoningEffort },
+      },
+    }));
+
     return {
       object: 'list',
-      data: [...virtualModels, ...comboModels, ...registered],
+      data: [...virtualModels, ...comboModels, ...registered, ...variantModels],
     };
   });
 
@@ -303,7 +320,13 @@ export function createServer(
   app.get('/v1/models/:model', async (req, reply) => {
     const { model } = req.params as { model: string };
     const all = registry.getAllModels();
-    const found = all.find(m => m.id === model) ||
+    const specific = all.find(m => m.id === model);
+    // Variant sibling / `#variant` ids resolve to their base model — the same
+    // resolution the request path applies, so a client validating a variant
+    // id it got from the list (or typed) keeps working.
+    const variantRef = specific ? null : registry.resolveVariantRef(model);
+    const found = specific ||
+      variantRef ||
       ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].includes(model) ||
       registry.isCombo(model);
 
@@ -317,7 +340,15 @@ export function createServer(
       id: model,
       object: 'model',
       created: 1700000000,
-      owned_by: typeof found === 'object' ? found.provider : 'opencode-router',
+      owned_by: specific ? specific.provider : variantRef ? variantRef.base.provider : 'opencode-router',
+      ...(variantRef
+        ? {
+            metadata: {
+              parent: variantRef.base.id,
+              variant: { id: variantRef.variant.id, reasoningEffort: variantRef.variant.reasoningEffort },
+            },
+          }
+        : {}),
     };
   });
 
@@ -555,6 +586,11 @@ export function createServer(
         reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
         reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
       }
+      // Variant observability: the variant id resolved from sibling /
+      // `#variant` model syntax (set only when one was resolved).
+      if (result.variantUsed) {
+        reply.header('X-OCR-Variant', result.variantUsed);
+      }
 
       // -------------------------------------------------------------
       // SSE Streaming Mode (stream: true)
@@ -580,6 +616,7 @@ export function createServer(
           'X-OCR-Cost-USD': result.costUsd.toFixed(6),
           'X-OCR-Saved-USD': result.savedCostUsd.toFixed(6),
           'X-OCR-Latency-MS': result.latencyMs.toString(),
+          ...(result.variantUsed ? { 'X-OCR-Variant': result.variantUsed } : {}),
         });
 
         const sseCtx = getClientExchangeContext(req);

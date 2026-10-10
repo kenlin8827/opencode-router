@@ -34,6 +34,14 @@ export interface ModelRegistration {
   supportsReasoningEffort?: boolean;
   supportsPromptCaching?: boolean;
   /**
+   * Named model variants, materialized by the boot-direct pool from
+   * opencode.jsonc model defs (effort-bearing entries only — see
+   * boot-direct.ts `routableVariants`). Each variant is routable as a
+   * sibling id `<id>-<variant>` and via `<id>#<variant>` syntax; the
+   * variant's reasoning effort is pinned onto the request.
+   */
+  variants?: ModelVariant[];
+  /**
    * Inputs captured by the smart-match boot paths (boot-direct / sync).
    * Presence marks the model as RUNTIME-RECLASSIFIABLE: the registry replays
    * tiers[t].match + catalog overrides against these inputs without a restart.
@@ -49,6 +57,17 @@ export interface ModelRegistration {
    * ratchet keep operating on the strict four-state TierLevel.
    */
   unclassified?: boolean;
+}
+
+/**
+ * Effort-bearing variant of a model. Serving a variant == serving the base
+ * model with its pinned reasoning effort injected, so only variants carrying
+ * an effort are materialized; anything else has nothing routable to add.
+ */
+export interface ModelVariant {
+  id: string;
+  /** Always a valid EFFORT_LADDER level (validated at ingestion). */
+  reasoningEffort: ReasoningEffort;
 }
 
 /**
