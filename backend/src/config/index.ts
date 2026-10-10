@@ -189,6 +189,20 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
   }
 }
 
+/**
+ * Live reference to the RUNNING server's config object (registered by
+ * createServer). The auth preHandler prefers `config.apiKeys` over a fresh
+ * disk read (boot snapshot) — without syncing, a key edited via the UI or the
+ * YAML editor would persist to config.yaml yet keep failing on the wire until
+ * the next restart. Every config save refreshes the snapshot's keys in-place.
+ */
+let runtimeConfigRef: RouterConfig | undefined;
+
+/** Called once by createServer so config saves can refresh the boot snapshot. */
+export function registerRuntimeConfigRef(cfg: RouterConfig): void {
+  runtimeConfigRef = cfg;
+}
+
 export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean; error?: string } {
   const configPath = getConfigPath();
   try {
@@ -196,6 +210,9 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
     const merged = { ...current, ...newConfig };
     const yamlContent = annotateYamlComments(stringify(merged));
     fs.writeFileSync(configPath, yamlContent, 'utf8');
+    // Single sync point: whichever path saved the config (key CRUD, visual
+    // editor, ...), the running gateway's key snapshot follows immediately.
+    if (runtimeConfigRef) runtimeConfigRef.apiKeys = merged.apiKeys;
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -211,7 +228,7 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
 
 const YAML_FILE_HEADER = [
   'OpenCode Router 网关配置（config.yaml）',
-  '可视化编辑：控制台「系统可视化配置」页；手写编辑：「YAML编辑配置」页（原文保存，注释保留）',
+  '可视化编辑：控制台「可视化配置」页；手写编辑：「配置文件」页（原文保存，注释保留）',
   '注意：配置无热加载，保存/修改后需重启网关才生效；价格单位均为 美元/百万 tokens',
 ].join('\n');
 

@@ -8,6 +8,7 @@ import {
   Tool,
 } from '../types/openai.js';
 import type { ReasoningEffort } from '../types/router.js';
+import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access.js';
 import { ChatMessageLite, RespNode, RespStore, newResponseId } from '../session/resp-store.js';
 import {
   appendGatewayResponseChunk,
@@ -352,12 +353,19 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
     // layer — zero ambiguity, no content heuristics involved.
     if (sessionIdBind) request.router_options = { ...request.router_options, session_id: sessionIdBind };
 
+    // Per-key model access gate (403 when the key's policy denies this model)
+    const enforceModelAccess = makeModelAccessGuard(orchestrator.getRegistry());
+    if (!enforceModelAccess(req, reply, body.model?.trim() || 'auto')) {
+      return reply;
+    }
+
     try {
       const result = await orchestrator.process(request, {
         clientIp: req.ip,
         headers: req.headers,
         wire: 'responses',
         fastifyRequest: req,
+        modelAccess: getModelAccessPolicy((req as any).authInfo?.keyConfig),
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');

@@ -19,7 +19,9 @@ import {
   updateApiKey,
   deleteApiKey,
   validateApiKey,
+  validateModelAccess,
 } from '../auth/api-keys.js';
+import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
 
 export { validateApiKey };
 
@@ -359,12 +361,20 @@ export function registerConsoleRoutes(
   app.get('/api/ui/status', handleStatus);
   app.get('/api/console/status', handleStatus);
 
-  // 3B. Prompt-cache observability (provider-native caching, aggregated from traces)
-  app.get('/api/ui/cache-stats', async () => ({
-    status: 'ok',
-    stats: orchestrator.getTraceTracker().getCacheStats(),
-    routingCache: Layer2Judge.getDecisionCacheStats(),
-  }));
+  // 3B. Prompt-cache observability (provider-native caching, aggregated from traces).
+  // Optional `?since=<epoch-ms>` narrows the totals / per-model rows / hourly
+  // series to traces with `timestamp >= since`. Back-compat: when omitted the
+  // response is the legacy 24-hour window.
+  app.get('/api/ui/cache-stats', async (req) => {
+    const query = req.query as { since?: string };
+    const sinceRaw = query.since ? Number(query.since) : NaN;
+    const sinceTs = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : undefined;
+    return {
+      status: 'ok',
+      stats: orchestrator.getTraceTracker().getCacheStats(sinceTs !== undefined ? { sinceTs } : undefined),
+      routingCache: Layer2Judge.getDecisionCacheStats(),
+    };
+  });
 
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
@@ -1327,11 +1337,15 @@ export function registerConsoleRoutes(
   app.get('/api/console/api-keys', handleListApiKeys);
 
   const handleCreateApiKey = async (req: any, reply: any) => {
-    const body = req.body as { name: string; key?: string; role?: 'admin' | 'user'; expiresAt?: string; description?: string };
+    const body = req.body as { name: string; key?: string; role?: 'admin' | 'user'; expiresAt?: string; description?: string; modelAccess?: unknown };
     if (!body?.name) {
       return reply.status(400).send({ success: false, message: 'API Key name is required' });
     }
-    const result = createApiKey(body);
+    const access = validateModelAccess(body.modelAccess);
+    if (access.error) {
+      return reply.status(400).send({ success: false, error: access.error });
+    }
+    const result = createApiKey({ ...body, modelAccess: access.value });
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
@@ -1340,8 +1354,12 @@ export function registerConsoleRoutes(
 
   const handleUpdateApiKey = async (req: any, reply: any) => {
     const { id } = req.params as { id: string };
-    const body = req.body as { name?: string; enabled?: boolean; expiresAt?: string; description?: string; role?: 'admin' | 'user' };
-    const result = updateApiKey(id, body);
+    const body = req.body as { name?: string; enabled?: boolean; expiresAt?: string; description?: string; role?: 'admin' | 'user'; modelAccess?: unknown };
+    const access = validateModelAccess(body?.modelAccess);
+    if (access.error) {
+      return reply.status(400).send({ success: false, error: access.error });
+    }
+    const result = updateApiKey(id, { ...body, modelAccess: body?.modelAccess === null ? null : access.value });
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
@@ -1356,6 +1374,62 @@ export function registerConsoleRoutes(
   };
   app.delete('/api/ui/api-keys/:id', handleDeleteApiKey);
   app.delete('/api/console/api-keys/:id', handleDeleteApiKey);
+
+  // 9b. Effective model view for ONE key — what this key can actually see &
+  //     use right now (mirrors the /v1/models policy filter + the execution
+  //     pool gate). Read-only: no key material in the response.
+  const handleGetKeyModels = async (req: any, reply: any) => {
+    const { id } = req.params as { id: string };
+    const key = listApiKeys(false).find((k) => k.id === id);
+    if (!key) {
+      return reply.status(404).send({ status: 'error', message: `API Key '${id}' not found` });
+    }
+    const policy = getModelAccessPolicy(key);
+    const registered = registry.getAllModels().map((m) => ({
+      id: m.id,
+      provider: m.provider,
+      tier: m.tier as string,
+      virtual: false,
+      allowed: isModelAllowed(m.id, policy, m.tier),
+    }));
+    const tierAllowed = (t: string) => registered.some((m) => m.tier === t && m.allowed);
+    // Virtual auto* rows honor runtime viability (mirrors /v1/models): bare
+    // `auto` needs an allowed model in ANY tier, auto-X in tier X.
+    const virtual = ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
+      id,
+      provider: 'opencode-router',
+      tier: tierFromVirtualEntry(id),
+      virtual: true,
+      allowed: isAutoEntryUsable(id, policy, tierAllowed),
+    }));
+    return {
+      status: 'ok',
+      mode: policy?.mode ?? 'none',
+      policyModels: policy?.models ?? [],
+      models: [...virtual, ...registered],
+    };
+  };
+  app.get('/api/ui/api-keys/:id/models', handleGetKeyModels);
+  app.get('/api/console/api-keys/:id/models', handleGetKeyModels);
+
+  // 9c. Full gateway catalog for CONSOLE-internal consumers (model pickers).
+  //     /v1/models now requires a key like every other surface; the trusted
+  //     console UI reads the unfiltered catalog here instead.
+  const handleGatewayModels = async () => {
+    const models = [
+      ...['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
+        id,
+        owned_by: 'opencode-router',
+        tier: '',
+      })),
+      ...registry.getAllModels().map((m) => ({ id: m.id, owned_by: m.provider, tier: m.tier as string })),
+      ...registry.getCombos().map((c) => ({ id: c.id, owned_by: 'opencode-router', tier: '' })),
+      ...registry.getVariantExposures().map(({ id, base }) => ({ id, owned_by: base.provider, tier: base.tier as string })),
+    ];
+    return { status: 'ok', models };
+  };
+  app.get('/api/ui/gateway-models', handleGatewayModels);
+  app.get('/api/console/gateway-models', handleGatewayModels);
 
   // 10. Remote restart trigger from UI — spawn a detached replacement gateway
   //     first (it waits for our pid to die, boots, and self-registers the

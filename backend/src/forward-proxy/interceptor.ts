@@ -26,6 +26,15 @@ import { buildChatStreamChunks } from '../utils/chat-sse.js';
  * ChatCompletionRequest and executed through the SAME orchestrator as the
  * native /v1 endpoints, then the result is re-encoded back to the caller's
  * wire. X-OCR-* observability headers are attached for parity.
+ *
+ * POLICY EXEMPTION (deliberate): intercepted traffic carries NO gateway key —
+ * the upstream Authorization header belongs to the real upstream API, so
+ * per-key model-access policies cannot apply here. This surface is a trusted
+ * local-machine convenience (the user explicitly points their tools at the
+ * proxy); anyone who can reach the proxy could equally call the native
+ * endpoints if they held a key, and inference cost-control for untrusted
+ * remote callers is the proxy operator's job (bind it to loopback). Do NOT
+ * "fix" this by inventing key headers the caller cannot send.
  */
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;

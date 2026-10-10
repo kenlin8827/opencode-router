@@ -501,8 +501,14 @@ export const api = {
     return res.json();
   },
 
-  async getCacheStats(): Promise<CacheStatsResponse> {
-    const res = await fetch('/api/ui/cache-stats');
+  /**
+   * Cache-page aggregate stats. Optional `sinceMs` (inclusive lower bound on
+   * `trace.timestamp`, epoch ms) narrows the totals / per-model / hourly
+   * series to a window; `undefined` requests the legacy 24-hour view.
+   */
+  async getCacheStats(sinceMs?: number): Promise<CacheStatsResponse> {
+    const qs = sinceMs !== undefined ? `?since=${Math.floor(sinceMs)}` : '';
+    const res = await fetch(`/api/ui/cache-stats${qs}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -548,15 +554,16 @@ export const api = {
     return res.json();
   },
 
-  /** All models the gateway can route to: virtual (auto/auto-lite/…) + registered. */
+  /** All models the gateway can route to: virtual (auto/auto-lite/…) + registered.
+   *  Reads the console endpoint — /v1/models requires a key like every surface. */
   async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string }[]> {
-    const res = await fetch('/v1/models');
+    const res = await fetch('/api/ui/gateway-models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    return (json?.data || []).map((m: any) => ({
+    return (json?.models || []).map((m: any) => ({
       id: m.id,
       owned_by: m.owned_by || '',
-      tier: m.metadata?.tier,
+      tier: m.tier || undefined,
     }));
   },
 
@@ -629,6 +636,7 @@ export const api = {
     role?: 'admin' | 'user';
     expiresAt?: string;
     description?: string;
+    modelAccess?: ApiKeyModelAccess;
   }): Promise<{ success: boolean; data?: ApiKeyItem; error?: string }> {
     const res = await fetch('/api/ui/api-keys', {
       method: 'POST',
@@ -640,7 +648,7 @@ export const api = {
 
   async updateApiKey(
     id: string,
-    updates: Partial<ApiKeyItem>
+    updates: Partial<Omit<ApiKeyItem, 'modelAccess'>> & { modelAccess?: ApiKeyModelAccess | null }
   ): Promise<{ success: boolean; data?: ApiKeyItem; error?: string }> {
     const res = await fetch(`/api/ui/api-keys/${id}`, {
       method: 'PUT',
@@ -652,6 +660,20 @@ export const api = {
 
   async deleteApiKey(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await fetch(`/api/ui/api-keys/${id}`, { method: 'DELETE' });
+    return res.json();
+  },
+
+  /** Effective model view for one key — what it can see & use right now. */
+  async getKeyModels(
+    id: string
+  ): Promise<{
+    status: string;
+    mode: 'none' | 'allow' | 'deny';
+    policyModels: string[];
+    models: { id: string; provider: string; tier: string; virtual: boolean; allowed: boolean }[];
+  }> {
+    const res = await fetch(`/api/ui/api-keys/${encodeURIComponent(id)}/models`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
@@ -742,6 +764,11 @@ export const api = {
   },
 };
 
+export interface ApiKeyModelAccess {
+  mode: 'allow' | 'deny';
+  models: string[];
+}
+
 export interface ApiKeyItem {
   id: string;
   name: string;
@@ -751,6 +778,7 @@ export interface ApiKeyItem {
   createdAt: string;
   expiresAt?: string;
   description?: string;
+  modelAccess?: ApiKeyModelAccess;
 }
 
 // ---------------------------------------------------------------------------

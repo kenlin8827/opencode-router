@@ -10,9 +10,7 @@ export interface ComboboxOption {
   meta?: string;
 }
 
-interface ComboboxProps {
-  value: string;
-  onChange: (value: string) => void;
+type ComboboxBaseProps = {
   options: ComboboxOption[];
   placeholder?: string;
   style?: React.CSSProperties;
@@ -29,7 +27,19 @@ interface ComboboxProps {
    * the option count (e.g. Quick Connect key picker).
    */
   forceFilter?: boolean;
-}
+};
+
+/**
+ * Single-select (default): value is one option value, picking closes the panel.
+ * Multi-select (`multiple`): value is the selected array, picking TOGGLES the
+ * option and the panel stays open; the trigger shows the selection count and
+ * `clearable` × empties the whole selection.
+ */
+export type ComboboxProps = ComboboxBaseProps &
+  (
+    | { multiple?: false; value: string; onChange: (value: string) => void }
+    | { multiple: true; value: string[]; onChange: (value: string[]) => void }
+  );
 
 /**
  * Filterable select (ARIA combobox pattern) — the app-wide dropdown: the native
@@ -64,11 +74,13 @@ const optionStyle: React.CSSProperties = {
   fontFamily: "'JetBrains Mono', Consolas, monospace",
 };
 
-export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, placeholder, style, clearable, panelMinWidth, forceFilter }) => {
+export const Combobox: React.FC<ComboboxProps> = (props) => {
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
+  const [selectedOnly, setSelectedOnly] = useState(false);
   const [pos, setPos] = useState<{
     left: number;
     width: number;
@@ -80,19 +92,33 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
   const listRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
 
-  const selected = options.find((o) => o.value === value);
+  // Normalized selected set — single-select wraps its scalar into a 0/1-array.
+  const values: string[] = multiple
+    ? (props.value as string[])
+    : (props.value as string)
+      ? [props.value as string]
+      : [];
+  const activeSingleValue = multiple ? '' : (props.value as string);
+  const selected = multiple ? undefined : options.find((o) => o.value === activeSingleValue);
   const showFilter = forceFilter || options.length > FILTER_THRESHOLD;
 
+  const emitValues = (next: string[]) => {
+    if (multiple) (props as { multiple: true; onChange: (v: string[]) => void }).onChange(next);
+    else (props as { multiple?: false; onChange: (v: string) => void }).onChange(next[0] ?? '');
+  };
+
   const filtered = useMemo(() => {
+    const base = multiple && selectedOnly ? options.filter((o) => values.includes(o.value)) : options;
     const q = query.trim().toLowerCase();
-    if (!q) return options;
-    return options.filter(
+    if (!q) return base;
+    return base.filter(
       (o) =>
         o.label.toLowerCase().includes(q) ||
         o.value.toLowerCase().includes(q) ||
         (o.meta || '').toLowerCase().includes(q)
     );
-  }, [options, query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options, query, multiple, selectedOnly, values]);
 
   const position = useCallback(() => {
     const el = triggerRef.current;
@@ -113,27 +139,39 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
   const openPanel = useCallback(() => {
     position();
     setQuery('');
-    setActive(Math.max(0, options.findIndex((o) => o.value === value)));
+    setSelectedOnly(false);
+    setActive(Math.max(0, options.findIndex((o) => o.value === activeSingleValue)));
     setOpen(true);
-  }, [position, options, value]);
+  }, [position, options, activeSingleValue]);
 
   const close = useCallback((refocus = true) => {
     setOpen(false);
     if (refocus) triggerRef.current?.focus();
   }, []);
 
-  const pick = useCallback(
-    (o: ComboboxOption) => {
-      onChange(o.value);
-      close();
-    },
-    [onChange, close]
-  );
+  const pick = (o: ComboboxOption) => {
+    if (multiple) {
+      // Multi-select: toggle in place, panel STAYS open for batch picking.
+      const next = values.includes(o.value)
+        ? values.filter((v) => v !== o.value)
+        : [...values, o.value];
+      emitValues(next);
+      return;
+    }
+    emitValues([o.value]);
+    close();
+  };
 
   // Focus the filter input when the panel opens.
   useEffect(() => {
     if (open) filterRef.current?.focus();
   }, [open]);
+
+  // Selection emptied while "selected only" is on → snap back to the full list.
+  useEffect(() => {
+    if (values.length === 0) setSelectedOnly(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values.length]);
 
   // Keep the panel anchored to the trigger while it is open.
   useEffect(() => {
@@ -167,10 +205,10 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
 
   const onTriggerKeyDown = (e: React.KeyboardEvent) => {
     // Clear shortcut — trigger-only, so Backspace in the filter input never wipes the selection.
-    if (clearable && value !== '' && (e.key === 'Delete' || e.key === 'Backspace')) {
+    if (clearable && values.length > 0 && (e.key === 'Delete' || e.key === 'Backspace')) {
       e.preventDefault();
       e.stopPropagation();
-      onChange('');
+      emitValues([]);
       return;
     }
     onPanelKeyDown(e);
@@ -225,15 +263,21 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
-            color: selected ? 'var(--text-main)' : 'var(--text-dim)',
+            color: selected || (multiple && values.length > 0) ? 'var(--text-main)' : 'var(--text-dim)',
           }}
         >
-          {selected ? selected.label : (placeholder ?? '')}
+          {selected
+            ? selected.label
+            : multiple
+              ? values.length > 0
+                ? t('combobox.selectedCount', { n: values.length })
+                : (placeholder ?? '')
+              : (placeholder ?? '')}
         </span>
         {selected?.meta && (
           <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
         )}
-        {clearable && value !== '' ? (
+        {clearable && values.length > 0 ? (
           // span (not button): interactive content must not nest inside <button>.
           <span
             role="button"
@@ -242,7 +286,7 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
             title={t('common.clear')}
             onClick={(e) => {
               e.stopPropagation();
-              onChange('');
+              emitValues([]);
             }}
             style={{ flexShrink: 0, display: 'flex', alignItems: 'center', cursor: 'pointer', color: 'var(--text-dim)' }}
           >
@@ -287,6 +331,37 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
               animation: 'ocr-pop-in 0.12s ease',
             }}
           >
+            {multiple && (
+              // Panel header (multi-select only): "selected only" toggle left,
+              // explicit close × right — the panel stays open across toggles,
+              // so give a clear way to finish.
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6, flexShrink: 0 }}>
+                <span>
+                  {values.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedOnly((s) => !s);
+                        setActive(0);
+                      }}
+                      className={`btn btn-sm ${selectedOnly ? 'btn-primary' : ''}`}
+                      style={{ flexShrink: 0, fontSize: 11, padding: '3px 10px' }}
+                    >
+                      {t('combobox.showSelectedOnly')}
+                    </button>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => close()}
+                  aria-label={t('combobox.close')}
+                  title={t('combobox.close')}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: 2 }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             {showFilter && (
               <div style={{ position: 'relative', marginBottom: 6, flexShrink: 0 }}>
                 <Search
@@ -315,7 +390,7 @@ export const Combobox: React.FC<ComboboxProps> = ({ value, onChange, options, pl
             <div ref={listRef} role="listbox" style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
               {filtered.map((o, i) => {
                 const isActive = i === active;
-                const isSelected = o.value === value;
+                const isSelected = values.includes(o.value);
                 return (
                   <div
                     key={o.value || `idx-${i}`}

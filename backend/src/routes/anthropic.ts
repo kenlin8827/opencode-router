@@ -11,6 +11,7 @@ import {
   getClientExchangeContext,
 } from '../observability/http-exchange.js';
 import { EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
+import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access.js';
 
 /**
  * Anthropic Messages API compatibility layer (POST /v1/messages).
@@ -375,12 +376,19 @@ export function registerAnthropicRoutes(
       });
     }
 
+    // Per-key model access gate (403 when the key's policy denies this model)
+    const enforceModelAccess = makeModelAccessGuard(orchestrator.getRegistry());
+    if (!enforceModelAccess(req, reply, request.model?.trim() || 'auto')) {
+      return reply;
+    }
+
     try {
       const result = await orchestrator.process(request, {
         clientIp: req.ip,
         headers: req.headers,
         wire: 'anthropic',
         fastifyRequest: req,
+        modelAccess: getModelAccessPolicy((req as any).authInfo?.keyConfig),
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');

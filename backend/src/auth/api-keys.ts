@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
-import { ApiKeyConfig, RouterConfig } from '../config/types.js';
+import { ApiKeyConfig, ModelAccessConfig, RouterConfig } from '../config/types.js';
 import { loadConfig, saveConfig } from '../config/index.js';
+import { ENTRY_PATTERN } from './model-access.js';
 
 export interface AuthValidationResult {
   valid: boolean;
@@ -82,6 +83,38 @@ export function listApiKeys(mask = false): ApiKeyConfig[] {
 }
 
 /**
+ * Validate an optional client-supplied modelAccess payload. Returns undefined
+ * (unset) for absent/empty input, or an error string for malformed shapes —
+ * an empty allow-list would lock the key out of EVERY model, so it is rejected.
+ */
+export function validateModelAccess(
+  input: unknown
+): { value?: ModelAccessConfig; error?: string } {
+  if (input === undefined || input === null) return {};
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    return { error: 'modelAccess must be an object { mode, models }' };
+  }
+  const { mode, models } = input as { mode?: unknown; models?: unknown };
+  if (mode !== 'allow' && mode !== 'deny') {
+    return { error: 'modelAccess.mode must be "allow" or "deny"' };
+  }
+  if (!Array.isArray(models) || models.some((m) => typeof m !== 'string' || !m.trim())) {
+    return { error: 'modelAccess.models must be a non-empty array of model id strings' };
+  }
+  const unique = Array.from(new Set((models as string[]).map((m) => m.trim())));
+  const badEntry = unique.find((m) => !ENTRY_PATTERN.test(m));
+  if (badEntry) {
+    return {
+      error: `Invalid model entry '${badEntry}': allowed chars are letters, digits, - _ . / : and * (wildcard)`,
+    };
+  }
+  if (mode === 'allow' && unique.length === 0) {
+    return { error: 'modelAccess.models must not be empty in "allow" mode (the key would be locked out of every model)' };
+  }
+  return { value: { mode, models: unique } };
+}
+
+/**
  * Create and persist a new API Key
  */
 export function createApiKey(payload: {
@@ -90,6 +123,7 @@ export function createApiKey(payload: {
   role?: 'admin' | 'user';
   expiresAt?: string;
   description?: string;
+  modelAccess?: ModelAccessConfig;
 }): { success: boolean; data?: ApiKeyConfig; error?: string } {
   const config = loadConfig();
   const keys = [...(config.apiKeys || [])];
@@ -115,6 +149,7 @@ export function createApiKey(payload: {
     createdAt: new Date().toISOString(),
     expiresAt: payload.expiresAt || undefined,
     description: payload.description?.trim() || undefined,
+    modelAccess: payload.modelAccess,
   };
 
   keys.unshift(newKey);
@@ -127,11 +162,15 @@ export function createApiKey(payload: {
 }
 
 /**
- * Update an existing API Key (e.g. toggle enabled, update name/description)
+ * Update an existing API Key (e.g. toggle enabled, update name/description).
+ * `modelAccess` follows PUT semantics: undefined = leave unchanged, null =
+ * clear the policy (back to unrestricted), object = replace.
  */
 export function updateApiKey(
   id: string,
-  updates: Partial<Pick<ApiKeyConfig, 'name' | 'enabled' | 'expiresAt' | 'description' | 'role'>>
+  updates: Partial<Pick<ApiKeyConfig, 'name' | 'enabled' | 'expiresAt' | 'description' | 'role'>> & {
+    modelAccess?: ModelAccessConfig | null;
+  }
 ): { success: boolean; data?: ApiKeyConfig; error?: string } {
   const config = loadConfig();
   const keys = [...(config.apiKeys || [])];
@@ -149,6 +188,7 @@ export function updateApiKey(
     ...(updates.expiresAt !== undefined && { expiresAt: updates.expiresAt }),
     ...(updates.description !== undefined && { description: updates.description.trim() }),
     ...(updates.role !== undefined && { role: updates.role }),
+    ...(updates.modelAccess !== undefined && { modelAccess: updates.modelAccess ?? undefined }),
   };
 
   keys[idx] = updated;

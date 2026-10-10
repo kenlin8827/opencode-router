@@ -10,13 +10,27 @@ import { createServer } from '../src/server.js';
  * design). Reuse the first enabled disk key so the e2e cases run both on
  * machines with a populated config.yaml and in clean CI checkouts.
  */
-const authHeaders = (): Record<string, string> => {
-  const diskKeys = (loadConfig().apiKeys || []).filter(k => k.enabled !== false && k.key);
-  return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
-};
+/**
+ * Fixed test credential — NOT read from disk config.yaml. Real disk keys may
+ * carry per-key model-access policies (a deny list hides auto-ultra etc.),
+ * which would make the full-catalog assertions environment-dependent. A
+ * policy-less key injected into the boot config sees everything, always.
+ */
+const TEST_KEY = 'sk-ocr-server-test-no-policy';
+const authHeaders = (): Record<string, string> => ({ authorization: `Bearer ${TEST_KEY}` });
 
 describe('Fastify Gateway Server & OpenAI Endpoints', () => {
   const config = loadConfig();
+  config.apiKeys = [
+    {
+      id: 'key-server-test',
+      name: 'server.test fixture',
+      key: TEST_KEY,
+      role: 'user',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    },
+  ];
   const { app } = createServer(config, true); // mockMode = true
 
   it('GET /health should return 200 and healthy status', async () => {

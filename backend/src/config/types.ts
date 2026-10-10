@@ -256,6 +256,20 @@ export interface SessionConfig {
   maxSessions?: number; // default: 10000
 }
 
+/**
+ * Per-key model access policy. ABSENT = unrestricted (see & use every model —
+ * the backward-compatible default for existing keys).
+ * - mode 'allow' (whitelist): ONLY the listed model ids are visible/routable.
+ * - mode 'deny'  (blacklist): every model EXCEPT the listed ids.
+ * Ids are registry model ids (physical models). Virtual `auto*` ids and combo
+ * ids are not listed directly — they are enforced at the execution choke point
+ * (executeCandidatePool) against the physical models that would actually serve.
+ */
+export interface ModelAccessConfig {
+  mode: 'allow' | 'deny';
+  models: string[];
+}
+
 export interface ApiKeyConfig {
   id: string; // Unique identifier, e.g. 'key-xxxxxx'
   name: string; // Client / application name, e.g. 'Cursor IDE', 'NextChat'
@@ -265,6 +279,7 @@ export interface ApiKeyConfig {
   createdAt: string;
   expiresAt?: string;
   description?: string;
+  modelAccess?: ModelAccessConfig;
 }
 
 /**

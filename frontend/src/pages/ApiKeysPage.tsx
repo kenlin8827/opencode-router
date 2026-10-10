@@ -10,8 +10,11 @@ import {
   ShieldCheck,
   ShieldAlert,
   Terminal,
+  Pencil,
+  List,
+  Info,
 } from 'lucide-react';
-import { api, type ApiKeyItem } from '../lib/api';
+import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -21,6 +24,169 @@ import { Pagination } from '../components/Pagination';
 
 const KEY_PAGE_SIZE = 20;
 const KEY_PAGE_SIZES = [10, 20, 50, 100, 200];
+
+// Tier → i18n short-label key (rendered as "lite·轻量" in the tier column).
+const TIER_LABEL_KEYS: Record<string, string> = {
+  lite: 'apiKeys.tierLite',
+  plus: 'apiKeys.tierPlus',
+  pro: 'apiKeys.tierPro',
+  ultra: 'apiKeys.tierUltra',
+};
+
+type AccessMode = 'none' | 'allow' | 'deny';
+
+/** Chars permitted in a model-access entry: model ids plus the `*` wildcard.
+ *  Client-side mirror of backend ENTRY_PATTERN (auth/model-access.ts). */
+const ENTRY_PATTERN = /^[A-Za-z0-9._:/\-]+(\*[A-Za-z0-9._:/\-]*)*$/;
+
+/**
+ * Per-key model access editor — segmented mode buttons + multi-model picker.
+ * Exact ids come from the gateway catalog Combobox; arbitrary `*` wildcard
+ * patterns come from the free-text input (both land as removable chips,
+ * pattern chips visually accented). The mode selector is a button group, not
+ * a dropdown — three mutually exclusive choices don't need a popup.
+ */
+const ModelAccessPicker: React.FC<{
+  mode: AccessMode;
+  models: string[];
+  gatewayModels: { id: string; owned_by: string }[];
+  onModeChange: (m: AccessMode) => void;
+  onModelsChange: (models: string[]) => void;
+}> = ({ mode, models, gatewayModels, onModeChange, onModelsChange }) => {
+  const { t } = useI18n();
+  const [patternDraft, setPatternDraft] = useState('');
+  const [patternError, setPatternError] = useState('');
+  const hint =
+    mode === 'none' ? t('apiKeys.accessModeNone') : mode === 'allow' ? t('apiKeys.accessModeAllow') : t('apiKeys.accessModeDeny');
+
+  const addPattern = () => {
+    const entry = patternDraft.trim();
+    if (!entry) return;
+    if (!ENTRY_PATTERN.test(entry)) {
+      setPatternError(t('apiKeys.accessPatternInvalid'));
+      return;
+    }
+    if (models.includes(entry)) {
+      setPatternError(t('apiKeys.accessPatternDuplicate'));
+      return;
+    }
+    setPatternError('');
+    setPatternDraft('');
+    onModelsChange([...models, entry]);
+  };
+
+  return (
+    <div>
+      <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+        {t('apiKeys.accessLabel')}
+      </label>
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+        {(
+          [
+            ['none', t('apiKeys.accessTabNone')],
+            ['allow', t('apiKeys.accessTabAllow')],
+            ['deny', t('apiKeys.accessTabDeny')],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onModeChange(value)}
+            className={`btn btn-sm ${mode === value ? 'btn-primary' : ''}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <p style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '6px 0 0 0' }}>{hint}</p>
+
+      {mode !== 'none' && (
+        <div style={{ marginTop: '8px' }}>
+          <Combobox
+            multiple
+            clearable
+            style={{ cursor: 'pointer' }}
+            value={models}
+            onChange={onModelsChange}
+            options={gatewayModels.map((o) => ({ value: o.id, label: o.id, meta: o.owned_by }))}
+            placeholder={t('apiKeys.accessAddPlaceholder')}
+          />
+          <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+            <input
+              type="text"
+              className="input"
+              value={patternDraft}
+              onChange={(e) => {
+                setPatternDraft(e.target.value);
+                setPatternError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addPattern();
+                }
+              }}
+              placeholder={t('apiKeys.accessPatternPlaceholder')}
+              style={{ flex: 1, fontSize: '12px', fontFamily: "'JetBrains Mono', Consolas, monospace" }}
+            />
+            <button type="button" onClick={addPattern} className="btn btn-sm" disabled={!patternDraft.trim()}>
+              {t('apiKeys.accessPatternAdd')}
+            </button>
+          </div>
+          {patternError && (
+            <p style={{ fontSize: '11px', color: 'var(--accent-rose)', margin: '4px 0 0 0' }}>{patternError}</p>
+          )}
+          {models.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '6px',
+                marginTop: '8px',
+                // Cap the chip wall — dozens of selections scroll inside instead
+                // of stretching the modal.
+                maxHeight: '132px',
+                overflowY: 'auto',
+              }}
+            >
+              {models.map((id) => (
+                <span
+                  key={id}
+                  className="badge"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    background: id.includes('*') ? 'rgba(139, 92, 246, 0.12)' : 'var(--input-bg)',
+                    border: id.includes('*') ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid var(--card-border)',
+                    color: id.includes('*') ? 'var(--accent-violet)' : 'var(--text-main)',
+                    fontFamily: "'JetBrains Mono', Consolas, monospace",
+                    fontSize: '11px',
+                    // Override .badge uppercase: model ids / patterns are
+                    // case-SENSITIVE — displaying them uppercased misleads.
+                    textTransform: 'none',
+                    letterSpacing: 'normal',
+                  }}
+                  title={id.includes('*') ? t('apiKeys.accessPatternBadgeTitle') : undefined}
+                >
+                  {id}
+                  <button
+                    type="button"
+                    onClick={() => onModelsChange(models.filter((m) => m !== id))}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 0, fontSize: '11px' }}
+                    title={t('common.delete')}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const ApiKeysPage: React.FC = () => {
   const { t } = useI18n();
@@ -37,8 +203,83 @@ export const ApiKeysPage: React.FC = () => {
   const [formKey, setFormKey] = useState('');
   const [formRole, setFormRole] = useState<'admin' | 'user'>('user');
   const [formDesc, setFormDesc] = useState('');
+  const [formAccessMode, setFormAccessMode] = useState<AccessMode>('none');
+  const [formAccessModels, setFormAccessModels] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  // Edit key modal state (name / role / description / model access)
+  const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editRole, setEditRole] = useState<'admin' | 'user'>('user');
+  const [editDesc, setEditDesc] = useState('');
+  const [editAccessMode, setEditAccessMode] = useState<AccessMode>('none');
+  const [editAccessModels, setEditAccessModels] = useState<string[]>([]);
+  const [savingAccess, setSavingAccess] = useState(false);
+
+  // View-effective-models modal state + per-model live call test
+  const [viewingKey, setViewingKey] = useState<ApiKeyItem | null>(null);
+  const [viewModels, setViewModels] = useState< Awaited<ReturnType<typeof api.getKeyModels>> | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewFilter, setViewFilter] = useState('');
+  const [testState, setTestState] = useState<Record<string, 'loading' | 'ok' | 'denied' | 'error'>>({});
+  const [testResult, setTestResult] = useState<Record<string, string>>({});
+
+  const openViewModels = async (item: ApiKeyItem) => {
+    setViewingKey(item);
+    setViewModels(null);
+    setViewFilter('');
+    setTestState({});
+    setTestResult({});
+    setViewLoading(true);
+    try {
+      setViewModels(await api.getKeyModels(item.id));
+    } catch (err: any) {
+      toast.error(err.message || t('common.failed'));
+      setViewingKey(null);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  // Fire one minimal real inference call WITH this key — the ground truth of
+  // what the policy does (allowed → 200 + served model; denied → 403).
+  const runModelTest = async (model: string) => {
+    if (!viewingKey) return;
+    setTestState((prev) => ({ ...prev, [model]: 'loading' }));
+    try {
+      const res = await fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${viewingKey.key}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 8 }),
+      });
+      if (res.ok) {
+        const served = res.headers.get('X-OCR-Model') || '';
+        setTestState((prev) => ({ ...prev, [model]: 'ok' }));
+        setTestResult((prev) => ({ ...prev, [model]: `200${served ? ` · ${served}` : ''}` }));
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setTestState((prev) => ({ ...prev, [model]: res.status === 403 ? 'denied' : 'error' }));
+        setTestResult((prev) => ({ ...prev, [model]: body?.error?.message || `HTTP ${res.status}` }));
+      }
+    } catch (err: any) {
+      setTestState((prev) => ({ ...prev, [model]: 'error' }));
+      setTestResult((prev) => ({ ...prev, [model]: err.message || 'network error' }));
+    }
+  };
+
+  // Gateway model catalog — lazy-loaded when a picker first needs it.
+  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string }[]>([]);
+
+  useEffect(() => {
+    const pickerVisible =
+      (showCreateModal && formAccessMode !== 'none') || (!!editingKey && editAccessMode !== 'none');
+    if (!pickerVisible || gatewayModels.length > 0) return;
+    api
+      .listGatewayModels()
+      .then(setGatewayModels)
+      .catch(() => {});
+  }, [showCreateModal, formAccessMode, editingKey, editAccessMode, gatewayModels.length]);
 
   // Newly created key display modal
   const [createdKey, setCreatedKey] = useState<ApiKeyItem | null>(null);
@@ -48,7 +289,7 @@ export const ApiKeysPage: React.FC = () => {
   const [showPicker, setShowPicker] = useState(false);
   const [pickerKeyId, setPickerKeyId] = useState<string | null>(null);
 
-  useBodyScrollLock(showCreateModal || !!createdKey || showPicker);
+  useBodyScrollLock(showCreateModal || !!createdKey || showPicker || !!editingKey || !!viewingKey);
 
   // Active tab for quick connect code examples (dual protocol: OpenAI + Anthropic)
   const [connectTab, setConnectTab] = useState<
@@ -128,15 +369,22 @@ export const ApiKeysPage: React.FC = () => {
       setErrorMessage(t('apiKeys.namePlaceholder'));
       return;
     }
+    if (formAccessMode !== 'none' && formAccessModels.length === 0) {
+      setErrorMessage(t('apiKeys.accessEmptyError'));
+      return;
+    }
 
     try {
       setCreating(true);
       setErrorMessage('');
+      const modelAccess: ApiKeyModelAccess | undefined =
+        formAccessMode === 'none' ? undefined : { mode: formAccessMode, models: formAccessModels };
       const res = await api.createApiKey({
         name: formName.trim(),
         key: formKey.trim() || undefined,
         role: formRole,
         description: formDesc.trim() || undefined,
+        modelAccess,
       });
 
       if (res.success && res.data) {
@@ -146,6 +394,8 @@ export const ApiKeysPage: React.FC = () => {
         setFormKey('');
         setFormDesc('');
         setFormRole('user');
+        setFormAccessMode('none');
+        setFormAccessModels([]);
         fetchKeys();
       } else {
         setErrorMessage(res.error || t('common.saveFailed'));
@@ -154,6 +404,51 @@ export const ApiKeysPage: React.FC = () => {
       setErrorMessage(err.message || t('common.saveFailed'));
     } finally {
       setCreating(false);
+    }
+  };
+
+  const openEditKey = (item: ApiKeyItem) => {
+    setEditingKey(item);
+    setEditName(item.name);
+    setEditRole(item.role ?? 'user');
+    setEditDesc(item.description ?? '');
+    setEditAccessMode(item.modelAccess?.mode ?? 'none');
+    setEditAccessModels(item.modelAccess?.models ?? []);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingKey) return;
+    if (!editName.trim()) {
+      toast.error(t('apiKeys.namePlaceholder'));
+      return;
+    }
+    if (editAccessMode !== 'none' && editAccessModels.length === 0) {
+      toast.error(t('apiKeys.accessEmptyError'));
+      return;
+    }
+
+    try {
+      setSavingAccess(true);
+      const modelAccess: ApiKeyModelAccess | null =
+        editAccessMode === 'none' ? null : { mode: editAccessMode, models: editAccessModels };
+      const res = await api.updateApiKey(editingKey.id, {
+        name: editName.trim(),
+        role: editRole,
+        // empty string clears the description (PUT semantics: '' = set empty)
+        description: editDesc.trim(),
+        modelAccess,
+      });
+      if (res.success && res.data) {
+        setKeys((prev) => prev.map((k) => (k.id === editingKey.id ? res.data! : k)));
+        setEditingKey(null);
+        toast.success(t('apiKeys.accessSaved'));
+      } else {
+        toast.error(res.error || t('common.saveFailed'));
+      }
+    } catch (err: any) {
+      toast.error(err.message || t('common.saveFailed'));
+    } finally {
+      setSavingAccess(false);
     }
   };
 
@@ -320,6 +615,7 @@ export const ApiKeysPage: React.FC = () => {
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thName')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thKey')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thRole')}</th>
+                  <th style={{ padding: '12px 20px' }}>{t('apiKeys.thAccess')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thStatus')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thCreated')}</th>
                   <th style={{ padding: '12px 20px', textAlign: 'right' }}>{t('apiKeys.thActions')}</th>
@@ -413,6 +709,32 @@ export const ApiKeysPage: React.FC = () => {
                         </span>
                       </td>
 
+                      {/* Model Access */}
+                      <td style={{ padding: '14px 20px' }}>
+                        <span
+                          className="badge"
+                          style={{
+                            background: item.modelAccess
+                              ? item.modelAccess.mode === 'allow'
+                                ? 'rgba(16, 185, 129, 0.12)'
+                                : 'rgba(245, 158, 11, 0.12)'
+                              : 'rgba(255, 255, 255, 0.05)',
+                            color: item.modelAccess
+                              ? item.modelAccess.mode === 'allow'
+                                ? 'var(--accent-emerald)'
+                                : 'var(--accent-amber)'
+                              : 'var(--text-muted)',
+                            border: '1px solid var(--card-border)',
+                          }}
+                        >
+                          {!item.modelAccess
+                            ? t('apiKeys.accessAllBadge')
+                            : item.modelAccess.mode === 'allow'
+                              ? t('apiKeys.accessAllowBadge', { n: item.modelAccess.models.length })
+                              : t('apiKeys.accessDenyBadge', { n: item.modelAccess.models.length })}
+                        </span>
+                      </td>
+
                       {/* Status switch */}
                       <td style={{ padding: '14px 20px' }}>
                         <button
@@ -447,7 +769,23 @@ export const ApiKeysPage: React.FC = () => {
                       </td>
 
                       {/* Actions */}
-                      <td style={{ padding: '14px 20px', textAlign: 'right' }}>
+                      <td style={{ padding: '14px 20px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button
+                          onClick={() => openViewModels(item)}
+                          className="btn btn-sm"
+                          style={{ padding: '4px 8px', marginRight: '6px' }}
+                          title={t('apiKeys.viewModelsTooltip')}
+                        >
+                          <List size={13} />
+                        </button>
+                        <button
+                          onClick={() => openEditKey(item)}
+                          className="btn btn-sm"
+                          style={{ padding: '4px 8px', marginRight: '6px' }}
+                          title={t('apiKeys.editTooltip')}
+                        >
+                          <Pencil size={13} />
+                        </button>
                         <button
                           onClick={() => handleDelete(item)}
                           className="btn btn-danger btn-sm"
@@ -865,6 +1203,8 @@ print(message.content[0].text)`
               display: 'flex',
               flexDirection: 'column',
               gap: '16px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -928,6 +1268,14 @@ print(message.content[0].text)`
                 />
               </div>
 
+              <ModelAccessPicker
+                mode={formAccessMode}
+                models={formAccessModels}
+                gatewayModels={gatewayModels}
+                onModeChange={setFormAccessMode}
+                onModelsChange={setFormAccessModels}
+              />
+
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                   {t('apiKeys.descLabel')}
@@ -951,6 +1299,325 @@ print(message.content[0].text)`
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 5a. Modal: View effective models for one key + live call test */}
+      {viewingKey && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('apiKeys.viewModelsTitle')}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setViewingKey(null);
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: '100%',
+              maxWidth: '560px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              padding: '24px',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
+                {t('apiKeys.viewModelsTitle')}
+              </h3>
+              <button
+                onClick={() => setViewingKey(null)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              {viewingKey.name}
+              <span
+                className="badge"
+                style={{
+                  marginLeft: '8px',
+                  background: viewModels
+                    ? viewModels.mode === 'allow'
+                      ? 'rgba(16, 185, 129, 0.12)'
+                      : viewModels.mode === 'deny'
+                        ? 'rgba(245, 158, 11, 0.12)'
+                        : 'rgba(255, 255, 255, 0.05)'
+                    : 'rgba(255, 255, 255, 0.05)',
+                  color: 'var(--text-muted)',
+                  border: '1px solid var(--card-border)',
+                }}
+              >
+                {!viewModels || viewModels.mode === 'none'
+                  ? t('apiKeys.accessAllBadge')
+                  : viewModels.mode === 'allow'
+                    ? t('apiKeys.accessAllowBadge', { n: viewModels.policyModels.length })
+                    : t('apiKeys.accessDenyBadge', { n: viewModels.policyModels.length })}
+              </span>
+              {/* Test-call hint lives on hover only — zero floor space. */}
+              <span title={t('apiKeys.modelsTestHint')} style={{ flexShrink: 0, cursor: 'help', display: 'inline-flex', verticalAlign: '-2px' }}>
+                <Info size={13} color="var(--text-dim)" />
+              </span>
+            </p>
+
+            {viewLoading || !viewModels ? (
+              <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                {t('common.loading')}
+              </div>
+            ) : (
+              (() => {
+                const q = viewFilter.trim().toLowerCase();
+                const matches = (m: { id: string; provider: string; tier: string }) =>
+                  !q ||
+                  m.id.toLowerCase().includes(q) ||
+                  m.provider.toLowerCase().includes(q) ||
+                  (m.tier || '').toLowerCase().includes(q);
+                const allowed = viewModels.models.filter((m) => m.allowed && matches(m));
+                const denied = viewModels.models.filter((m) => !m.allowed && matches(m));
+                // Grid columns: id takes the remaining width; tier & result are
+                // content-sized (auto) so they hug the right-side button cluster —
+                // no fixed-width voids in between.
+                const rowGrid: React.CSSProperties = {
+                  display: 'grid',
+                  gridTemplateColumns: 'minmax(0,1fr) auto auto 44px',
+                  gap: '8px',
+                  alignItems: 'center',
+                  padding: '5px 8px',
+                  borderBottom: '1px solid var(--card-border)',
+                };
+                const renderRow = (m: { id: string; provider: string; tier: string; virtual: boolean }) => {
+                  const st = testState[m.id];
+                  return (
+                    <div key={m.id} style={rowGrid}>
+                      <span
+                        style={{
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          fontFamily: "'JetBrains Mono', Consolas, monospace",
+                          fontSize: '12px',
+                          color: 'var(--text-main)',
+                        }}
+                      >
+                        {m.id}
+                      </span>
+                      <span
+                        title={m.tier ? t('apiKeys.modelsTierTitle', { tier: m.tier }) : undefined}
+                        style={{
+                          fontSize: '10px',
+                          color: 'var(--text-dim)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {m.tier ? `${m.tier}·${t(TIER_LABEL_KEYS[m.tier] ?? '')}` : ''}
+                      </span>
+                      <span
+                        title={testResult[m.id]}
+                        style={{
+                          fontSize: '11px',
+                          maxWidth: '150px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          justifySelf: 'end',
+                        }}
+                      >
+                        {st === 'loading' && <span style={{ color: 'var(--text-dim)' }}>…</span>}
+                        {st === 'ok' && <span style={{ color: 'var(--accent-emerald)' }}>✓ {testResult[m.id]}</span>}
+                        {st === 'denied' && <span style={{ color: 'var(--accent-amber)' }}>✗ {testResult[m.id]}</span>}
+                        {st === 'error' && <span style={{ color: 'var(--accent-rose)' }}>✗ {testResult[m.id]}</span>}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => runModelTest(m.id)}
+                        disabled={st === 'loading'}
+                        className="btn btn-sm"
+                        style={{ padding: '2px 8px', fontSize: '11px', justifySelf: 'end' }}
+                      >
+                        {t('apiKeys.modelsTestBtn')}
+                      </button>
+                    </div>
+                  );
+                };
+                return (
+                  <>
+                    <input
+                      type="text"
+                      className="input"
+                      value={viewFilter}
+                      onChange={(e) => setViewFilter(e.target.value)}
+                      placeholder={t('apiKeys.viewModelsSearchPlaceholder')}
+                      style={{ fontSize: '12px', flexShrink: 0 }}
+                    />
+                    {allowed.length === 0 && denied.length === 0 && (
+                      <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+                        {t('common.noResults')}
+                      </div>
+                    )}
+                    {allowed.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-emerald)', marginBottom: '6px' }}>
+                          {t('apiKeys.modelsAllowedGroup', { n: allowed.length })}
+                        </div>
+                        <div style={{ maxHeight: '240px', overflowY: 'auto' }}>{allowed.map(renderRow)}</div>
+                      </div>
+                    )}
+                    {denied.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', marginBottom: '6px' }}>
+                          {t('apiKeys.modelsDeniedGroup', { n: denied.length })}
+                        </div>
+                        <div style={{ maxHeight: '160px', overflowY: 'auto' }}>{denied.map(renderRow)}</div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button onClick={() => setViewingKey(null)} className="btn btn-primary">
+                {t('apiKeys.doneBtn')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5b. Modal: Edit API Key (name / role / description / model access) */}
+      {editingKey && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('apiKeys.editModalTitle')}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditingKey(null);
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: '100%',
+              maxWidth: '460px',
+              padding: '24px',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
+                {t('apiKeys.editModalTitle')}
+              </h3>
+              <button
+                onClick={() => setEditingKey(null)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div>
+              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+                {t('apiKeys.nameLabel')} <span style={{ color: 'var(--accent-rose)' }}>*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder={t('apiKeys.namePlaceholder')}
+                className="input"
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+                {t('apiKeys.roleLabel')}
+              </label>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {(
+                  [
+                    ['user', t('apiKeys.roleUser')],
+                    ['admin', t('apiKeys.roleAdmin')],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setEditRole(value)}
+                    className={`btn btn-sm ${editRole === value ? 'btn-primary' : ''}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <ModelAccessPicker
+              mode={editAccessMode}
+              models={editAccessModels}
+              gatewayModels={gatewayModels}
+              onModeChange={setEditAccessMode}
+              onModelsChange={setEditAccessModels}
+            />
+
+            <div>
+              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
+                {t('apiKeys.descLabel')}
+              </label>
+              <textarea
+                rows={2}
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                placeholder={t('apiKeys.descPlaceholder')}
+                className="input"
+                style={{ resize: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+              <button onClick={() => setEditingKey(null)} className="btn">
+                {t('apiKeys.cancelBtn')}
+              </button>
+              <button onClick={handleSaveEdit} disabled={savingAccess} className="btn btn-primary">
+                {savingAccess ? t('common.loading') : t('common.confirm')}
+              </button>
+            </div>
           </div>
         </div>
       )}

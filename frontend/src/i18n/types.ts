@@ -1,6 +1,14 @@
 export type Lang = 'zh' | 'en';
 
 export interface TranslationDict {
+  combobox: {
+    /** Multi-select trigger label: number of currently selected options. */
+    selectedCount: string;
+    /** Multi-select panel toggle: show only the selected options. */
+    showSelectedOnly: string;
+    /** Multi-select panel header × button that closes the panel. */
+    close: string;
+  };
   common: {
     loading: string;
     failed: string;
@@ -856,6 +864,7 @@ export interface TranslationDict {
     thName: string;
     thKey: string;
     thRole: string;
+    thAccess: string;
     thStatus: string;
     thCreated: string;
     thActions: string;
@@ -865,6 +874,38 @@ export interface TranslationDict {
     disableTooltip: string;
     deleteConfirm: string;
     deleteTooltip: string;
+    accessLabel: string;
+    accessTabNone: string;
+    accessTabAllow: string;
+    accessTabDeny: string;
+    accessModeNone: string;
+    accessModeAllow: string;
+    accessModeDeny: string;
+    accessAddPlaceholder: string;
+    accessPatternPlaceholder: string;
+    accessPatternAdd: string;
+    accessPatternInvalid: string;
+    accessPatternDuplicate: string;
+    accessPatternBadgeTitle: string;
+    accessAllBadge: string;
+    accessAllowBadge: string;
+    accessDenyBadge: string;
+    editModalTitle: string;
+    editTooltip: string;
+    viewModelsTooltip: string;
+    viewModelsTitle: string;
+    modelsTestHint: string;
+    modelsTestBtn: string;
+    modelsAllowedGroup: string;
+    modelsDeniedGroup: string;
+    viewModelsSearchPlaceholder: string;
+    modelsTierTitle: string;
+    tierLite: string;
+    tierPlus: string;
+    tierPro: string;
+    tierUltra: string;
+    accessEmptyError: string;
+    accessSaved: string;
     emptyTitle: string;
     emptyDesc: string;
     quickConnectTitle: string;

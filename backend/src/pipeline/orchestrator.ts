@@ -19,12 +19,20 @@ import { emitClientRequest, setClientExchangeContext } from '../observability/ht
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
+import { ModelAccessConfig, isModelAllowed } from '../auth/model-access.js';
 
 export interface ProcessContext {
   clientIp?: string;
   headers?: Record<string, string | string[] | undefined>;
   /** Inbound wire that produced this request — recorded as session birth metadata. */
   wire?: 'chat' | 'anthropic' | 'responses';
+  /**
+   * Per-key model access policy (from the validated client API key). When set,
+   * every candidate model entering the execution pool is filtered through it —
+   * this is what keeps `auto` routing, tier escalation and failover from ever
+   * serving a model the key is not allowed to use. Undefined = unrestricted.
+   */
+  modelAccess?: ModelAccessConfig;
   /**
    * Raw Fastify request, used by the capture pipeline to record the inbound
    * request event (method / url / sanitized headers / body) synchronously
@@ -327,6 +335,16 @@ export class PipelineOrchestrator {
     }
     const comboId = comboByName ?? undefined;
 
+    // Defense in depth: an explicitly named model outside the key's model
+    // policy fails loud here (HTTP routes entry-check this too; direct
+    // orchestrator callers might not).
+    if (explicitModel && context?.modelAccess && !isModelAllowed(explicitModel.id, context.modelAccess)) {
+      throw Object.assign(
+        new Error(`API key model policy denies model '${explicitModel.id}'`),
+        { statusCode: 403 }
+      );
+    }
+
     // 1B. Global routing mode (config.routing.mode) — cost/quality force the tier
     // for auto/default requests; explicit client choices always win.
     const modeTier = routingModeForceTier(
@@ -540,6 +558,7 @@ export class PipelineOrchestrator {
           tier: 'lite',
           allowEscalate: tierCrossPolicy === 'allow_escalate',
           attemptCap: maxFailoverCandidates,
+          modelAccess: context?.modelAccess,
         },
         upstreamEventContext
       );
@@ -605,11 +624,18 @@ export class PipelineOrchestrator {
             tier: escalateTier,
             allowEscalate: false,
             attemptCap: maxFailoverCandidates,
+            modelAccess: context?.modelAccess,
           },
           upstreamEventContext
         );
 
         if (!plusResult.success || !plusResult.response) {
+          if (plusResult.policyDenied) {
+            throw Object.assign(
+              new Error(`API key model policy denies every '${escalateTier}' candidate model for fallback`),
+              { statusCode: 403 }
+            );
+          }
           throw plusResult.lastError || new Error(`Plus escalation failed for tier '${escalateTier}'`);
         }
 
@@ -660,6 +686,26 @@ export class PipelineOrchestrator {
         // explicit model, so KV-cache affinity is preserved.
         let pool = this.registry.getCandidateModelsForTier(actualTier, true);
         if (pool.length === 0) pool = this.registry.getCandidateModelsForTier(actualTier, false);
+        // Bare-auto under a model-access policy: the classifier may land in a
+        // tier that holds no admissible model (allow: none whitelisted in that
+        // tier; deny: every model of that tier tier-denied) — widen the pool
+        // to every allowed model across tiers (chosen tier first, then by
+        // tier proximity) instead of failing with a policy 403. "auto"
+        // promises SOME allowed model, not a specific tier.
+        const accessPolicy = context?.modelAccess;
+        const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto' || normalizedRequest.model === 'default';
+        if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
+          const rank: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
+          const widened = this.registry
+            .getAllModels()
+            .filter((m) => isModelAllowed(m.id, accessPolicy, m.tier))
+            .sort(
+              (a, b) =>
+                Math.abs((rank[a.tier] ?? 9) - (rank[actualTier] ?? 9)) - Math.abs((rank[b.tier] ?? 9) - (rank[actualTier] ?? 9)) ||
+                (rank[a.tier] ?? 9) - (rank[b.tier] ?? 9)
+            );
+          if (widened.length > 0) pool = widened;
+        }
         const head = explicitModel ?? preferredModel;
         chain = head ? [head, ...pool.filter(m => m.id !== head.id)] : pool;
         // Auto keeps the configured failover budget; explicit/combo are
@@ -673,11 +719,19 @@ export class PipelineOrchestrator {
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
       const execResult = await this.executeCandidatePool(
         normalizedRequest,
-        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel },
+        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel, modelAccess: context?.modelAccess },
         upstreamEventContext
       );
 
       if (!execResult.success || !execResult.response) {
+        if (execResult.policyDenied) {
+          throw Object.assign(
+            new Error(
+              `API key model policy (${context?.modelAccess?.mode}) admits no candidate model for this request`
+            ),
+            { statusCode: 403 }
+          );
+        }
         throw execResult.lastError || new Error(`Execution failed for tier '${actualTier}'`);
       }
 
@@ -939,6 +993,8 @@ export class PipelineOrchestrator {
       allowEscalate: boolean;
       attemptCap: number;
       label?: string;
+      /** Per-key model access policy — candidates outside it are dropped before the loop. */
+      modelAccess?: ModelAccessConfig;
     },
     upstreamEventContext?: UpstreamEventContext
   ): Promise<{
@@ -951,6 +1007,8 @@ export class PipelineOrchestrator {
     failoverPath: string[];
     inplaceRetries: number;
     lastError?: any;
+    /** True when the key's model policy left zero admissible candidates. */
+    policyDenied?: boolean;
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -962,11 +1020,31 @@ export class PipelineOrchestrator {
     const backoffMs = inplaceConfig?.backoffMs ?? 200;
     const jitterMs = inplaceConfig?.jitterMs ?? 100;
 
-    // 1. Candidate list = resolved chain (+ cross-tier escalation tail when allowed)
-    const candidateList = [...opts.chain];
+    // 1. Candidate list = resolved chain (+ cross-tier escalation tail when allowed),
+    //    filtered through the key's model-access policy. This is the enforcement
+    //    choke point: auto routing, explicit models, combos, schema-assertion
+    //    escalation and failover all execute through this pool, so filtering here
+    //    covers every entry mode — including tier escalation into denied models.
+    let candidateList = [...opts.chain];
     if (allowEscalate) {
       for (const m of this.registry.getCandidateModelsForTier('plus', true)) {
         if (!candidateList.some(c => c.id === m.id)) candidateList.push(m);
+      }
+    }
+    if (opts.modelAccess) {
+      candidateList = candidateList.filter((m) => isModelAllowed(m.id, opts.modelAccess, m.tier));
+      if (candidateList.length === 0) {
+        return {
+          success: false,
+          failoverOccurred: false,
+          failoverAttempts: 0,
+          failoverPath: [],
+          inplaceRetries: 0,
+          lastError: new Error(
+            `API key model policy (${opts.modelAccess.mode}) admits none of the ${opts.label ? ` '${opts.label}'` : ` tier '${tier}'`} candidate models`
+          ),
+          policyDenied: true,
+        };
       }
     }
 

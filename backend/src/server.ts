@@ -1,4 +1,6 @@
 import { registerConsoleRoutes, validateApiKey, SPA_ROUTES } from './routes/console.js';
+import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable, makeModelAccessGuard, tierFromVirtualEntry, ModelAccessConfig } from './auth/model-access.js';
+import { registerRuntimeConfigRef } from './config/index.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
 import { registerResponsesRoutes } from './routes/responses.js';
 import { buildChatStreamChunks } from './utils/chat-sse.js';
@@ -62,6 +64,9 @@ export function createServer(
   });
 
   const registry = customRegistry || new ProviderRegistry(config, mockMode);
+  // Key writes (UI / API) sync this snapshot so the auth preHandler — which
+  // prefers config.apiKeys over a disk re-read — sees edits immediately.
+  registerRuntimeConfigRef(config);
   const tracker = customOrchestrator?.getTracker() || new FinOpsTracker();
   const orchestrator =
     customOrchestrator || new PipelineOrchestrator(config, registry, tracker);
@@ -141,13 +146,30 @@ export function createServer(
   registerResponsesRoutes(app, orchestrator);
 
   // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
-  app.addHook('preHandler', async (req, reply) => {
+  const resolveActiveAuthConfig = () => {
     const diskConfig = loadConfig();
     const activeKeys =
       config.apiKeys !== undefined && config.apiKeys.length > 0
         ? config.apiKeys
         : diskConfig.apiKeys || config.apiKeys || [];
     const adminKey = config.adminApiKey !== undefined ? config.adminApiKey : diskConfig.adminApiKey;
+    return { activeKeys, adminKey };
+  };
+
+  /** /v1/models + /v1/models/:model — the anonymous-tolerant models surface. */
+  const isModelsSurface = (rawUrl: string): boolean =>
+    rawUrl === '/v1/models' || rawUrl.startsWith('/v1/models/');
+
+  /**
+   * Entry-point model-access gate for the inference routes — shared factory
+   * from auth/model-access.ts (also used by the Anthropic and Responses
+   * routes). Returns true when the request may proceed; otherwise a 403 was
+   * sent.
+   */
+  const enforceModelAccess = makeModelAccessGuard(registry);
+
+  app.addHook('preHandler', async (req, reply) => {
+    const { activeKeys, adminKey } = resolveActiveAuthConfig();
 
     const isAuthEnabled = Boolean(adminKey || (activeKeys && activeKeys.length > 0));
     if (!isAuthEnabled) return;
@@ -172,7 +194,10 @@ export function createServer(
       rawUrl.startsWith('/api/console/') ||
       rawUrl === '/health' ||
       rawUrl.startsWith('/v1/health') ||
-      rawUrl === '/v1/models' ||
+      // NOTE: /v1/models is NOT whitelisted — the preHandler enforces its
+      // three-tier auth itself (anonymous → full listing, invalid key → 401,
+      // valid key → policy-filtered view) and the handlers read the policy
+      // off req.authInfo.
       rawUrl === '/v1/sessions' ||
       rawUrl.startsWith('/v1/sessions/') ||
       rawUrl === '/v1/traces' ||
@@ -187,6 +212,10 @@ export function createServer(
     const token = (authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : '') || xApiKeyHeader?.trim() || '';
 
     if (!token) {
+      // Models surface: anonymous catalog browsing stays open from ANY source
+      // (low-sensitivity metadata; the money is behind the inference gateways,
+      // which still require a key). A PRESENTED key must still be valid.
+      if (isModelsSurface(rawUrl)) return;
       return reply.status(401).send({
         error: {
           message: 'Missing API Key. Please provide Authorization: Bearer <key> or x-api-key header.',
@@ -199,6 +228,8 @@ export function createServer(
     const validation = validateApiKey(token, activeConfig);
 
     if (!validation.valid) {
+      // A PRESENTED key must be valid even on the models surface — a wrong
+      // key must never silently widen what the caller sees.
       return reply.status(401).send({
         error: {
           message: validation.error || 'Invalid or disabled API Key',
@@ -263,7 +294,13 @@ export function createServer(
   });
 
   // 2. OpenAI-compatible Models list
-  app.get('/v1/models', async () => {
+  // Optional-auth visibility: with a VALID client key the listing is filtered
+  // through that key's model-access policy; anonymous/invalid tokens keep the
+  // legacy full listing (probe compatibility, keyless deployments).
+  app.get('/v1/models', async (req, reply) => {
+    // Policy comes from the preHandler-attached authInfo (undefined when
+    // anonymous → legacy full listing; 401 for invalid keys already handled).
+    const policy = getModelAccessPolicy((req as any).authInfo?.keyConfig);
     const virtualModels = [
       { id: 'auto', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)' },
       { id: 'auto-lite', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
@@ -310,15 +347,40 @@ export function createServer(
       },
     }));
 
+    let data = [...virtualModels, ...comboModels, ...registered, ...variantModels];
+    if (policy) {
+      // Variant ids inherit their base model's verdict via metadata.parent
+      // (checked first — a base provider could theoretically be named
+      // 'opencode-router'). Virtual auto* ids stay visible only while at least
+      // one registered model is routable under the policy (otherwise they are
+      // dead entries). Combos pass only when EVERY member is allowed —
+      // mirrors the inference entry gate (no silent composition change).
+      const all = registry.getAllModels();
+      const tierAllowed = (t: string) => all.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
+      data = data.filter((m: any) => {
+        if (m.metadata?.parent) return isModelAllowed(m.metadata.parent, policy, m.metadata?.tier);
+        if (registry.isCombo(m.id)) {
+          return registry.resolveCombo(m.id).every((mem) => isModelAllowed(mem.id, policy, mem.tier));
+        }
+        if (m.owned_by === 'opencode-router') {
+          // Virtual auto* rows honor runtime viability: bare `auto` needs an
+          // allowed model in ANY tier, auto-X in tier X — in BOTH modes.
+          return isAutoEntryUsable(m.id, policy, tierAllowed);
+        }
+        return isModelAllowed(m.id, policy, m.metadata?.tier);
+      });
+    }
+
     return {
       object: 'list',
-      data: [...virtualModels, ...comboModels, ...registered, ...variantModels],
+      data,
     };
   });
 
   // 2B. Single model lookup (OpenAI standard)
   app.get('/v1/models/:model', async (req, reply) => {
     const { model } = req.params as { model: string };
+    const policy = getModelAccessPolicy((req as any).authInfo?.keyConfig);
     const all = registry.getAllModels();
     const specific = all.find(m => m.id === model);
     // Variant sibling / `#variant` ids resolve to their base model — the same
@@ -334,6 +396,27 @@ export function createServer(
       return reply.status(404).send({
         error: { message: `Model '${model}' not found`, type: 'invalid_request_error' },
       });
+    }
+
+    // Restricted key: hide denied models behind the same 404 — existence is
+    // not leaked to keys the model is not visible to. Variant ids inherit
+    // their base model's verdict; combos pass only when EVERY member does;
+    // virtual auto* ids honor the same runtime viability as the listing.
+    if (policy) {
+      const isVirtual = model === 'auto' || model.startsWith('auto-');
+      const tierAllowed = (t: string) => all.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
+      const allowed = registry.isCombo(model)
+        ? registry.resolveCombo(model).every((mem) => isModelAllowed(mem.id, policy, mem.tier))
+        : variantRef
+          ? isModelAllowed(variantRef.base.id, policy, variantRef.base.tier)
+          : isVirtual
+            ? isAutoEntryUsable(model, policy, tierAllowed)
+            : isModelAllowed(model, policy, specific?.tier);
+      if (!allowed) {
+        return reply.status(404).send({
+          error: { message: `Model '${model}' not found`, type: 'invalid_request_error' },
+        });
+      }
     }
 
     return {
@@ -476,16 +559,23 @@ export function createServer(
     };
   });
 
-  // 3G. Global Request Trajectory Queries (with optional session_id filter & pagination)
+  // 3G. Global Request Trajectory Queries (with optional session_id filter, time-window & pagination)
   app.get('/v1/traces', async (req) => {
-    const query = req.query as { session_id?: string; limit?: string; offset?: string };
+    const query = req.query as { session_id?: string; limit?: string; offset?: string; since?: string };
     const limit = query.limit ? parseInt(query.limit, 10) : 50;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
+    // `since` is an inclusive lower-bound epoch-ms timestamp. Garbage /
+    // negative / future values are clamped to undefined so the tracker
+    // returns the whole in-memory window instead of an empty list — same
+    // default behavior as before this parameter existed.
+    const sinceRaw = query.since ? Number(query.since) : NaN;
+    const sinceTs = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : undefined;
 
     const result = orchestrator.getTraceTracker().getRecentTraces({
       sessionId: query.session_id,
       limit,
       offset,
+      sinceTs,
     });
 
     return {
@@ -493,6 +583,7 @@ export function createServer(
       total: result.total,
       limit,
       offset,
+      ...(sinceTs !== undefined ? { since: sinceTs } : {}),
       data: result.data,
     };
   });
@@ -530,6 +621,11 @@ export function createServer(
 
     const requestedModel = body.model?.trim() || 'auto';
 
+    // Per-key model access gate (403 when the key's policy denies this model)
+    if (!enforceModelAccess(req, reply, requestedModel)) {
+      return reply;
+    }
+
     // Model name routing resolution:
     // 'auto', 'default' or unconfigured third-party defaults -> full 4-step cascading auto router!
     if (requestedModel === 'auto-lite') {
@@ -557,6 +653,7 @@ export function createServer(
         headers: req.headers,
         wire: 'chat',
         fastifyRequest: req,
+        modelAccess: getModelAccessPolicy((req as any).authInfo?.keyConfig),
       });
 
       const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
