@@ -14,7 +14,7 @@ import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
 import { appendGatewayResponseChunk, emitGatewayResponse, getClientExchangeContext } from './observability/http-exchange.js';
 
-const TIER_RANK: Record<string, number> = { fast: 0, flagship: 1, reasoning: 2 };
+const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
 
 /**
  * Rebuild a console session row from persisted traces alone (seen after a
@@ -28,7 +28,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
   const last = traces[traces.length - 1];
   const maxTier = traces.reduce<ExecutionTrace['routing']['targetTier']>(
     (acc, t) => ((TIER_RANK[t.routing.targetTier] ?? 0) > (TIER_RANK[acc] ?? 0) ? t.routing.targetTier : acc),
-    'fast'
+    'lite'
   );
   return {
     id,
@@ -266,9 +266,10 @@ export function createServer(
   app.get('/v1/models', async () => {
     const virtualModels = [
       { id: 'auto', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)' },
-      { id: 'auto-fast', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Fast & low-cost layer (~$0.2/M)' },
-      { id: 'auto-flagship', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Flagship workhorse layer (~$3-$15/M)' },
-      { id: 'auto-reasoning', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Deep Reasoning specialist layer (~$15-$60/M)' },
+      { id: 'auto-lite', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
+      { id: 'auto-plus', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Plus workhorse layer (~$3-$15/M)' },
+      { id: 'auto-pro', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)' },
+      { id: 'auto-ultra', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Ultra frontier-tier layer (~$60+/M)' },
     ];
 
     const registered = registry.getAllModels().map(m => ({
@@ -303,7 +304,7 @@ export function createServer(
     const { model } = req.params as { model: string };
     const all = registry.getAllModels();
     const found = all.find(m => m.id === model) ||
-      ['auto', 'auto-fast', 'auto-flagship', 'auto-reasoning'].includes(model) ||
+      ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].includes(model) ||
       registry.isCombo(model);
 
     if (!found) {
@@ -500,12 +501,14 @@ export function createServer(
 
     // Model name routing resolution:
     // 'auto', 'default' or unconfigured third-party defaults -> full 4-step cascading auto router!
-    if (requestedModel === 'auto-fast') {
-      body.router_options = { ...body.router_options, force_tier: 'fast' };
-    } else if (requestedModel === 'auto-flagship') {
-      body.router_options = { ...body.router_options, force_tier: 'flagship' };
-    } else if (requestedModel === 'auto-reasoning') {
-      body.router_options = { ...body.router_options, force_tier: 'reasoning' };
+    if (requestedModel === 'auto-lite') {
+      body.router_options = { ...body.router_options, force_tier: 'lite' };
+    } else if (requestedModel === 'auto-plus') {
+      body.router_options = { ...body.router_options, force_tier: 'plus' };
+    } else if (requestedModel === 'auto-pro') {
+      body.router_options = { ...body.router_options, force_tier: 'pro' };
+    } else if (requestedModel === 'auto-ultra') {
+      body.router_options = { ...body.router_options, force_tier: 'ultra' };
     } else if (requestedModel === 'auto' || requestedModel === 'default') {
       // Intentionally standard: let RouterEngine 4-step pipeline handle intelligent tier selection
     } else {
@@ -543,6 +546,15 @@ export function createServer(
       reply.header('X-OCR-Cost-USD', result.costUsd.toFixed(6));
       reply.header('X-OCR-Saved-USD', result.savedCostUsd.toFixed(6));
       reply.header('X-OCR-Latency-MS', result.latencyMs.toString());
+      // Reasoning-effort observability: only set when the client asked for
+      // thinking. Lets the caller verify whether they got the level they
+      // requested or were silently downgraded to a model that can serve
+      // less. Two values: the actual level served + a boolean degraded flag.
+      if (result.requestedEffort && result.requestedEffort !== 'none') {
+        reply.header('X-OCR-Thinking-Requested', result.requestedEffort);
+        reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
+        reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
+      }
 
       // -------------------------------------------------------------
       // SSE Streaming Mode (stream: true)

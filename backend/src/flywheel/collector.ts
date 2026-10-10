@@ -31,8 +31,8 @@ export interface FlywheelRecord {
   };
   label: {
     groundTruthTier: TierLevel;
-    labelSource: 'runtime_fallback' | 'layer2_jev' | 'layer1_confident' | 'layer0_fast';
-    isNegativeSampleForFast: boolean;
+    labelSource: 'runtime_fallback' | 'layer2_jev' | 'layer1_confident' | 'layer0_lite';
+    isNegativeSampleForLite: boolean;
   };
 }
 
@@ -49,7 +49,7 @@ export class FlywheelCollector {
   private datasetPath: string;
   private memoryStats: FlywheelStats = {
     totalSamples: 0,
-    tierDistribution: { fast: 0, flagship: 0, reasoning: 0 },
+    tierDistribution: { lite: 0, plus: 0, pro: 0, ultra: 0 },
     layerDistribution: { layer0: 0, layer1: 0, layer2: 0 },
     fallbackCount: 0,
     negativeSampleCount: 0,
@@ -105,10 +105,10 @@ export class FlywheelCollector {
     }
 
     // Determine Ground Truth label from execution outcomes:
-    // If fallback occurred, fast small model was NOT sufficient -> groundTruth is escalated tier (flagship/reasoning)
+    // If fallback occurred, lite small model was NOT sufficient -> groundTruth is escalated tier (plus/pro)
     let groundTruthTier: TierLevel = params.decision.targetTier;
-    let labelSource: 'runtime_fallback' | 'layer2_jev' | 'layer1_confident' | 'layer0_fast' = 'layer0_fast';
-    const isNegativeSampleForFast = params.fallbackOccurred;
+    let labelSource: 'runtime_fallback' | 'layer2_jev' | 'layer1_confident' | 'layer0_lite' = 'layer0_lite';
+    const isNegativeSampleForLite = params.fallbackOccurred;
 
     if (params.fallbackOccurred) {
       groundTruthTier = params.tierUsed;
@@ -149,7 +149,7 @@ export class FlywheelCollector {
       label: {
         groundTruthTier,
         labelSource,
-        isNegativeSampleForFast,
+        isNegativeSampleForLite,
       },
     };
 

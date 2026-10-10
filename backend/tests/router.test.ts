@@ -8,14 +8,14 @@ describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
     const req: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Anything' }],
-      router_options: { force_tier: 'reasoning' },
+      router_options: { force_tier: 'pro' },
     };
     const decision = RouterEngine.route(req);
-    assert.strictEqual(decision.targetTier, 'reasoning');
+    assert.strictEqual(decision.targetTier, 'pro');
     assert.strictEqual(decision.confidence, 1.0);
   });
 
-  it('should detect structured JSON output protocol and enable schema validation for fast tier with fallback', () => {
+  it('should detect structured JSON output protocol and enable schema validation for lite tier with fallback', () => {
     const req: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Extract contact info and return as JSON.' }],
@@ -24,17 +24,17 @@ describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
 
     const decision = RouterEngine.route(req);
     assert.strictEqual(decision.needsSchemaValidation, true);
-    assert.strictEqual(decision.targetTier, 'fast', 'Should deploy Fast Tier first for structured tasks');
+    assert.strictEqual(decision.targetTier, 'lite', 'Should deploy Lite Tier first for structured tasks');
   });
 
-  it('should default safely to flagship quality when no model is active, never degrading to fast tier', () => {
+  it('should default safely to plus quality when no model is active, never degrading to lite tier', () => {
     // Ultra-short query (P=NP?) without local model loaded
     const req1: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'P=NP?' }],
     };
     const dec1 = RouterEngine.route(req1);
-    assert.strictEqual(dec1.targetTier, 'flagship', 'Must default to Flagship quality baseline, never degraded to Fast!');
+    assert.strictEqual(dec1.targetTier, 'plus', 'Must default to Plus quality baseline, never degraded to Lite!');
 
     // Another short query
     const req2: ChatCompletionRequest = {
@@ -42,6 +42,6 @@ describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
       messages: [{ role: 'user', content: 'Compose a sonnet' }],
     };
     const dec2 = RouterEngine.route(req2);
-    assert.strictEqual(dec2.targetTier, 'flagship', 'Must default to Flagship quality baseline!');
+    assert.strictEqual(dec2.targetTier, 'plus', 'Must default to Plus quality baseline!');
   });
 });

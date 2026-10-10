@@ -25,14 +25,14 @@ By combining **hierarchical 3-layer model-driven routing**, **monotonic session 
 
 ## Features
 
-- **💸 70% ~ 90% Cost Reduction**: Trivial prompts and structured extractions execute instantaneously on fast micro-models; complex engineering queries automatically escalate to flagship models.
+- **💸 70% ~ 90% Cost Reduction**: Trivial prompts and structured extractions execute instantaneously on lite micro-models; complex engineering queries automatically escalate to plus-tier models.
 - **⚡ Keyless Upstream Proxying**: Integrates natively with your local OpenCode v2 daemon, synchronizing 90+ active models, credentials, and token pricing with zero configuration.
-- **🔒 Multi-Turn Monotonic Session Ratchet**: Once a conversation escalates to a flagship model, mid-dialogue downgrades are strictly blocked, preventing cognitive degradation.
+- **🔒 Multi-Turn Monotonic Session Ratchet**: Once a conversation escalates to a plus/pro/ultra model, mid-dialogue downgrades are strictly blocked, preventing cognitive degradation.
 - **🛡️ Industrial-Grade Circuit Breaker & Failover**: Upstream error taxonomy (402 quota exhaustion hard-trip for 12h, 5xx outages exponential backoff up to 5h, 429 adaptive backoff), transparent same-tier candidate failover, and session self-healing.
 - **🚀 Cost-Aware Two-Tier Retry & KV Cache Shield (ADR-0009)**: In-place jittered retry on transient 5xx blips preserves 100% of upstream KV cache and prevents 10x cost explosion; same-tier exhaustion, controlled upward escalation, and strict anti-downgrade.
 - **💾 Upstream KV Cache Protection**: Multi-turn sessions are pinned to the exact physical model instance, preserving 80%~95% of upstream Provider KV Prompt Cache (Anthropic, DeepSeek, OpenAI).
 - **🎯 Zero-Header Prefix-Chain Fingerprinting**: Tracks dialogue turns automatically using SHA-256 Prefix-Chain Hashing without requiring custom client headers.
-- **🛡️ Local Schema Assertion & Silent Fallback**: Lightweight models lead structured tasks; if JSON parsing or schema validation fails, the query silently escalates to a flagship model with error context.
+- **🛡️ Local Schema Assertion & Silent Fallback**: Lightweight models lead structured tasks; if JSON parsing or schema validation fails, the query silently escalates to a plus-tier model with error context.
 - **🔌 100% OpenAI Protocol Compatible**: Drop-in proxy replacement for Cursor, VS Code, Chatbox, NextChat, LobeChat, LangChain, and all standard OpenAI SDKs.
 
 ---
@@ -172,9 +172,10 @@ In addition to exposing all registered upstream physical models, OpenCode Router
 | Model ID | Purpose & Behavior | Cost Profile |
 | :--- | :--- | :--- |
 | **`auto`** <br>*(Recommended Default)* | **Intelligent 4-Step Cascading Router**: Analyzes complexity, schemas, and session ratchets to dispatch the optimal model dynamically. | 70% ~ 90% Savings |
-| **`auto-fast`** | **Forced Low-Cost Tier**: Micro-models optimized for fast information extraction, greetings, and basic translations. | ~$0.10 ~ $0.50 / M Tokens |
-| **`auto-flagship`** | **Forced Flagship Workhorse**: General flagship models for architecture design, refactoring, and code generation. | ~$2.00 ~ $10.00 / M Tokens |
-| **`auto-reasoning`** | **Forced Reasoning Specialist**: Deep thinking models for mathematical proofs and complex algorithms. | ~$5.00 ~ $60.00 / M Tokens |
+| **`auto-lite`** | **Forced Low-Cost Tier**: Micro-models optimized for quick information extraction, greetings, and basic translations. | ~$0.10 ~ $0.50 / M Tokens |
+| **`auto-plus`** | **Forced Plus Workhorse**: General workhorse models for architecture design, refactoring, and code generation. | ~$2.00 ~ $3.00 / M Tokens |
+| **`auto-pro`** | **Forced Pro Reasoning Specialist**: Deep thinking models for mathematical proofs, complex algorithms, and long-horizon agents. | ~$3.00 ~ $8.00 / M Tokens |
+| **`auto-ultra`** | **Forced Ultra Frontier Tier**: Above-frontier models for hour-long autonomous agent tasks and the hardest thinking workloads. | ≥ $8.00 / M Tokens |
 | *Upstream Models* | Direct pass-through to any physical model (e.g., `kimi-k2.7-code`, `deepseek-chat`). | Upstream standard rates |
 | *Custom Combos* | **User-composed virtual models** (`config.combos`): call the combo id as `model` — the gateway picks the leader via the configured strategy (priority / weighted / round_robin) and fails over strictly within the configured members. Each member keeps its own circuit breaker & retry semantics; no session ratchet, no cross-combo escalation. | Sum of member rates |
 
@@ -197,16 +198,16 @@ combos:
 ### 1. Response Diagnostic Headers
 Every API response includes FinOps diagnostic headers:
 * `X-OCR-Trace-ID`: Unique trace identifier for the request turn (e.g. `trace_8df3e29a...`).
-* `X-OCR-Tier`: Target tier utilized (`fast`, `flagship`, `reasoning`).
+* `X-OCR-Tier`: Target tier utilized (`lite`, `plus`, `pro`, `ultra`).
 * `X-OCR-Model`: Specific upstream model ID invoked.
 * `X-OCR-Failover`: Whether upstream failover was triggered (`true` / `false`).
 * `X-OCR-Failover-Attempts`: Number of model attempts before success (e.g. `2`).
-* `X-OCR-Failover-Path`: Traversal path taken during failover (e.g. `primary-flagship -> secondary-flagship`).
+* `X-OCR-Failover-Path`: Traversal path taken during failover (e.g. `primary-plus -> secondary-plus`).
 * `X-OCR-Breaker-State`: Circuit breaker state of the executing model (`CLOSED`, `HALF_OPEN`).
 * `X-OCR-Session-ID`: Session fingerprint hash (`sess_8df3e29a...`).
 * `X-OCR-Session-Ratchet`: Whether the monotonic ratchet locked the tier (`true` / `false`).
 * `X-OCR-Cost-USD`: Incurred cost for this request.
-* `X-OCR-Saved-USD`: Cost saved relative to the flagship baseline.
+* `X-OCR-Saved-USD`: Cost saved relative to the plus-tier baseline.
 * `X-OCR-Latency-MS`: End-to-end gateway execution latency.
 
 ### 2. Session State & Turn Management
@@ -258,9 +259,9 @@ curl http://127.0.0.1:3000/v1/metrics
   "cacheHitRatePct": 32.8,
   "fallbackCount": 18,
   "tierDistribution": {
-    "fast": { "count": 960, "pct": 75.0 },
-    "flagship": { "count": 270, "pct": 21.09 },
-    "reasoning": { "count": 50, "pct": 3.91 }
+    "lite": { "count": 960, "pct": 75.0 },
+    "plus": { "count": 270, "pct": 21.09 },
+    "pro": { "count": 50, "pct": 3.91 }
   },
   "economics": {
     "actualCostUsd": 0.512,
@@ -292,10 +293,10 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 **No**. OpenCode Router (OCR) connects directly to your local OpenCode v2 daemon. All credentials, active providers, and pricing tables configured in OpenCode are automatically synchronized and utilized.
 
 ### Q2: Why won't conversations become "dumber" mid-dialogue?
-Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3") to cheap micro-models based on short character length, causing severe hallucinations over 10k+ token histories. OpenCode Router (OCR) enforces a **Monotonic Session Ratchet**: once a dialogue reaches flagship tiers, it locks strictly to that tier and pins to the exact same model instance, safeguarding intellect and preserving upstream KV Cache.
+Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3") to cheap micro-models based on short character length, causing severe hallucinations over 10k+ token histories. OpenCode Router (OCR) enforces a **Monotonic Session Ratchet**: once a dialogue reaches higher tiers (plus/pro/ultra), it locks strictly to that tier and pins to the exact same model instance, safeguarding intellect and preserving upstream KV Cache.
 
 ### Q3: Does the initial untrained micro-model misclassify requests?
-**Never**. The zero-weight base model scaffold ($W=\mathbf{0}, b=\mathbf{0}$) produces a uniform Softmax probability of $\approx 0.334$, strictly below the $0.85$ confidence threshold. This guarantees 100% deterministic cascade to Layer 2 until training samples accumulate.
+**Never**. The zero-weight base model scaffold ($W=\mathbf{0}, b=\mathbf{0}$) produces a uniform Softmax probability of $0.25$ across the 4 tiers, strictly below the $0.85$ confidence threshold. This guarantees 100% deterministic cascade to Layer 2 until training samples accumulate.
 
 ### Q4: How does the router handle upstream outages or quota exhaustion?
 **OpenCode Router (OCR) provides enterprise-grade resilience & failover (ADR-0008)**:
@@ -306,8 +307,8 @@ Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3
 
 ### Q5: Does model switching cause KV prompt cache invalidation and 10x cost explosion?
 **Never**. OpenCode Router (OCR) implements a **Cost-Aware Two-Tier Retry Engine (ADR-0009)**:
-- **Tier 1: In-Place Retry**: Transient 5xx / timeout glitches trigger a fast (200ms + 100ms jitter) retry on the *same model*, resolving ~70% of cloud gateway blips while **saving 100% of the warmed KV prompt cache** (preserving the 90% discount on 50k+ tokens).
-- **Tier 2: Failover & Anti-Downgrade**: If in-place retry is exhausted, the router fails over across same-tier models. If all fast models fail, it permits controlled upward escalation to flagship models; **downward downgrades from flagship to fast are strictly prohibited** to prevent hallucinations from polluting production code.
+- **Tier 1: In-Place Retry**: Transient 5xx / timeout glitches trigger a quick (200ms + 100ms jitter) retry on the *same model*, resolving ~70% of cloud gateway blips while **saving 100% of the warmed KV prompt cache** (preserving the 90% discount on 50k+ tokens).
+- **Tier 2: Failover & Anti-Downgrade**: If in-place retry is exhausted, the router fails over across same-tier models. If all lite models fail, it permits controlled upward escalation to plus/pro/ultra; **downward downgrades from higher tiers to lite are strictly prohibited** to prevent hallucinations from polluting production code.
 
 ---
 

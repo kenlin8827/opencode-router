@@ -4,7 +4,7 @@ import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
 import { ModelRegistration, ProviderConfig, RouterConfig, TiersConfig, ComboConfig, ComboModelRef } from '../config/types.js';
-import { PoolMembership, TierLevel } from '../types/router.js';
+import { PoolMembership, ReasoningEffort, TierLevel, REASONING_EFFORT_RANK, downgradeReasoning } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { CircuitBreakerManager, UpstreamError } from '../resilience/index.js';
 import { globMatch, globMatchAny } from '../utils/glob.js';
@@ -55,32 +55,41 @@ export class ProviderRegistry {
     // In mock testing mode, if no models provided, populate mock tier models
     if (this.mockMode && this.models.size === 0) {
       const mockT1: ModelRegistration = {
-        id: 'mock-fast',
+        id: 'mock-lite',
         provider: 'mock',
-        upstreamModel: 'mock-fast',
-        tier: 'fast',
+        upstreamModel: 'mock-lite',
+        tier: 'lite',
         isDefaultInTier: true,
         pricing: { input: 0.2, cacheRead: 0.05, output: 0.8 },
       };
       const mockT2: ModelRegistration = {
-        id: 'mock-flagship',
+        id: 'mock-plus',
         provider: 'mock',
-        upstreamModel: 'mock-flagship',
-        tier: 'flagship',
+        upstreamModel: 'mock-plus',
+        tier: 'plus',
         isDefaultInTier: true,
         pricing: { input: 3.0, cacheRead: 0.75, output: 12.0 },
       };
       const mockT3: ModelRegistration = {
-        id: 'mock-reasoning',
+        id: 'mock-pro',
         provider: 'mock',
-        upstreamModel: 'mock-reasoning',
-        tier: 'reasoning',
+        upstreamModel: 'mock-pro',
+        tier: 'pro',
         isDefaultInTier: true,
         pricing: { input: 15.0, cacheRead: 3.75, output: 60.0 },
+      };
+      const mockT4: ModelRegistration = {
+        id: 'mock-ultra',
+        provider: 'mock',
+        upstreamModel: 'mock-ultra',
+        tier: 'ultra',
+        isDefaultInTier: true,
+        pricing: { input: 30.0, cacheRead: 7.5, output: 120.0 },
       };
       this.registerModel(mockT1, true);
       this.registerModel(mockT2, true);
       this.registerModel(mockT3, true);
+      this.registerModel(mockT4, true);
     }
   }
 
@@ -249,7 +258,7 @@ export class ProviderRegistry {
     if (!m.tierMatch) return undefined;
     const mid = m.id.startsWith(m.provider + '/') ? m.id.slice(m.provider.length + 1) : m.id;
     const ov = store[`${m.provider}||${mid}`];
-    const explicit = ov?.tier === 'fast' || ov?.tier === 'flagship' || ov?.tier === 'reasoning' ? ov.tier : undefined;
+    const explicit = ov?.tier === 'lite' || ov?.tier === 'plus' || ov?.tier === 'pro' || ov?.tier === 'ultra' ? ov.tier : undefined;
     return (
       explicit ??
       m.configTier ??
@@ -288,7 +297,7 @@ export class ProviderRegistry {
       }
     }
     const live = Array.from(this.models.values());
-    for (const tier of ['fast', 'flagship', 'reasoning'] as TierLevel[]) {
+    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as TierLevel[]) {
       const cur = this.tierDefaults.get(tier);
       if (cur && (cur.tier !== tier || cur.unclassified)) {
         const rep =
@@ -321,6 +330,112 @@ export class ProviderRegistry {
     return list;
   }
 
+  /**
+   * Pick a model that can serve `requested` effort. Returns the highest-effort
+   * model that still satisfies the request (never upgrades above the requested
+   * level — that's dishonest). If no candidate in the tier supports any
+   * effort, expands the search across all healthy tiers so a model that
+   * happens to live in the wrong tier pool (typical when a thinking-capable
+   * model was categorized as `plus` but the client requested `high` from the
+   * `pro` pool) can still serve.
+   *
+   * Returns `{ model, actualEffort, degraded }`:
+   *   - `model`         the chosen ModelRegistration
+   *   - `actualEffort`  the highest effort ≤ requested that `model` supports;
+   *                      `none` when the model can't do explicit thinking
+   *   - `degraded`      true if `actualEffort` rank < `requested` rank
+   *
+   * Returns `null` when:
+   *   - the requested effort is `none` AND the tier is fully empty, or
+   *   - no candidate in the tier OR cross-tier fallback can serve ANY
+   *     explicit effort ≤ requested. Per the honesty contract, an over-spec
+   *     pool (one whose supported set sits above the requested level) is
+   *     NOT a valid match — we'd rather let the orchestrator pick a
+   *     different route than silently drop to `none`.
+   */
+  public pickModelForEffort(
+    tier: TierLevel,
+    requested: ReasoningEffort,
+    healthyOnly = true,
+  ): { model: ModelRegistration; actualEffort: ReasoningEffort; degraded: boolean } | null {
+    if (requested === 'none') {
+      // No thinking-effort requested — any model works, no matching needed.
+      const m = this.getModelForTier(tier, healthyOnly);
+      if (m) return { model: m, actualEffort: 'none', degraded: false };
+      return null;
+    }
+
+    const reqRank = REASONING_EFFORT_RANK[requested];
+
+    // Pass 1: pick from the requested tier. Prefer models whose supported
+    // set actually contains the requested effort (perfect match). Fall back
+    // to the closest downgrade within the tier. Sort by how close the
+    // match is to the requested effort (best-first) so the better-equipped
+    // candidate wins; ties broken by the tier's existing sort order.
+    const tierCandidates = this.getCandidateModelsForTier(tier, healthyOnly);
+    const tierPick = this.bestEffortMatch(tierCandidates, requested, reqRank);
+    if (tierPick) return tierPick;
+
+    // Pass 2: cross-tier fallback — search all tiers in tier-rank order
+    // (highest first) for any healthy thinking-capable model. Per design
+    // decision 2026-10: cross-tier mixing is allowed; the actual model is
+    // still reported in the response so the caller sees the truth.
+    const tierOrder: TierLevel[] = ['ultra', 'pro', 'plus', 'lite'];
+    for (const t of tierOrder) {
+      if (t === tier) continue;
+      const pool = this.getCandidateModelsForTier(t, healthyOnly);
+      const pick = this.bestEffortMatch(pool, requested, reqRank);
+      if (pick) return pick;
+    }
+    return null;
+  }
+
+  private bestEffortMatch(
+    pool: ModelRegistration[],
+    requested: ReasoningEffort,
+    reqRank: number
+  ): { model: ModelRegistration; actualEffort: ReasoningEffort; degraded: boolean } | null {
+    // Find the best candidate that can serve SOME explicit effort (low /
+    // medium / high / xhigh). When the request is for 'none', we don't call
+    // this at all — caller short-circuits.
+    //
+    // We deliberately NEVER pick a model whose only viable effort is 'none'
+    // (i.e. `downgradeReasoning` returns 'none'): a client who asked for
+    // `medium` thinking deserves an honest response — either we serve
+    // `medium`/`low` (gap > 0) or we return null and the orchestrator
+    // picks another route. Silently dropping to 'none' on a "please think
+    // hard" request is exactly the dishonesty the honest-match contract
+    // forbids.
+    let best: { model: ModelRegistration; actualEffort: ReasoningEffort; gap: number } | null = null;
+    for (const m of pool) {
+      const supported = this.normalizeEfforts(m);
+      if (!supported) continue;
+      const actual = downgradeReasoning(requested, supported);
+      if (actual === 'none') continue;
+      const gap = reqRank - REASONING_EFFORT_RANK[actual];
+      if (best === null || gap < best.gap) {
+        best = { model: m, actualEffort: actual, gap };
+      }
+    }
+    if (!best) return null;
+    return { model: best.model, actualEffort: best.actualEffort, degraded: best.gap > 0 };
+  }
+
+  /**
+   * Resolve a model's `supportedReasoningEfforts` from the new field, falling
+   * back to the legacy boolean (`true` ⇒ all 4 non-default levels), then to
+   * undefined when nothing is declared.
+   */
+  private normalizeEfforts(m: ModelRegistration): ReasoningEffort[] | undefined {
+    if (m.supportedReasoningEfforts && m.supportedReasoningEfforts.length > 0) {
+      return m.supportedReasoningEfforts;
+    }
+    if (m.supportsReasoningEffort === true) {
+      return ['low', 'medium', 'high', 'xhigh'];
+    }
+    return undefined;
+  }
+
   public getModelForTier(tier: TierLevel, healthyOnly = true): ModelRegistration {
     const candidates = this.getCandidateModelsForTier(tier, healthyOnly);
     if (candidates.length > 0) {
@@ -337,8 +452,8 @@ export class ProviderRegistry {
     // is no residual catch-all). Degradation is still possible — routing must
     // not hard-fail on a config the user can legitimately write — but it is
     // NEVER silent: the cross-tier step is logged with the reason.
-    const escalate = (this.tierPolicies ? loadConfig().fallback?.escalateTier : undefined) ?? 'flagship';
-    const order: TierLevel[] = [escalate, 'flagship', 'fast', 'reasoning'];
+    const escalate = (this.tierPolicies ? loadConfig().fallback?.escalateTier : undefined) ?? 'plus';
+    const order: TierLevel[] = [escalate, 'plus', 'lite', 'pro', 'ultra'];
     const chain = order.filter((t, i, all) => t !== tier && all.indexOf(t) === i);
     for (const step of chain) {
       const rep = this.tierDefaults.get(step);
@@ -362,7 +477,7 @@ export class ProviderRegistry {
   // ─── Custom model combos ────────────────────────────────────────────────
 
   /** Virtual model ids that routing already owns — a combo must never shadow them. */
-  private static readonly RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
+  private static readonly RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
 
   /** (Re)register combo definitions — used at boot and for hot-apply on console config saves. */
   public applyCombos(combos?: ComboConfig[]): void {
@@ -573,8 +688,8 @@ export class ProviderRegistry {
     let content = 'This is a standard mock response from ' + model.id;
 
     if (isJsonRequested) {
-      // Simulate fast tier occasionally returning slightly malformed JSON or valid JSON
-      if (model.tier === 'fast' && (request as any).__simulate_malformed__) {
+      // Simulate lite tier occasionally returning slightly malformed JSON or valid JSON
+      if (model.tier === 'lite' && (request as any).__simulate_malformed__) {
         content = '{ "name": "sample", "invalid_json_trailing": ';
       } else {
         content = JSON.stringify({

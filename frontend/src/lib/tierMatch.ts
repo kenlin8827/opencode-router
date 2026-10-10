@@ -4,23 +4,23 @@
  * live config is fetched from /api/ui/tier-pools (`match`) whenever possible;
  * DEFAULT_TIER_MATCH is only the offline/fallback copy of the built-in baseline.
  *
- * ADR-0012: there is NO residual tier any more. All three tiers are configured
+ * ADR-0012: there is NO residual tier any more. All four tiers are configured
  * identically (patterns / price band / exclude), and a model that matches no
  * positive condition is `'unclassified'` — it joins no candidate pool instead of
- * silently landing in flagship.
+ * silently landing in a default tier.
  *
  * Chain for one model (first hit wins):
- *   name patterns (fast → reasoning → flagship)
+ *   name patterns (lite → pro → plus → ultra)
  *   > price bands (closed bands by ascending floor, then open-ended ones)
- *   > reasoning flag
+ *   > thinking-effort flag (claims Pro)
  *   > unclassified
  * `excludeTiers` (model-side) and each tier's `exclude` gate the automatic
  * claims; explicit pins short-circuit this function in the registry.
  */
 
-export type Tier = 'fast' | 'flagship' | 'reasoning';
+export type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
 
-/** Pool membership: the three tiers, or nothing claimed the model at all. */
+/** Pool membership: the four tiers, or nothing claimed the model at all. */
 export type Membership = Tier | 'unclassified';
 
 export interface TierMatchCfg {
@@ -33,12 +33,18 @@ export interface TierMatchCfg {
 
 export type ResolvedTierMatch = Record<Tier, TierMatchCfg>;
 
-export const PATTERN_ORDER: Tier[] = ['fast', 'reasoning', 'flagship'];
+export const PATTERN_ORDER: Tier[] = ['lite', 'pro', 'plus', 'ultra'];
 
+// Built-in baseline — mirrored from backend providers/tier-match.ts. Fully
+// PRICE-DRIVEN: NO tier presets name patterns (vendor tier words mean very
+// different prices across vendors). Classification is the price band over the
+// raw catalog $/M input price; the catalog thinking-effort flag → pro; nothing
+// matches → 'unclassified'. Name patterns stay user-configurable per tier.
 export const DEFAULT_TIER_MATCH: ResolvedTierMatch = {
-  fast: { patterns: ['*flash*', '*lite*', '*speed*', '*turbo*', '*mini*', '*fast*', '*haiku*'], maxInputPerM: 0.8 },
-  flagship: { minInputPerM: 0.8, maxInputPerM: 5 },
-  reasoning: { minInputPerM: 5 },
+  lite: { maxInputPerM: 0.8 },
+  plus: { minInputPerM: 0.8, maxInputPerM: 3 },
+  pro: { minInputPerM: 3, maxInputPerM: 8 },
+  ultra: { minInputPerM: 8 },
 };
 
 /** Mirror of backend utils/glob.ts: `*` any run, `?` single char, no-wildcard = substring. */
@@ -85,7 +91,7 @@ export function matchesTierConditions(
   const mid = modelId.toLowerCase();
   if (globMatchAny(match[tier].patterns, mid)) return true;
   if (bandHit(match[tier], inputPerM)) return true;
-  if (tier === 'reasoning' && reasoningFlag) return true;
+  if (tier === 'pro' && reasoningFlag) return true;
   return false;
 }
 
@@ -106,6 +112,6 @@ export function classifyTierDetailed(
     !anchorVetoed(tier);
   for (const tier of PATTERN_ORDER) if (claim(tier, globMatchAny(match[tier].patterns, mid))) return { tier, reason: 'name' };
   for (const tier of bandOrder(match)) if (claim(tier, bandHit(match[tier], inputPerM))) return { tier, reason: 'cost' };
-  if (claim('reasoning', reasoningFlag)) return { tier: 'reasoning', reason: 'flag' };
+  if (claim('pro', reasoningFlag)) return { tier: 'pro', reason: 'flag' };
   return { tier: 'unclassified', reason: 'unclassified' };
 }

@@ -5,6 +5,7 @@ import { ModelRegistration } from '../config/types.js';
 import { PoolMembership, TierLevel } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from '../providers/tier-match.js';
+import { readOverridesStore } from './catalog/overrides-store.js';
 
 export interface OpenCodeServiceConfig {
   baseUrl: string;
@@ -94,7 +95,7 @@ export class OpenCodeConnector {
   }
 
   /**
-   * Automatically categorize OpenCode models into FinOps fast, flagship, and reasoning tiers
+   * Automatically categorize OpenCode models into FinOps lite, plus, pro, and ultra tiers
    * completely dynamically based on pricing and capabilities (Zero Hardcoding!)
    */
   public async syncToTierModels(): Promise<ModelRegistration[]> {
@@ -109,10 +110,23 @@ export class OpenCodeConnector {
 
       const modelId = `${m.providerID}/${m.id}`;
 
-      // 1. Detect reasoning capability dynamically from variants and metadata
+      // 1. Detect thinking-effort capability dynamically from variants and metadata
       const isReasoning =
         m.capabilities?.reasoning === true ||
         m.variants?.some((v: any) => v.settings?.thinking || v.settings?.effort);
+      // 1b. Per-level effort override: if an operator has stored a finer
+      // truth in the overrides store, use that. Absent = catalog default
+      // (all 4 non-default levels, when the model is thinking-capable).
+      // Narrow the untyped JSON values to the typed vocabulary; silently drop
+      // anything that doesn't match a known level (catastrophic input
+      // hygiene, but the catalog store is operator-controlled).
+      const rawOverride = readOverridesStore()?.models[`${m.providerID}||${m.id}`]?.reasoningEfforts;
+      const allowedEfforts = new Set(['none', 'low', 'medium', 'high', 'xhigh']);
+      const effortOverride = Array.isArray(rawOverride)
+        ? (rawOverride.filter((v) => typeof v === 'string' && allowedEfforts.has(v)) as
+          | Array<'none' | 'low' | 'medium' | 'high' | 'xhigh'>
+          | undefined)
+        : undefined;
 
       // 2. Extract pricing (OpenCode cost array is per 1M tokens)
       const inputCost = m.cost?.[0]?.input ?? (isReasoning ? 10.0 : 2.0);
@@ -120,14 +134,14 @@ export class OpenCodeConnector {
       const cachedCost = m.cost?.[0]?.cache?.read ?? inputCost * 0.25;
 
       // 3. Tiering via the shared classifyTier (patterns > price band >
-      // reasoning flag) — missing price skips bands, and since ADR-0012 nothing
-      // claims the model → it stays UNCLASSIFIED (no residual flagship).
+      // thinking-effort flag) — missing price skips bands, and since ADR-0012 nothing
+      // claims the model → it stays UNCLASSIFIED (no residual tier).
       const membership: PoolMembership = classifyTier(
         { modelId: m.id, inputPerM: m.cost?.[0]?.input, reasoningFlag: isReasoning },
         tierMatch,
       );
       const unclassified = membership === 'unclassified';
-      const tier: TierLevel = unclassified ? 'flagship' : membership;
+      const tier: TierLevel = unclassified ? 'plus' : membership;
 
       registered.push({
         id: modelId,
@@ -135,7 +149,16 @@ export class OpenCodeConnector {
         upstreamModel: m.modelID || m.id,
         tier,
         isDefaultInTier: false, // will be dynamically assigned below
-        supportsReasoningEffort: isReasoning,
+        // Per-level effort support: catalog sources today only declare a
+        // boolean "thinking-effort" capability, so we treat any thinking-capable
+        // model as supporting all 4 non-default levels by default. Operators
+        // who need finer truth (e.g. "gpt-5.1 has no xhigh") override via
+        // the catalog overrides-store `reasoningEfforts` field, read in
+        // step 1b above and applied here.
+        supportedReasoningEfforts: isReasoning
+          ? effortOverride ?? (['low', 'medium', 'high', 'xhigh'] as const)
+          : undefined,
+        supportsReasoningEffort: isReasoning || undefined,
         supportsPromptCaching: true,
         tierMatch: { rawInputPerM: m.cost?.[0]?.input, reasoningFlag: isReasoning },
         ...(unclassified ? { unclassified: true } : {}),
@@ -158,26 +181,32 @@ export class OpenCodeConnector {
     const externalPlans = registered.filter(m => m.provider !== 'opencode' && claimable(m));
     const pool = externalPlans.length > 0 ? externalPlans : registered.filter(claimable);
 
-    // Fast Tier Default: lowest input cost model in fast tier
-    const tFast = pool.filter(m => m.tier === 'fast').sort((a, b) => a.pricing.input - b.pricing.input);
-    if (tFast.length > 0) {
-      tFast[0].isDefaultInTier = true;
+    // Lite Tier Default: lowest input cost model in lite tier
+    const tLite = pool.filter(m => m.tier === 'lite').sort((a, b) => a.pricing.input - b.pricing.input);
+    if (tLite.length > 0) {
+      tLite[0].isDefaultInTier = true;
     }
 
-    // Flagship Tier Default: flagship model from pool
-    let tFlagship = pool.filter(m => m.tier === 'flagship').sort((a, b) => a.pricing.input - b.pricing.input);
-    if (tFlagship.length === 0) {
-      tFlagship = pool.filter(m => m.tier !== 'reasoning');
+    // Plus Tier Default: plus model from pool (fallback: any non-pro/non-ultra)
+    let tPlus = pool.filter(m => m.tier === 'plus').sort((a, b) => a.pricing.input - b.pricing.input);
+    if (tPlus.length === 0) {
+      tPlus = pool.filter(m => m.tier !== 'pro' && m.tier !== 'ultra');
     }
-    if (tFlagship.length > 0) {
-      tFlagship[Math.floor(tFlagship.length / 2)].isDefaultInTier = true;
+    if (tPlus.length > 0) {
+      tPlus[Math.floor(tPlus.length / 2)].isDefaultInTier = true;
     }
 
-    // Reasoning Tier Default: top reasoning capability model
-    const tReasoning = pool.filter(m => m.tier === 'reasoning');
-    if (tReasoning.length > 0) {
-      const topReasoning = tReasoning.find(m => m.supportsReasoningEffort) || tReasoning[0];
-      topReasoning.isDefaultInTier = true;
+    // Pro Tier Default: top thinking-effort capability model
+    const tPro = pool.filter(m => m.tier === 'pro');
+    if (tPro.length > 0) {
+      const topPro = tPro.find(m => m.supportsReasoningEffort) || tPro[0];
+      topPro.isDefaultInTier = true;
+    }
+
+    // Ultra Tier Default: top-priced model in ultra tier (frontier)
+    const tUltra = pool.filter(m => m.tier === 'ultra').sort((a, b) => b.pricing.input - a.pricing.input);
+    if (tUltra.length > 0) {
+      tUltra[0].isDefaultInTier = true;
     }
 
     return registered;

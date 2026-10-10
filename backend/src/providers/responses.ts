@@ -94,7 +94,15 @@ export function buildResponsesPayload(request: ChatCompletionRequest, model: Mod
   if (request.temperature != null) payload.temperature = request.temperature;
   if (request.top_p != null) payload.top_p = request.top_p;
   if (request.tools?.length) payload.tools = request.tools;
-  if (request.reasoning_effort) payload.reasoning = { effort: request.reasoning_effort };
+  if (request.reasoning_effort || request.max_thinking_tokens != null) {
+    const reasoning: Record<string, any> = {};
+    // OpenAI Responses accepts the full 5-level vocabulary (none/low/medium/
+    // high/xhigh). Pass through verbatim — upstream rejects unsupported values
+    // with a clear 400. Explicit max_thinking_tokens wins over the ladder.
+    if (request.reasoning_effort) reasoning.effort = request.reasoning_effort;
+    if (request.max_thinking_tokens != null) reasoning.max_tokens = request.max_thinking_tokens;
+    payload.reasoning = reasoning;
+  }
   return payload;
 }
 
@@ -120,6 +128,9 @@ export function responsesToChatCompletion(data: any, model: ModelRegistration): 
     }
   }
   const cached = data.usage?.input_tokens_details?.cached_tokens || 0;
+  // OpenAI Responses surfaces thinking tokens as `usage.output_tokens_details.reasoning_tokens`;
+  // mirror them into the chat-completions shape so downstream cost math + clients see them.
+  const reasoningTokens = data.usage?.output_tokens_details?.reasoning_tokens || 0;
 
   return {
     id: data.id || `resp-${Date.now()}`,
@@ -142,6 +153,13 @@ export function responsesToChatCompletion(data: any, model: ModelRegistration): 
       completion_tokens: data.usage?.output_tokens ?? 0,
       total_tokens: data.usage?.total_tokens ?? (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0),
       prompt_tokens_details: { cached_tokens: cached },
+      ...(reasoningTokens > 0
+        ? {
+            completion_tokens_details: {
+              reasoning_tokens: reasoningTokens,
+            },
+          }
+        : {}),
     },
   };
 }

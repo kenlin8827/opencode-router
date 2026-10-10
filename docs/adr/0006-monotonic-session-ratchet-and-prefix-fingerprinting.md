@@ -8,7 +8,7 @@ Routing multi-turn chat conversations in an LLM gateway introduces two severe fa
 1. **Intellectual Degradation via Mid-Session Down-Scaling**:
    - Turn 1: The user requests designing a distributed Paxos consensus algorithm.
    - Turn 2: The user asks a short follow-up: *"OK, why add 1 on line 3?"*.
-   - If evaluated statelessly in isolation, Turn 2 looks trivial and gets routed to a micro fast tier model. Incapable of parsing thousands of preceding code tokens, fast tier hallucinates catastrophically.
+   - If evaluated statelessly in isolation, Turn 2 looks trivial and gets routed to a micro lite tier model. Incapable of parsing thousands of preceding code tokens, lite tier hallucinates catastrophically.
 2. **Upstream Prompt Caching (KV Cache) Invalidation**:
    - Leading LLMs (Claude, DeepSeek, Kimi, OpenAI) support KV Prompt Caching, yielding 80%~95% hit rates and 5x~10x cost reductions;
    - Switching models or providers mid-conversation immediately evicts the upstream KV cache. The client is forced to pay full price for prefilling 10k+ historical tokens on the new model, erasing FinOps savings and causing latency spikes.
@@ -19,7 +19,7 @@ Routing multi-turn chat conversations in an LLM gateway introduces two severe fa
 
 ### 1. Monotonic Session Ratchet Strategy
 Enforce an **"Escalate-Only + Pinned Model Instance"** policy:
-- **Tier Ranking**: $\text{Rank}(\text{fast}) = 1 < \text{Rank}(\text{flagship}) = 2 < \text{Rank}(\text{reasoning}) = 3$;
+- **Tier Ranking**: $\text{Rank}(\text{lite}) = 1 < \text{Rank}(\text{plus}) = 2 < \text{Rank}(\text{pro}) = 3 < \text{Rank}(\text{ultra}) = 4$;
 - **Escalation Allowed**:
   - When the proposed tier for a turn exceeds the session's historical peak ($T_{\text{proposed}} > T_{\text{session}}$), upgrade tier and pin the new model instance;
 - **Downgrade Blocked (Ratchet Lock)**:

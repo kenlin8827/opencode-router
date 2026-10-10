@@ -7,7 +7,7 @@
 在通用 LLM 网关中，处理多轮对话（Multi-Turn Chat）面临两大严峻挑战：
 1. **中途乱切导致智力倒退与能力断层**：
    - 用户第 1 轮要求设计复杂的分布式共识算法，第 2 轮随口追问：“*好的，为什么第三行要加 1？*”。
-   - 如果网关每轮孤立无状态评估，会误将第 2 轮当成极简对话切入 fast tier 小模型，而小模型面对长达数千 Token 的前序复杂上下文根本无法理解，导致严重幻觉与回复质量崩塌。
+   - 如果网关每轮孤立无状态评估，会误将第 2 轮当成极简对话切入 Lite tier 小模型，而小模型面对长达数千 Token 的前序复杂上下文根本无法理解，导致严重幻觉与回复质量崩塌。
 2. **中途换模型导致 Prompt Caching (KV 缓存) 彻底作废**：
    - 现代大模型（Kimi, DeepSeek, Claude, OpenAI）普遍支持前缀缓存（Prompt Caching），命中率可达 80%~95%，成本打 1~2 折；
    - 一旦在会话中途跨模型甚至跨 Provider 切换，累积的上万 Token 历史在前一个模型的 KV 缓存全部作废，必须在全新模型上重新全额付费做 Prefill 计算，FinOps 成本不仅没省反暴增几十倍！
@@ -18,7 +18,7 @@
 
 ### 1. 单调升档状态机 (Monotonic Ratchet Strategy)
 采用**“只升不降 + 同梯队强固化模型”**机制：
-- **定义梯队等级**：$\text{Rank}(\text{fast}) = 1 < \text{Rank}(\text{flagship}) = 2 < \text{Rank}(\text{reasoning}) = 3$；
+- **定义梯队等级**：$\text{Rank}(\text{lite}) = 1 < \text{Rank}(\text{plus}) = 2 < \text{Rank}(\text{pro}) = 3 < \text{Rank}(\text{ultra}) = 4$；
 - **升档机制 (Escalation)**：
   - 当本轮分类器决策等级高于会话历史最高等级（$T_{\text{proposed}} > T_{\text{session}}$）时，**允许升级**至新梯队，并重新固化新梯队的具体模型与 Provider；
 - **降档拦截 (Ratchet Lock)**：

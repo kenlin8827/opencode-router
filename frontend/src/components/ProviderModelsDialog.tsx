@@ -939,7 +939,7 @@ export const ProviderModelsDialog: React.FC<{
                     <input
                       className="input"
                       style={{ fontSize: 11.5, flex: 1, fontFamily: 'JetBrains Mono, monospace' }}
-                      placeholder="fast"
+                      placeholder="variant-id"
                       value={v.id}
                       onChange={(e) => {
                         const variants = [...form.data.variants];
@@ -980,11 +980,11 @@ export const ProviderModelsDialog: React.FC<{
                 className="input"
                 style={{ fontSize: 12, width: '100%', fontFamily: 'JetBrains Mono, monospace' }}
                 placeholder="reasoning_content"
-                list="ocr-reasoning-fields"
+                list="ocr-thinking-fields"
                 value={form.data.reasoningField}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, reasoningField: e.target.value } })}
               />
-              <datalist id="ocr-reasoning-fields">
+              <datalist id="ocr-thinking-fields">
                 <option value="reasoning" />
                 <option value="reasoning_content" />
                 <option value="reasoning_text" />

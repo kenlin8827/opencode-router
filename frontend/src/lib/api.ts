@@ -3,9 +3,10 @@ export interface GatewayMetrics {
   totalRequests: number;
   fallbackCount: number;
   tierDistribution: {
-    fast: { count: number; pct: number };
-    flagship: { count: number; pct: number };
-    reasoning: { count: number; pct: number };
+    lite: { count: number; pct: number };
+    plus: { count: number; pct: number };
+    pro: { count: number; pct: number };
+    ultra: { count: number; pct: number };
   };
   tokens: {
     totalPromptTokens: number;
@@ -21,9 +22,10 @@ export interface GatewayMetrics {
   };
   latency: {
     avgMs: number;
-    fastAvgMs: number;
-    flagshipAvgMs: number;
-    reasoningAvgMs: number;
+    liteAvgMs: number;
+    plusAvgMs: number;
+    proAvgMs: number;
+    ultraAvgMs: number;
   };
 }
 
@@ -108,7 +110,7 @@ export interface TraceRecord {
   };
   routing: {
     layerUsed: 'layer0' | 'layer1' | 'layer2';
-    targetTier: 'fast' | 'flagship' | 'reasoning';
+    targetTier: 'lite' | 'plus' | 'pro' | 'ultra';
     confidence: number;
     reason: string;
     sessionRatchetApplied: boolean;
@@ -116,7 +118,7 @@ export interface TraceRecord {
   execution: {
     modelUsed: string;
     provider: string;
-    tierUsed: 'fast' | 'flagship' | 'reasoning';
+    tierUsed: 'lite' | 'plus' | 'pro' | 'ultra';
     latencyMs: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
@@ -291,7 +293,7 @@ export interface CaptureTurn {
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
 export interface SessionRecord {
   id: string;
-  maxTier: 'fast' | 'flagship' | 'reasoning';
+  maxTier: 'lite' | 'plus' | 'pro' | 'ultra';
   pinnedModel: string;
   pinnedProvider: string;
   createdAt: number;
@@ -384,7 +386,7 @@ export interface TierPoolsResponse {
   /** effective smart-match config (per tier, fully symmetric — ADR-0012), for suggestion previews */
   match?: Partial<
     Record<
-      'fast' | 'flagship' | 'reasoning',
+      'lite' | 'plus' | 'pro' | 'ultra',
       { patterns?: string[]; minInputPerM?: number; maxInputPerM?: number; exclude?: string[]; excludeTiers?: string[] }
     >
   >;
@@ -537,7 +539,7 @@ export const api = {
     return res.json();
   },
 
-  /** All models the gateway can route to: virtual (auto/auto-fast/…) + registered. */
+  /** All models the gateway can route to: virtual (auto/auto-lite/…) + registered. */
   async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string }[]> {
     const res = await fetch('/v1/models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

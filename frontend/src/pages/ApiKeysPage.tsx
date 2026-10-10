@@ -603,7 +603,7 @@ http://127.0.0.1:3000/v1
 ${inlineKey}
 
 # 4. 模型名称选择或添加：
-#    虚拟分流模型：auto / auto-fast / auto-flagship / auto-reasoning
+#    虚拟分流模型：auto / auto-lite / auto-plus / auto-pro / auto-ultra
 #    或具体模型（完整 ID）：opencode/claude-sonnet-5-5、opencode/gpt-6-sol、opencode/glm-5.3`
           )}
 
@@ -616,7 +616,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="auto", # 智能分流：auto / auto-fast / auto-flagship / auto-reasoning
+    model="auto", # 智能分流：auto / auto-lite / auto-plus / auto-pro / auto-ultra
     messages=[{"role": "user", "content": "Hello OCR Gateway!"}]
 )
 
@@ -638,7 +638,7 @@ print(response.choices[0].message.content)`
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
 export ANTHROPIC_AUTH_TOKEN=${inlineKey}
 
-# 2. 可选：默认模型（auto = 智能分流，也可 auto-fast / auto-flagship / auto-reasoning）
+# 2. 可选：默认模型（auto = 智能分流，也可 auto-lite / auto-plus / auto-pro / auto-ultra）
 export ANTHROPIC_MODEL=auto
 
 # 3. 正常启动 claude 即可。Claude Code 的请求将自动走网关的
@@ -655,7 +655,7 @@ client = Anthropic(
 )
 
 message = client.messages.create(
-    model="auto", # 智能分流：auto / auto-fast / auto-flagship / auto-reasoning
+    model="auto", # 智能分流：auto / auto-lite / auto-plus / auto-pro / auto-ultra
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello OCR Gateway!"}]
 )

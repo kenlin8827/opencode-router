@@ -128,7 +128,7 @@ describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
 describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () => {
   it('should immediately trip into OPEN on 402 Quota Exhausted with 12h cooldown, and recover via canary', () => {
     let mockTime = 10000000;
-    const breaker = new CircuitBreaker('claude-3-5-sonnet', 'anthropic', 'flagship', undefined, () => mockTime);
+    const breaker = new CircuitBreaker('claude-3-5-sonnet', 'anthropic', 'plus', undefined, () => mockTime);
 
     assert.equal(breaker.getState(), 'CLOSED');
     assert.equal(breaker.canExecute().allowed, true);
@@ -176,7 +176,7 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
     const breaker = new CircuitBreaker(
       'deepseek-chat',
       'deepseek',
-      'flagship',
+      'plus',
       {
         failureThreshold: 3,
         initialCooldownMs: 30000,
@@ -238,7 +238,7 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
   });
 
   it('should support manual administrative reset for instant recovery', () => {
-    const breaker = new CircuitBreaker('gpt-4o', 'openai', 'flagship');
+    const breaker = new CircuitBreaker('gpt-4o', 'openai', 'plus');
     breaker.trip('Admin simulated trip', 'QUOTA_EXHAUSTED', 12 * 3600 * 1000);
     assert.equal(breaker.getState(), 'OPEN');
 
@@ -253,11 +253,11 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
   const baseConfig: RouterConfig = {
     port: 3000,
     host: '127.0.0.1',
-    baselineModel: 'primary-flagship',
+    baselineModel: 'primary-plus',
     fallback: {
       enabled: true,
       maxRetries: 2,
-      escalateTier: 'flagship',
+      escalateTier: 'plus',
       injectErrorContext: true,
     },
     circuitBreaker: {
@@ -267,27 +267,27 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
     },
     models: [
       {
-        id: 'primary-flagship',
+        id: 'primary-plus',
         provider: 'mock',
-        upstreamModel: 'primary-flagship',
-        tier: 'flagship',
+        upstreamModel: 'primary-plus',
+        tier: 'plus',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 3.0, cacheRead: 0.75, output: 12.0 },
       },
       {
-        id: 'secondary-flagship',
+        id: 'secondary-plus',
         provider: 'mock',
-        upstreamModel: 'secondary-flagship',
-        tier: 'flagship',
+        upstreamModel: 'secondary-plus',
+        tier: 'plus',
         priority: 2,
         pricing: { input: 3.0, cacheRead: 0.75, output: 12.0 },
       },
       {
-        id: 'mock-fast',
+        id: 'mock-lite',
         provider: 'mock',
-        upstreamModel: 'mock-fast',
-        tier: 'fast',
+        upstreamModel: 'mock-lite',
+        tier: 'lite',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 0.2, cacheRead: 0.05, output: 0.8 },
@@ -300,39 +300,39 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
 
-    // Simulate primary-flagship failing with 402 Quota Exhausted
+    // Simulate primary-plus failing with 402 Quota Exhausted
     const request: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Explain quantum entanglement' }],
-      __simulate_error_model__: 'primary-flagship',
+      __simulate_error_model__: 'primary-plus',
       __simulate_status__: 402,
-      __simulate_message__: 'insufficient_quota on primary-flagship',
+      __simulate_message__: 'insufficient_quota on primary-plus',
     };
 
     const result = await orchestrator.process(request);
 
     // Request should succeed without error!
     assert.ok(result.response);
-    // Should have used secondary-flagship
-    assert.equal(result.modelUsed, 'secondary-flagship');
-    assert.equal(result.tierUsed, 'flagship');
+    // Should have used secondary-plus
+    assert.equal(result.modelUsed, 'secondary-plus');
+    assert.equal(result.tierUsed, 'plus');
     assert.equal(result.failoverOccurred, true);
     assert.equal(result.failoverAttempts, 2);
-    assert.deepEqual(result.failoverPath, ['primary-flagship', 'secondary-flagship']);
+    assert.deepEqual(result.failoverPath, ['primary-plus', 'secondary-plus']);
 
-    // Check circuit breaker status: primary-flagship must now be in OPEN state!
+    // Check circuit breaker status: primary-plus must now be in OPEN state!
     const cbManager = registry.getCircuitBreakerManager();
-    const primaryBreaker = cbManager.getBreaker('primary-flagship');
+    const primaryBreaker = cbManager.getBreaker('primary-plus');
     assert.equal(primaryBreaker?.getState(), 'OPEN');
     assert.equal(primaryBreaker?.getSnapshot().category, 'QUOTA_EXHAUSTED');
 
-    // Next request to auto-flagship should immediately route to secondary-flagship without touching primary!
+    // Next request to auto-plus should immediately route to secondary-plus without touching primary!
     const req2: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Follow up question' }],
     };
     const result2 = await orchestrator.process(req2);
-    assert.equal(result2.modelUsed, 'secondary-flagship');
+    assert.equal(result2.modelUsed, 'secondary-plus');
     assert.equal(result2.failoverOccurred, false); // No failover needed, secondary was picked first!
   });
 
@@ -342,24 +342,24 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
     const sessionId = 'test-session-resilience-heal';
 
-    // Turn 1: Normal turn, session pins to primary-flagship
+    // Turn 1: Normal turn, session pins to primary-plus
     const req1: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Hello assistant' }],
       router_options: { session_id: sessionId },
     };
     const res1 = await orchestrator.process(req1);
-    assert.equal(res1.modelUsed, 'primary-flagship');
+    assert.equal(res1.modelUsed, 'primary-plus');
 
     const sessionBefore = orchestrator.getSessionManager().getSession(sessionId);
-    assert.equal(sessionBefore?.pinnedModel, 'primary-flagship');
+    assert.equal(sessionBefore?.pinnedModel, 'primary-plus');
 
-    // Now primary-flagship suffers an outage / 402
-    registry.getCircuitBreakerManager().getBreaker('primary-flagship')?.trip('5-hour outage', 'SERVICE_UNAVAILABLE', 5 * 3600 * 1000);
+    // Now primary-plus suffers an outage / 402
+    registry.getCircuitBreakerManager().getBreaker('primary-plus')?.trip('5-hour outage', 'SERVICE_UNAVAILABLE', 5 * 3600 * 1000);
 
     // Turn 2: Follow-up in same session
     const req2: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [
         { role: 'user', content: 'Hello assistant' },
         { role: 'assistant', content: 'Hi there!' },
@@ -370,10 +370,10 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
 
     const res2 = await orchestrator.process(req2);
 
-    // Session must NOT crash; it should auto-heal to secondary-flagship!
-    assert.equal(res2.modelUsed, 'secondary-flagship');
+    // Session must NOT crash; it should auto-heal to secondary-plus!
+    assert.equal(res2.modelUsed, 'secondary-plus');
     const sessionAfter = orchestrator.getSessionManager().getSession(sessionId);
-    assert.equal(sessionAfter?.pinnedModel, 'secondary-flagship');
+    assert.equal(sessionAfter?.pinnedModel, 'secondary-plus');
   });
 });
 
@@ -381,11 +381,11 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
   const testConfig: RouterConfig = {
     port: 3000,
     host: '127.0.0.1',
-    baselineModel: 'flagship-1',
+    baselineModel: 'plus-1',
     fallback: {
       enabled: true,
       maxRetries: 1,
-      escalateTier: 'flagship',
+      escalateTier: 'plus',
       injectErrorContext: true,
     },
     circuitBreaker: {
@@ -394,10 +394,10 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     },
     models: [
       {
-        id: 'flagship-1',
+        id: 'plus-1',
         provider: 'mock',
-        upstreamModel: 'flagship-1',
-        tier: 'flagship',
+        upstreamModel: 'plus-1',
+        tier: 'plus',
         isDefaultInTier: true,
         pricing: { input: 3.0, cacheRead: 0.75, output: 12.0 },
       },
@@ -415,7 +415,7 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     assert.equal(jsonHealthy.circuitBreakers.tripped, 0);
 
     // Trip the model
-    registry.getCircuitBreakerManager().getBreaker('flagship-1')?.trip('Test 402', 'QUOTA_EXHAUSTED', 3600000);
+    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Test 402', 'QUOTA_EXHAUSTED', 3600000);
 
     // Should now report degraded/outage
     const resTripped = await app.inject({ method: 'GET', url: '/health' });
@@ -426,26 +426,26 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
 
   it('GET /v1/health/circuit-breakers should expose detailed snapshot metrics', async () => {
     const { app, registry } = createServer(testConfig, true);
-    registry.getCircuitBreakerManager().getBreaker('flagship-1')?.trip('Quota exhausted 402', 'QUOTA_EXHAUSTED', 12 * 3600 * 1000);
+    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Quota exhausted 402', 'QUOTA_EXHAUSTED', 12 * 3600 * 1000);
 
     const res = await app.inject({ method: 'GET', url: '/v1/health/circuit-breakers' });
     assert.equal(res.statusCode, 200);
     const data = res.json();
     assert.equal(data.object, 'circuit_breaker_summary');
     assert.equal(data.tripped, 1);
-    assert.equal(data.breakers[0].modelId, 'flagship-1');
+    assert.equal(data.breakers[0].modelId, 'plus-1');
     assert.equal(data.breakers[0].category, 'QUOTA_EXHAUSTED');
     assert.ok(data.breakers[0].remainingCooldownMs > 0);
   });
 
   it('POST /v1/health/circuit-breakers/reset should reset tripped breakers to CLOSED', async () => {
     const { app, registry } = createServer(testConfig, true);
-    registry.getCircuitBreakerManager().getBreaker('flagship-1')?.trip('Test trip', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Test trip', 'SERVICE_UNAVAILABLE', 3600000);
 
     // Call reset endpoint
     const resReset = await app.inject({
       method: 'POST',
-      url: '/v1/health/circuit-breakers/reset?model=flagship-1',
+      url: '/v1/health/circuit-breakers/reset?model=plus-1',
     });
     assert.equal(resReset.statusCode, 200);
     const resetJson = resReset.json();
@@ -453,7 +453,7 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     assert.equal(resetJson.resetCount, 1);
 
     // Verify model is back to CLOSED
-    assert.equal(registry.getCircuitBreakerManager().getBreaker('flagship-1')?.getState(), 'CLOSED');
+    assert.equal(registry.getCircuitBreakerManager().getBreaker('plus-1')?.getState(), 'CLOSED');
   });
 
   it('POST /v1/chat/completions should attach failover and circuit breaker response headers', async () => {

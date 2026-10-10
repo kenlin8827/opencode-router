@@ -215,7 +215,7 @@ const ModelTable: React.FC<{
                   padding: '0 5px',
                   borderRadius: 999,
                   border: '1px solid var(--border)',
-                  color: m.tier === 'fast' ? 'var(--accent-emerald)' : m.tier === 'reasoning' ? 'var(--accent-violet)' : 'var(--accent)',
+                  color: m.tier === 'lite' ? 'var(--accent-emerald)' : m.tier === 'pro' || m.tier === 'ultra' ? 'var(--accent-violet)' : 'var(--accent)',
                 }}
               >
                 {m.tier}
@@ -919,9 +919,10 @@ const OcrEditModal: React.FC<{
               onChange={setTier}
               options={[
                 { value: '', label: t('catalogPage.ocrEditTierAuto'), meta: suggest.tier },
-                { value: 'fast', label: 'Fast' },
-                { value: 'flagship', label: 'Flagship' },
-                { value: 'reasoning', label: 'Reasoning' },
+                { value: 'lite', label: t('tierPolicy.tierLite') },
+                { value: 'plus', label: t('tierPolicy.tierPlus') },
+                { value: 'pro', label: t('tierPolicy.tierPro') },
+                { value: 'ultra', label: t('tierPolicy.tierUltra') },
               ]}
               style={{ fontSize: '12px', padding: '5px 10px', width: '100%' }}
             />

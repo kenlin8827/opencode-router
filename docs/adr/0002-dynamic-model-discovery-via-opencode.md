@@ -1,16 +1,18 @@
-# ADR-0002: 100% Dynamic Model Discovery and Adaptive Tiering via OpenCode
+# ADR-0002: Dynamic Model Discovery via OpenCode
 
-## Status
-Accepted - 2026-09-29
-Partially superseded by [ADR-0011](./zh-CN/0011-pure-direct-execution-no-daemon.md) - 2026-10-08 (Section 4 "Keyless Proxy Delegation" to the OpenCode daemon is retired; direct execution replaces proxying. Dynamic-discovery and tiering ideas in Sections 1-3 remain in force, with the data source moved to the local catalog).
+- **Status**: Accepted (2026-09)
+- **Supersedes**: Static `providers:` and `models:` arrays in `config.yaml`.
 
 ## Context
-Traditional LLM routing gateways require hardcoding upstream providers, API keys, endpoints, model identifiers, and manual tiering maps directly into configuration files or codebase. This presents significant operational drawbacks:
-1. **Maintenance Overhead**: Every pricing adjustment, newly introduced model, or key rotation requires editing code or restarting services with modified static configuration.
-2. **Credential Sprawl & Security Risks**: Multiple upstream vendor API keys scattered across repository environments increase leakage vectors.
-3. **Decoupled Local Developer Environment**: The developer system already runs OpenCode v2 as a local model proxy hub, which natively manages upstream authentication keys, provider proxies, and live model metadata (including per-token pricing and capability flags).
+
+The gateway previously required operators to manually enumerate every upstream model ID, API key, and price tier in `config.yaml`. This caused three failure modes:
+
+1. Catalog drift (config ages out of date within days).
+2. Brittle regex routing rules that broke on every vendor name change.
+3. Operator time spent copy-pasting provider/model entries from each vendor's website.
 
 ## Decision
+
 1. **Completely Purge Static Providers & Models from Configuration**:
    - Eliminated all static `providers` and `models` entries from `config.yaml` to prevent configuration drift.
 2. **100% Dynamic Boot-Time Discovery**:
@@ -19,16 +21,18 @@ Traditional LLM routing gateways require hardcoding upstream providers, API keys
 3. **Adaptive Price Pyramid & Capability Classification**:
    - Zero vendor or model ID regex string matching (no hardcoded `qwen`, `kimi`, or `gpt` tags).
    - Entirely data-driven dynamic tiering:
-     - **Fast ()**: Input pricing `<= $0.80/1M`, with the lowest-cost model selected dynamically as default lead.
-     - **Flagship ()**: Median cost range general-purpose models, with median model assigned as flagship lead.
-     - **Reasoning ()**: Filtered dynamically where `capabilities.reasoning === true`, reasoning parameters exist, or input pricing `>= $5.00/1M`.
+     - **Lite (≤$0.80/1M)**: Low-cost tier, with the lowest-cost model selected dynamically as default lead.
+     - **Plus ($0.80–$3/1M)**: Workhorse tier, median-cost general-purpose models.
+     - **Pro ($3–$8/1M)**: Thinking tier, filtered where `capabilities.thinkingEffort === true`, thinking parameters exist, or input pricing `>= $3.00/1M`.
+     - **Ultra (≥$8/1M)**: Frontier tier for the highest-priced models (e.g. Claude Fable, GPT-5 Ultra).
 4. **Keyless Proxy Delegation**:
    - All upstream providers are registered as `OpenCodeProxyProvider`, allowing zero-secret, keyless pass-through execution.
 
 ## Consequences
+
 - **Positive**:
-  - Zero hardcoding of model IDs, vendor names, or API tokens in the repository.
-  - Adding, deleting, or switching models in OpenCode is instantly reflected on gateway reload.
-  - Future-proof classification based purely on economic distributions and capability flags.
-- **Negative / Constraints**:
-  - The gateway relies on the local OpenCode daemon running (`http://127.0.0.1:49374`). Graceful fallback modes are provided if the daemon is unreachable.
+  - Zero-config onboarding: a fresh `config.yaml` discovers everything at boot.
+  - Catalog additions (new vendor SKUs, price drops) take effect on the next restart with no config edits.
+- **Negative**:
+  - Pricing changes from upstream vendors do silently change a model's tier membership on restart.
+  - The gateway inherits any availability/latency quirks of the OpenCode daemon's REST API.

@@ -15,7 +15,7 @@ function main() {
   console.log(`📂 Dataset Path: ${filePath}`);
   console.log(`📝 Total Accumulated Samples: ${lines.length}`);
 
-  let tierCounts: Record<string, number> = { fast: 0, flagship: 0, reasoning: 0 };
+  let tierCounts: Record<string, number> = { lite: 0, plus: 0, pro: 0, ultra: 0 };
   let layerCounts: Record<string, number> = { layer0: 0, layer1: 0, layer2: 0 };
   let fallbackCount = 0;
   let totalCostUsd = 0;
@@ -23,7 +23,7 @@ function main() {
   for (const line of lines) {
     try {
       const record = JSON.parse(line);
-      const tier = record.label?.groundTruthTier || 'fast';
+      const tier = record.label?.groundTruthTier || 'lite';
       tierCounts[tier] = (tierCounts[tier] || 0) + 1;
 
       const layer = record.routing?.layerUsed || 'layer0';
@@ -51,7 +51,7 @@ function main() {
   }
 
   console.log(`\n--- Cascading Fallback & Negative Samples ---`);
-  console.log(`  • Fallback Escalations (fast failed -> flagship): ${fallbackCount} (${((fallbackCount / lines.length) * 100).toFixed(1)}%)`);
+  console.log(`  • Fallback Escalations (lite failed -> plus): ${fallbackCount} (${((fallbackCount / lines.length) * 100).toFixed(1)}%)`);
   console.log(`  • Total Sample Execution Cost: $${totalCostUsd.toFixed(6)}`);
   console.log(`======================================================\n`);
 }

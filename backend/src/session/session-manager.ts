@@ -415,7 +415,7 @@ export class SessionManager {
 
     // 3. Monotonic Ratchet strategy
     if (proposedRank > currentMaxRank) {
-      // 3A. Escalation triggered (e.g. fast -> flagship or flagship -> reasoning)
+      // 3A. Escalation triggered (e.g. lite -> plus or plus -> pro)
       const oldTier = session.maxTier;
       session.maxTier = proposedDecision.targetTier;
       const upgradedModel = resolveModelForTier(session.maxTier);

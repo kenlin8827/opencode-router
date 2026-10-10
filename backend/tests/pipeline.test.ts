@@ -12,19 +12,19 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
   const tracker = new FinOpsTracker();
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
 
-  it('1. Simple chitchat should execute on Fast tier and record FinOps savings', async () => {
+  it('1. Simple chitchat should execute on Lite tier and record FinOps savings', async () => {
     const req: ChatCompletionRequest = {
-      model: 'auto-fast',
+      model: 'auto-lite',
       messages: [{ role: 'user', content: 'hello there' }],
     };
 
     const result = await orchestrator.process(req);
-    assert.strictEqual(result.tierUsed, 'fast');
-    assert.ok(result.costUsd < result.baselineCostUsd, 'Fast tier cost must be lower than flagship baseline');
+    assert.strictEqual(result.tierUsed, 'lite');
+    assert.ok(result.costUsd < result.baselineCostUsd, 'Lite tier cost must be lower than plus-tier baseline');
     assert.ok(result.savedCostUsd > 0, 'Saved cost must be positive');
   });
 
-  it('2. Structured schema task with passing fast tier output completes with ~90% cost savings', async () => {
+  it('2. Structured schema task with passing lite tier output completes with ~90% cost savings', async () => {
     const req: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Extract entities in JSON format.' }],
@@ -32,12 +32,12 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
     };
 
     const result = await orchestrator.process(req);
-    assert.strictEqual(result.tierUsed, 'fast');
+    assert.strictEqual(result.tierUsed, 'lite');
     assert.strictEqual(result.fallbackOccurred, false);
     assert.ok(result.savedCostUsd > 0);
   });
 
-  it('3. Structured task with fast tier syntax error silently escalates to flagship', async () => {
+  it('3. Structured task with lite tier syntax error silently escalates to plus', async () => {
     const req: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Strict schema extraction.' }],
@@ -58,7 +58,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
 
     const result = await orchestrator.process(req);
     assert.strictEqual(result.fallbackOccurred, true);
-    assert.strictEqual(result.tierUsed, 'flagship');
+    assert.strictEqual(result.tierUsed, 'plus');
     assert.ok(result.fallbackReason?.includes('Missing required key'));
   });
 

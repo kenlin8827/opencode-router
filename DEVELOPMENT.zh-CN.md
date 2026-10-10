@@ -43,7 +43,7 @@ OpenCode Router (OCR) 摒弃了行业内常见的字符长度规则（如 `promp
             ▼                                      ▼                                      ▼
    [Layer 0: 协议结构直通]              [Layer 1: 本地 CPU 微模型]              [Layer 2: 专职裁决模型]
     - 明确 JSON Schema / Tools 约束       - 提取 8 维语言中立统计特征             - 结合多轮完整上下文综合判断
-    - 确定性分发至 fast 极速层            - 未训练空白底座 (W=0, b=0)             - 统计标定 flagship / reasoning
+    - 确定性分发至 Lite 极速层            - 未训练空白底座 (W=0, b=0)             - 统计标定 Plus / Pro / Ultra
     - 零开销协议旁路直达                  - 极速 CPU 推理 (<0.1ms)                - 裁决真值异步反哺数据飞轮
             │                                      │                                      │
             └──────────────────────────────────────┼──────────────────────────────────────┘
@@ -55,16 +55,16 @@ OpenCode Router (OCR) 摒弃了行业内常见的字符长度规则（如 `promp
                                                    │
                                                    ▼
                     [Step 4: 执行代理与级联静态 Schema 断言 (Fallback)]
-                     ├── fast 先发冲锋 ────► [本地 AST / JSON Schema 静态断言验证]
+                     ├── Lite 先发冲锋 ────► [本地 AST / JSON Schema 静态断言验证]
                      │                       ├── 断言通过 ──► 直接返回客户端 (节省 90% 成本)
-                     │                       └── 断言失败 ──► 注入错误上下文，无感静默降级重试至 flagship
-                     └── flagship/reasoning ─────────────────► 施加推理 Token 预算约束并直接返回
+                     │                       └── 断言失败 ──► 注入错误上下文，无感静默降级重试至 plus
+                     └── Plus / Pro / Ultra ───────────► 施加推理 Token 预算约束并直接返回
 ```
 
 ### 分层裁决逻辑
 1. **Layer 0（协议结构层）**：
    - 检测请求中是否包含明确的结构化输出要求（如 `response_format: { type: 'json_object' }` 或 `tools`）。
-   - 若命中，确定性交付给 fast 极速模型先发冲锋，并在后置阶段进行本地静态 AST / Schema 断言检验。
+   - 若命中，确定性交付给 Lite 极速模型先发冲锋，并在后置阶段进行本地静态 AST / Schema 断言检验。
 2. **Layer 1（CPU 微张量分类器）**：
    - 提取 8 维语言中立特征向量，在 CPU 上执行纯矩阵线性前向运算与 Softmax 计算（耗时 `<0.1ms`）。
    - 若模型置信度高于设定阈值（默认 $\theta = 0.85$），直接以此层裁决执行；若置信度不足，无感穿透至 Layer 2。
@@ -82,14 +82,14 @@ $$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf
 
 **前向传播数学推导**：
 对任意输入的 8 维特征向量 $x \in \mathbb{R}^8$：
-$$z = W^T x + b = \mathbf{0}^T x + \mathbf{0} = \begin{bmatrix} 0 \\ 0 \\ 0 \end{bmatrix}$$
+$$z = W^T x + b = \mathbf{0}^T x + \mathbf{0} = \begin{bmatrix} 0 \\ 0 \\ 0 \\ 0 \end{bmatrix}$$
 
-经 Softmax 激活函数计算后，三类（fast, flagship, reasoning）的预测概率为：
-$$P(\text{tier}_i) = \frac{e^{z_i}}{\sum_{j=1}^3 e^{z_j}} = \frac{e^0}{e^0 + e^0 + e^0} = \frac{1}{3} \approx 0.3333$$
+经 Softmax 激活函数计算后，四类（lite, plus, pro, ultra）的预测概率为：
+$$P(\text{tier}_i) = \frac{e^{z_i}}{\sum_{j=1}^4 e^{z_j}} = \frac{e^0}{e^0 + e^0 + e^0 + e^0} = \frac{1}{4} = 0.25$$
 
 **确定性穿透引理**：
 由于系统的置信度门限阈值 $\theta = 0.85$：
-$$\max_{i} P(\text{tier}_i) = 0.3333 < 0.85$$
+$$\max_{i} P(\text{tier}_i) = 0.25 < 0.85$$
 因此，未训练状态下的置信度判定在**数学上严格恒为 `isConfident = false`**。  
 系统由此保证：在任何冷启动与未训练场景下，绝不发生误短路判决，100% 优雅穿透至 Layer 2 专职裁决模型。
 

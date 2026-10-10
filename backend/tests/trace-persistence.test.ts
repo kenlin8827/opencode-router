@@ -20,7 +20,7 @@ const mkTrace = (over: { sessionId: string; timestamp: number } & Partial<Execut
   },
   routing: {
     layerUsed: 'layer1',
-    targetTier: 'fast',
+    targetTier: 'lite',
     confidence: 0.5,
     reason: 'test',
     sessionRatchetApplied: false,
@@ -28,7 +28,7 @@ const mkTrace = (over: { sessionId: string; timestamp: number } & Partial<Execut
   execution: {
     modelUsed: 'm-1',
     provider: 'p-1',
-    tierUsed: 'fast',
+    tierUsed: 'lite',
     latencyMs: 10,
     fallbackOccurred: false,
   },
@@ -80,7 +80,7 @@ describe('TraceTracker SQLite persistence (write-through + boot replay)', () => 
         mkTrace({
           sessionId: 's1',
           timestamp: now - 1000,
-          execution: { modelUsed: 'm-2', provider: 'p-2', tierUsed: 'fast', latencyMs: 10, fallbackOccurred: false },
+          execution: { modelUsed: 'm-2', provider: 'p-2', tierUsed: 'lite', latencyMs: 10, fallbackOccurred: false },
         })
       );
       a.record(mkTrace({ sessionId: 's2', timestamp: now }));

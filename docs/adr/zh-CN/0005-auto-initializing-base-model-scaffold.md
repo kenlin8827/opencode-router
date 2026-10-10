@@ -2,11 +2,12 @@
 
 ## 状态
 已接受并实现 (Accepted & Implemented) - 2026-09-29
+2026-10-10 更新：3 档 → 4 档（Lite/Plus/Pro/Ultra）
 
 ## 上下文 (Context)
 在贯彻“**硬编码一切擦除，全靠模型决策，严格遵守 i18n 语言中立**”的架构原则时，系统面临冷启动期的关键挑战：
 1. **避免假分支与空判断**：若 Layer 1 仅是 `if (!file) return false` 的空分支，则缺乏物理承载实体，无法在运行时作为模型统一接入；
-2. **拒绝基于字数或字典的启发式规则**：字数极短的 Prompt（如 `P=NP?`）往往要求极高智慧，长文本（如日志过滤）可能仅需极简提取，绝不能用字符数或关键词词典去代替模型；
+2. **拒绝基于字数或字典的启发式规则**：字数极短的 Prompt（如 `P=NP?`）往往要求极高思考能力，长文本（如日志过滤）可能仅需极简提取，绝不能用字符数或关键词词典去代替模型；
 3. **确定性穿透保证**：系统需要自动生成一个结构合规、可执行前向计算的“本地空白模型底座（Scaffold Base Model）”，即使调用执行，其数学置信度也必须必然不足，100% 确定性穿透到 Layer 2（专职判决模型或 OpenCode 代理）。
 
 ## 决策 (Decision)
@@ -25,8 +26,8 @@
 - **底座状态**：
   - `isBaseModel: true`
   - `sampleCount: 0`
-  - 权重矩阵 $W \in \mathbb{R}^{8 \times 3} = \mathbf{0}$
-  - 偏置向量 $b \in \mathbb{R}^3 = \mathbf{0}$
+  - 权重矩阵 $W \in \mathbb{R}^{8 \times 4} = \mathbf{0}$
+  - 偏置向量 $b \in \mathbb{R}^4 = \mathbf{0}$
 
 ### 2. 自动初始化机制 (Auto-Initialization on Boot)
 在网关启动或 `Layer1Classifier.init()` 执行时：
@@ -38,11 +39,11 @@
 ### 3. 数学确定性穿透 (Deterministic Cascade to Layer 2)
 对于未训练的底座模型，前向推理计算：
 $$z = W^T x + b = \mathbf{0}$$
-$$\text{Softmax}(z) = \left[\frac{e^0}{3}, \frac{e^0}{3}, \frac{e^0}{3}\right] \approx [0.333, 0.334, 0.333]$$
-- 最大置信度仅为 $\approx 0.334$；
+$$\text{Softmax}(z) = \left[\frac{e^0}{4}, \frac{e^0}{4}, \frac{e^0}{4}, \frac{e^0}{4}\right] = [0.25, 0.25, 0.25, 0.25]$$
+- 最大置信度仅为 $0.25$；
 - 默认置信度门限阈值 $\theta = 0.85$；
-- 因 $0.334 < 0.85$，`isConfident` 在**数学上严格恒为 `false`**；
-- 缺省绑定安全质量基线：`targetTier: 'flagship'`（绝不会因为字数少而擅自降级给 Fast 小模型）；
+- 因 $0.25 < 0.85$，`isConfident` 在**数学上严格恒为 `false`**；
+- 缺省绑定安全质量基线：`targetTier: 'plus'`（绝不会因为字数少而擅自降级给 Lite 小模型）；
 - `routeAsync` 依据 `!isConfident`，**100% 确定性直接级联至 Layer 2（TypeSafe Jev / OpenCode 判决模型）**。
 
 ### 4. 数据飞轮闭环自进化 (In-Place Distillation)
@@ -63,7 +64,7 @@ flowchart TD
     ExtrFeat --> TensorCalc[微张量 CPU 前向计算 z = Wx + b]
     
     TensorCalc --> CheckBase{是否为未训练底座?}
-    CheckBase -->|是: W=0, b=0| LowConf[置信度严格=0.33 < 0.85<br/>isConfident = false]
+    CheckBase -->|是: W=0, b=0| LowConf[置信度严格=0.25 < 0.85<br/>isConfident = false]
     CheckBase -->|否: 已训练经验小模型| TrainedConf[计算模型实际概率与置信度]
     
     LowConf --> CascadeL2[⚡ 100% 确定性优雅穿透至 Layer 2 专职裁决模型]

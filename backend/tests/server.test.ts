@@ -44,9 +44,10 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(body.object, 'list');
     const ids = body.data.map((m: any) => m.id);
     assert.ok(ids.includes('auto'), 'Expected virtual "auto" model');
-    assert.ok(ids.includes('auto-fast'));
-    assert.ok(ids.includes('auto-flagship'));
-    assert.ok(ids.includes('auto-reasoning'));
+    assert.ok(ids.includes('auto-lite'));
+    assert.ok(ids.includes('auto-plus'));
+    assert.ok(ids.includes('auto-pro'));
+    assert.ok(ids.includes('auto-ultra'));
 
     const physical = body.data.find((m: any) => m.metadata?.pricing);
     assert.ok(physical, 'Expected physical model with pricing metadata');
@@ -80,7 +81,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     });
 
     assert.strictEqual(res.statusCode, 200);
-    assert.ok(['fast', 'flagship'].includes(res.headers['x-ocr-tier'] as string));
+    assert.ok(['lite', 'plus'].includes(res.headers['x-ocr-tier'] as string));
     assert.ok(res.headers['x-ocr-session-id']);
     assert.ok(res.headers['x-ocr-cost-usd']);
     assert.ok(res.headers['x-ocr-saved-usd']);
@@ -88,6 +89,44 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     const body = JSON.parse(res.body);
     assert.strictEqual(body.object, 'chat.completion');
     assert.ok(body.choices.length > 0);
+  });
+
+  it('POST /v1/chat/completions with reasoning_effort emits the X-OCR-Thinking-* headers', async () => {
+    const res = await app.inject({
+      headers: authHeaders(),
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'auto',
+        messages: [{ role: 'user', content: 'explain quantum entanglement' }],
+        reasoning_effort: 'high',
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    // Requested must echo back regardless of whether the served model could
+    // honor it (so the client always knows what they asked for).
+    assert.strictEqual(res.headers['x-ocr-thinking-requested'], 'high');
+    assert.ok(res.headers['x-ocr-thinking-actual'], 'must surface what was actually served');
+    const degraded = res.headers['x-ocr-thinking-degraded'];
+    assert.ok(degraded === 'true' || degraded === 'false', 'must be a boolean header');
+  });
+
+  it('omits X-OCR-Thinking-* headers when reasoning_effort is not set', async () => {
+    const res = await app.inject({
+      headers: authHeaders(),
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'auto',
+        messages: [{ role: 'user', content: 'plain prompt' }],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers['x-ocr-thinking-requested'], undefined);
+    assert.strictEqual(res.headers['x-ocr-thinking-actual'], undefined);
+    assert.strictEqual(res.headers['x-ocr-thinking-degraded'], undefined);
   });
 
   it('POST /v1/chat/completions with stream=true should stream Server-Sent Events', async () => {
@@ -123,7 +162,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     });
 
     assert.strictEqual(res.statusCode, 200);
-    assert.ok(['fast', 'flagship'].includes(res.headers['x-ocr-tier'] as string));
+    assert.ok(['lite', 'plus'].includes(res.headers['x-ocr-tier'] as string));
     assert.ok(res.headers['x-ocr-session-id']);
 
     const body = JSON.parse(res.body);

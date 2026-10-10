@@ -9,7 +9,7 @@ function makeModel(): ModelRegistration {
     id: 'test-provider/test-model',
     provider: 'test-provider',
     upstreamModel: 'upstream-model-id',
-    tier: 'flagship',
+    tier: 'plus',
     isDefaultInTier: false,
     wire: 'openai',
     pricing: { input: 1, output: 2, cacheRead: 0.25 },
@@ -107,6 +107,83 @@ describe('OpenAICompatibleProvider payload shaping', () => {
       expect(chunks.length).toBe(1);
       expect(received.stream).toBe(true);
       expect(received.stream_options).toEqual({ include_usage: true });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('createCompletion forwards reasoning_effort to upstream', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        return Response.json({
+          id: 'chatcmpl-test',
+          object: 'chat.completion',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        reasoning_effort: 'high',
+      } as ChatCompletionRequest;
+
+      await provider.createCompletion(request, makeModel());
+      expect(received.reasoning_effort).toBe('high');
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('createStream forwards reasoning_effort to upstream', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        return new Response(
+          `data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\n\n` +
+            `data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n` +
+            `data: [DONE]\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } }
+        );
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        reasoning_effort: 'medium',
+      } as ChatCompletionRequest;
+
+      const stream = await provider.createStream(request, makeModel());
+      for await (const _ of stream) { /* drain */ }
+      expect(received.reasoning_effort).toBe('medium');
     } finally {
       server.stop(true);
     }

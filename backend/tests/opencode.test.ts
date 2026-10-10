@@ -20,21 +20,22 @@ describe('OpenCode v2 Connect & Dynamic Model Sync', () => {
     assert.ok(names.some(n => n.includes('Alibaba') || n.includes('DeepSeek') || n.includes('Kimi')));
   });
 
-  it('should dynamically sync models and automatically categorize into fast, flagship, and reasoning tiers', async () => {
+  it('should dynamically sync models and automatically categorize into lite, plus, pro, and ultra tiers', async () => {
     const tierModels = await connector.syncToTierModels();
     assert.ok(tierModels.length > 10, 'Expected dozens of active models synced');
 
-    const fast = tierModels.filter(m => m.tier === 'fast');
-    const flagship = tierModels.filter(m => m.tier === 'flagship');
-    const reasoning = tierModels.filter(m => m.tier === 'reasoning');
+    const lite = tierModels.filter(m => m.tier === 'lite');
+    const plus = tierModels.filter(m => m.tier === 'plus');
+    const pro = tierModels.filter(m => m.tier === 'pro');
+    const ultra = tierModels.filter(m => m.tier === 'ultra');
 
-    assert.ok(fast.length > 0, 'Fast tier models should be present');
-    assert.ok(flagship.length > 0, 'Flagship tier models should be present');
-    assert.ok(reasoning.length > 0, 'Reasoning tier models should be present');
+    assert.ok(lite.length > 0, 'Lite tier models should be present');
+    assert.ok(plus.length > 0, 'Plus tier models should be present');
+    assert.ok(pro.length > 0, 'Pro tier models should be present');
 
     // Check pricing presence
-    assert.ok(fast[0].pricing.input !== undefined);
-    assert.ok(fast[0].pricing.output !== undefined);
-    assert.ok(fast[0].pricing.cacheRead !== undefined);
+    assert.ok(lite[0].pricing.input !== undefined);
+    assert.ok(lite[0].pricing.output !== undefined);
+    assert.ok(lite[0].pricing.cacheRead !== undefined);
   });
 });

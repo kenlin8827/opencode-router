@@ -55,9 +55,9 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
   it('should enforce Monotonic Ratchet: allow escalation, block downgrade, and preserve pinned model', () => {
     const sessionId = 'test-session-ratchet-1';
 
-    // Turn 1: Simple greeting -> fast
+    // Turn 1: Simple greeting -> lite
     const decisionTurn1: RoutingDecision = {
-      targetTier: 'fast',
+      targetTier: 'lite',
       confidence: 0.95,
       reason: 'Simple greeting',
       needsSchemaValidation: false,
@@ -72,13 +72,13 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     const r1 = sessionManager.applyRatchet(sessionId, decisionTurn1, mockModelFinder);
-    assert.strictEqual(r1.finalDecision.targetTier, 'fast');
-    assert.strictEqual(r1.session.pinnedModel, 'mock-fast-model');
+    assert.strictEqual(r1.finalDecision.targetTier, 'lite');
+    assert.strictEqual(r1.session.pinnedModel, 'mock-lite-model');
     assert.strictEqual(r1.ratchetApplied, false);
 
-    // Turn 2: Complex architecture task -> flagship (Escalation triggered!)
+    // Turn 2: Complex architecture task -> plus (Escalation triggered!)
     const decisionTurn2: RoutingDecision = {
-      targetTier: 'flagship',
+      targetTier: 'plus',
       confidence: 0.90,
       reason: 'Complex distributed system refactoring',
       needsSchemaValidation: false,
@@ -93,15 +93,15 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     const r2 = sessionManager.applyRatchet(sessionId, decisionTurn2, mockModelFinder);
-    assert.strictEqual(r2.finalDecision.targetTier, 'flagship', 'Should allow upward escalation to flagship');
-    assert.strictEqual(r2.session.maxTier, 'flagship');
-    assert.strictEqual(r2.session.pinnedModel, 'mock-flagship-model');
+    assert.strictEqual(r2.finalDecision.targetTier, 'plus', 'Should allow upward escalation to plus');
+    assert.strictEqual(r2.session.maxTier, 'plus');
+    assert.strictEqual(r2.session.pinnedModel, 'mock-plus-model');
     assert.strictEqual(r2.ratchetApplied, true);
 
-    // Turn 3: User says short follow-up "OK thanks" -> classified in isolation as fast
-    // Monotonic Ratchet must BLOCK downgrade to fast and keep flagship with pinned model!
+    // Turn 3: User says short follow-up "OK thanks" -> classified in isolation as lite
+    // Monotonic Ratchet must BLOCK downgrade to lite and keep plus with pinned model!
     const decisionTurn3: RoutingDecision = {
-      targetTier: 'fast',
+      targetTier: 'lite',
       confidence: 0.92,
       reason: 'Casual gratitude',
       needsSchemaValidation: false,
@@ -116,8 +116,8 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     };
 
     const r3 = sessionManager.applyRatchet(sessionId, decisionTurn3, mockModelFinder);
-    assert.strictEqual(r3.finalDecision.targetTier, 'flagship', 'Downgrade must be blocked! Locked to flagship quality');
-    assert.strictEqual(r3.session.pinnedModel, 'mock-flagship-model', 'Must reuse pinned model to guarantee 100% KV cache hit');
+    assert.strictEqual(r3.finalDecision.targetTier, 'plus', 'Downgrade must be blocked! Locked to plus quality');
+    assert.strictEqual(r3.session.pinnedModel, 'mock-plus-model', 'Must reuse pinned model to guarantee 100% KV cache hit');
     assert.strictEqual(r3.ratchetApplied, true, 'Ratchet applied flag must be true');
     assert.ok(r3.finalDecision.reason.includes('Monotonic Ratchet'));
   });
@@ -429,7 +429,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     );
     const sid = r.sessionId;
     sessionManager.applyRatchet(sid, {
-      targetTier: 'fast',
+      targetTier: 'lite',
       confidence: 0.9,
       reason: 'test',
       needsSchemaValidation: false,
@@ -462,7 +462,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     // Materialize the session object the way real traffic does (applyRatchet
     // runs between resolve and registration on every request).
     sessionManager.applyRatchet(sid, {
-      targetTier: 'fast',
+      targetTier: 'lite',
       confidence: 0.9,
       reason: 'test',
       needsSchemaValidation: false,

@@ -22,11 +22,11 @@ function authHeaders(): Record<string, string> {
 const baseConfig: RouterConfig = {
   port: 3000,
   host: '127.0.0.1',
-  baselineModel: 'flagship-1',
+  baselineModel: 'plus-1',
   fallback: {
     enabled: false,
     maxRetries: 1,
-    escalateTier: 'flagship',
+    escalateTier: 'plus',
     injectErrorContext: false,
   },
   circuitBreaker: {
@@ -49,39 +49,39 @@ const baseConfig: RouterConfig = {
   },
   models: [
     {
-      id: 'fast-1',
+      id: 'lite-1',
       provider: 'mock',
-      upstreamModel: 'fast-1',
-      tier: 'fast',
+      upstreamModel: 'lite-1',
+      tier: 'lite',
       priority: 1,
       isDefaultInTier: true,
       pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
     },
     {
-      id: 'fast-2',
+      id: 'lite-2',
       provider: 'mock',
-      upstreamModel: 'fast-2',
-      tier: 'fast',
+      upstreamModel: 'lite-2',
+      tier: 'lite',
       priority: 2,
       pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
     },
     {
-      id: 'flagship-1',
+      id: 'plus-1',
       provider: 'mock',
-      upstreamModel: 'flagship-1',
-      tier: 'flagship',
+      upstreamModel: 'plus-1',
+      tier: 'plus',
       priority: 1,
       isDefaultInTier: true,
       pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
     },
   ],
   combos: [
-    { id: 'combo-priority', selection: 'priority', models: ['fast-1', 'fast-2'] },
-    { id: 'combo-single', selection: 'priority', models: ['fast-1'] },
-    { id: 'combo-cross', selection: 'priority', models: ['fast-1', 'flagship-1'] },
-    { id: 'combo-rr', selection: 'round_robin', models: ['fast-1', 'fast-2'] },
-    { id: 'combo-weighted', selection: 'weighted', models: [{ id: 'fast-1', weight: 1000000 }, { id: 'fast-2', weight: 1 }] },
-    { id: 'combo-unknown-member', selection: 'priority', models: ['ghost-model', 'fast-2'] },
+    { id: 'combo-priority', selection: 'priority', models: ['lite-1', 'lite-2'] },
+    { id: 'combo-single', selection: 'priority', models: ['lite-1'] },
+    { id: 'combo-cross', selection: 'priority', models: ['lite-1', 'plus-1'] },
+    { id: 'combo-rr', selection: 'round_robin', models: ['lite-1', 'lite-2'] },
+    { id: 'combo-weighted', selection: 'weighted', models: [{ id: 'lite-1', weight: 1000000 }, { id: 'lite-2', weight: 1 }] },
+    { id: 'combo-unknown-member', selection: 'priority', models: ['ghost-model', 'lite-2'] },
   ],
 };
 
@@ -101,8 +101,8 @@ describe('Custom Model Combos: routing & execution', () => {
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
 
-    assert.equal(result.modelUsed, 'fast-1');
-    assert.equal(result.tierUsed, 'fast');
+    assert.equal(result.modelUsed, 'lite-1');
+    assert.equal(result.tierUsed, 'lite');
     assert.equal(result.failoverOccurred, false);
     assert.equal(registry.isCombo('combo-priority'), true);
   });
@@ -113,30 +113,30 @@ describe('Custom Model Combos: routing & execution', () => {
     const result = await orchestrator.process({
       model: 'combo-priority',
       messages: [{ role: 'user', content: 'Hello combo' }],
-      __simulate_error_model__: 'fast-1',
+      __simulate_error_model__: 'lite-1',
       __simulate_status__: 402,
       __simulate_message__: 'insufficient_quota',
     } as any);
 
-    assert.equal(result.modelUsed, 'fast-2');
+    assert.equal(result.modelUsed, 'lite-2');
     assert.equal(result.failoverOccurred, true);
-    assert.deepEqual(result.failoverPath, ['fast-1', 'fast-2']);
+    assert.deepEqual(result.failoverPath, ['lite-1', 'lite-2']);
 
     // Leader breaker hard-tripped by the 402
-    assert.equal(registry.getCircuitBreakerManager().getBreaker('fast-1')?.getState(), 'OPEN');
+    assert.equal(registry.getCircuitBreakerManager().getBreaker('lite-1')?.getState(), 'OPEN');
   });
 
   it('must NOT escalate outside the combo when all members fail (composition is authoritative)', async () => {
     const { orchestrator } = makeOrchestrator(baseConfig);
 
-    // combo-single has exactly one member (fast-1); flagship-1 is healthy but
+    // combo-single has exactly one member (lite-1); plus-1 is healthy but
     // NOT in the combo — the request must fail instead of silently escalating.
     await assert.rejects(
       async () =>
         orchestrator.process({
           model: 'combo-single',
           messages: [{ role: 'user', content: 'Hello combo' }],
-          __simulate_error_model__: 'fast-1',
+          __simulate_error_model__: 'lite-1',
           __simulate_status__: 503,
           __simulate_message__: 'down hard',
         } as any),
@@ -149,14 +149,14 @@ describe('Custom Model Combos: routing & execution', () => {
 
   it('should skip a tripped member and lead with the first healthy one (no failover counted)', async () => {
     const { registry, orchestrator } = makeOrchestrator(baseConfig);
-    registry.getCircuitBreakerManager().getBreaker('fast-1')?.trip('pre-tripped', 'MANUAL', 3600000);
+    registry.getCircuitBreakerManager().getBreaker('lite-1')?.trip('pre-tripped', 'MANUAL', 3600000);
 
     const result = await orchestrator.process({
       model: 'combo-priority',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
 
-    assert.equal(result.modelUsed, 'fast-2');
+    assert.equal(result.modelUsed, 'lite-2');
     assert.equal(result.failoverAttempts, 1);
   });
 
@@ -168,8 +168,8 @@ describe('Custom Model Combos: routing & execution', () => {
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
 
-    assert.equal(result.modelUsed, 'fast-1');
-    assert.equal(result.tierUsed, 'fast');
+    assert.equal(result.modelUsed, 'lite-1');
+    assert.equal(result.tierUsed, 'lite');
   });
 
   it('round_robin selection should rotate the leader across members', async () => {
@@ -184,7 +184,7 @@ describe('Custom Model Combos: routing & execution', () => {
       messages: [{ role: 'user', content: 'Turn 2' }],
     } as any);
 
-    assert.deepEqual([r1.modelUsed, r2.modelUsed], ['fast-1', 'fast-2']);
+    assert.deepEqual([r1.modelUsed, r2.modelUsed], ['lite-1', 'lite-2']);
   });
 
   it('weighted selection should draw the leader by member weight', async () => {
@@ -196,21 +196,21 @@ describe('Custom Model Combos: routing & execution', () => {
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
 
-    assert.equal(result.modelUsed, 'fast-1');
+    assert.equal(result.modelUsed, 'lite-1');
   });
 
   it('should drop unregistered member ids and execute the remaining ones', async () => {
     const { registry, orchestrator } = makeOrchestrator(baseConfig);
 
     const members = registry.resolveCombo('combo-unknown-member');
-    assert.deepEqual(members.map(m => m.id), ['fast-2']);
+    assert.deepEqual(members.map(m => m.id), ['lite-2']);
 
     const result = await orchestrator.process({
       model: 'combo-unknown-member',
       messages: [{ role: 'user', content: 'Hello combo' }],
     } as any);
 
-    assert.equal(result.modelUsed, 'fast-2');
+    assert.equal(result.modelUsed, 'lite-2');
   });
 });
 
@@ -252,7 +252,7 @@ describe('Custom Model Combos: exposure & config plumbing', () => {
     });
 
     assert.equal(res.statusCode, 200);
-    assert.equal(res.headers['x-ocr-model'], 'fast-1');
+    assert.equal(res.headers['x-ocr-model'], 'lite-1');
   });
 
   it('applyCombos should hot-swap the combo registry snapshot', () => {
@@ -260,7 +260,7 @@ describe('Custom Model Combos: exposure & config plumbing', () => {
     assert.equal(registry.isCombo('combo-priority'), true);
     assert.equal(registry.isCombo('combo-new'), false);
 
-    registry.applyCombos([{ id: 'combo-new', selection: 'priority', models: ['fast-1'] }]);
+    registry.applyCombos([{ id: 'combo-new', selection: 'priority', models: ['lite-1'] }]);
     assert.equal(registry.isCombo('combo-priority'), false);
     assert.equal(registry.isCombo('combo-new'), true);
     assert.equal(registry.resolveCombo('combo-new').length, 1);

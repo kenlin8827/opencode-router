@@ -108,10 +108,10 @@ async function run() {
       const res = await fetch(`${BASE_URL}/v1/models`);
       const body = await res.json() as any;
       const hasAuto = body.data?.some((m: any) => m.id === 'auto');
-      const hasFast = body.data?.some((m: any) => m.id === 'auto-fast');
+      const hasFast = body.data?.some((m: any) => m.id === 'auto-lite');
       const count = body.data?.length || 0;
       const ok = res.status === 200 && body.object === 'list' && hasAuto && hasFast && (mockMode ? count >= 4 : count >= 50);
-      record('2. OpenAI models catalog (GET /v1/models)', ok, t, `Total models: ${count}, includes 'auto', 'auto-fast', 'auto-flagship', 'auto-reasoning'`);
+      record('2. OpenAI models catalog (GET /v1/models)', ok, t, `Total models: ${count}, includes 'auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'`);
     }
 
     // -------------------------------------------------------------------------
@@ -126,7 +126,7 @@ async function run() {
     }
 
     // -------------------------------------------------------------------------
-    // Test 4: Intelligent routing - Dispatch arithmetic to fast/flagship
+    // Test 4: Intelligent routing - Dispatch arithmetic to lite/plus
     // -------------------------------------------------------------------------
     let answer1 = '';
     {
@@ -143,7 +143,7 @@ async function run() {
       const tier = res.headers.get('x-ocr-tier');
       const model = res.headers.get('x-ocr-model');
       answer1 = body.choices?.[0]?.message?.content?.trim() || '';
-      const ok = res.status === 200 && ['fast', 'flagship'].includes(tier as string) && (mockMode ? answer1.length > 0 : answer1.includes('100'));
+      const ok = res.status === 200 && ['lite', 'plus'].includes(tier as string) && (mockMode ? answer1.length > 0 : answer1.includes('100'));
       record('4. Intelligent auto-routing execution (simple arithmetic)', ok, t, `Tier: ${tier}, Model: ${model}, Output: "${answer1}"`);
     }
 
@@ -187,12 +187,12 @@ async function run() {
       const body = await res.json() as any;
       const tier = res.headers.get('x-ocr-tier');
       const model = res.headers.get('x-ocr-model');
-      const ok = res.status === 200 && (tier === 'flagship' || tier === 'reasoning');
+      const ok = res.status === 200 && (tier === 'plus' || tier === 'pro' || tier === 'ultra');
       record('6. Intelligent routing Flagship/Reasoning dispatch (high complexity task)', ok, t, `Detected Tier: ${tier}, Assigned Model: ${model}`);
     }
 
     // -------------------------------------------------------------------------
-    // Test 7: Structured schema task (Fast tier lead + static JSON/Schema assertion)
+    // Test 7: Structured schema task (Lite tier lead + static JSON/Schema assertion)
     // -------------------------------------------------------------------------
     {
       const t = Date.now();
@@ -222,8 +222,8 @@ async function run() {
         isValidJson = false;
       }
       const tier = res.headers.get('x-ocr-tier');
-      const ok = res.status === 200 && isValidJson && tier?.startsWith('fast');
-      record('7. Structured schema static assertion (Fast tier lead)', ok, t, `Valid JSON: ${isValidJson}, Extracted: ${JSON.stringify(parsed)}`);
+      const ok = res.status === 200 && isValidJson && tier?.startsWith('lite');
+      record('7. Structured schema static assertion (Lite tier lead)', ok, t, `Valid JSON: ${isValidJson}, Extracted: ${JSON.stringify(parsed)}`);
     }
 
     // -------------------------------------------------------------------------
@@ -303,8 +303,8 @@ async function run() {
       const t = Date.now();
       const res = await fetch(`${BASE_URL}/v1/metrics`);
       const stats = await res.json() as any;
-      const ok = res.status === 200 && stats.totalRequests >= 5 && stats.tierDistribution.fast.count > 0;
-      record('10. FinOps real-time economics analytics (GET /v1/metrics)', ok, t, `Total Requests: ${stats.totalRequests}, Fast Tier Traffic: ${stats.tierDistribution.fast.pct}%, Savings: $${stats.economics.totalSavingsUsd}`);
+      const ok = res.status === 200 && stats.totalRequests >= 5 && stats.tierDistribution.lite.count > 0;
+      record('10. FinOps real-time economics analytics (GET /v1/metrics)', ok, t, `Total Requests: ${stats.totalRequests}, Lite Tier Traffic: ${stats.tierDistribution.lite.pct}%, Savings: $${stats.economics.totalSavingsUsd}`);
     }
 
   } finally {

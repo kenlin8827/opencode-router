@@ -20,7 +20,7 @@ export type CatalogSourceId =
   | 'service';
 
 /** OCR-level tier classification (mirrors backend TierLevel). */
-export type CatalogTier = 'fast' | 'flagship' | 'reasoning';
+export type CatalogTier = 'lite' | 'plus' | 'pro' | 'ultra';
 
 export interface CatalogCost {
   input?: number;

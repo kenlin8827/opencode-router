@@ -18,16 +18,18 @@ const TH_STYLE: React.CSSProperties = {
   zIndex: 1,
 };
 
-/** Tier display: show the tier's own name (Fast / Flagship / Reasoning), not opaque numbers. */
+/** Tier display: show the tier's own name (Lite / Plus / Pro / Ultra), not opaque numbers. */
 const TIER_LABEL: Record<SessionRecord['maxTier'], string> = {
-  fast: 'sessions.tierNameFast',
-  flagship: 'sessions.tierNameFlagship',
-  reasoning: 'sessions.tierNameReasoning',
+  lite: 'sessions.tierNameLite',
+  plus: 'sessions.tierNamePlus',
+  pro: 'sessions.tierNamePro',
+  ultra: 'sessions.tierNameUltra',
 };
 const TIER_BADGE: Record<SessionRecord['maxTier'], string> = {
-  fast: 'badge-success',
-  flagship: 'badge-info',
-  reasoning: 'badge-warning',
+  lite: 'badge-success',
+  plus: 'badge-info',
+  pro: 'badge-warning',
+  ultra: 'badge-amber',
 };
 
 type SwitchKind = 'first' | 'ratchet' | 'fallback' | 'switch';

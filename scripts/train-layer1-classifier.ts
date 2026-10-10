@@ -48,11 +48,11 @@ async function main() {
       const extracted = Layer1Classifier.extractFeatures(dummyReq);
       
       // Determine ground truth label
-      let targetTier: TierLevel = raw.label?.groundTruthTier || raw.execution?.tierUsed || raw.routing?.targetTier || 'flagship';
+      let targetTier: TierLevel = raw.label?.groundTruthTier || raw.execution?.tierUsed || raw.routing?.targetTier || 'plus';
 
-      // If schema assertion fallback occurred on fast tier, it's a strong negative sample -> escalate to flagship
-      if (raw.label?.isNegativeSampleForFast || (raw.execution?.fallbackOccurred && targetTier === 'fast')) {
-        targetTier = 'flagship';
+      // If schema assertion fallback occurred on lite tier, it's a strong negative sample -> escalate to plus
+      if (raw.label?.isNegativeSampleForLite || (raw.execution?.fallbackOccurred && targetTier === 'lite')) {
+        targetTier = 'plus';
         negativeCorrections++;
       }
 

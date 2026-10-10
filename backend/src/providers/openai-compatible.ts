@@ -46,6 +46,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // into a non-streaming payload (strict upstreams like Alibaba reject
     // stream_options without stream: true with a 400).
     delete payload.stream_options;
+    // Thinking controls for chat-completions wire: reasoning_effort is the
+    // OpenAI-standard field and most OpenAI-compatible upstreams (Azure,
+    // DeepSeek, etc.) honor it. Pass it through explicitly so a future
+    // refactor that strips unknown fields can't silently drop it. The
+    // 5-level vocabulary (none/low/medium/high/xhigh) flows through
+    // verbatim — upstream rejects unsupported values with a clear 400.
+    if (request.reasoning_effort) payload.reasoning_effort = request.reasoning_effort;
 
     // Event-stream emit BEFORE the fetch fires — independent of the response.
     // Pairs with the upstream-response event below via `spanId`.
@@ -174,6 +181,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
       stream_options: { include_usage: true },
     };
     delete payload.router_options;
+    // Thinking controls for chat-completions wire: reasoning_effort is the
+    // OpenAI-standard field and most OpenAI-compatible upstreams (Azure,
+    // DeepSeek, etc.) honor it. Pass it through explicitly so a future
+    // refactor that strips unknown fields can't silently drop it. Max
+    // thinking tokens has no standard chat-completions name — leave it on
+    // the wire too, in case the upstream speaks OpenAI Responses internally.
+    if (request.reasoning_effort) payload.reasoning_effort = request.reasoning_effort;
 
     const res = await proxiedFetch(url, {
       method: 'POST',

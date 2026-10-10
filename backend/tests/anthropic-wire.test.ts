@@ -71,6 +71,56 @@ describe('Anthropic inbound wire: request conversion with tools', () => {
     } as any);
     assert.strictEqual(request?.user, 'user_abc_account_xyz_session_6f978fa1-8a13-4a42-9f77-65bef0e6802f');
   });
+
+  it('maps thinking.type=enabled + budget_tokens to max_thinking_tokens', () => {
+    const { request } = anthropicToOpenAI({
+      model: 'claude-x',
+      max_tokens: 100,
+      thinking: { type: 'enabled', budget_tokens: 5000 },
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any);
+    assert.strictEqual(request?.max_thinking_tokens, 5000);
+  });
+
+  it('omits max_thinking_tokens when thinking.type=adaptive (no budget to forward)', () => {
+    const { request } = anthropicToOpenAI({
+      model: 'claude-x',
+      max_tokens: 100,
+      thinking: { type: 'adaptive' },
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any);
+    assert.strictEqual(request?.max_thinking_tokens, undefined);
+  });
+
+  it('omits max_thinking_tokens when no thinking block is supplied', () => {
+    const { request } = anthropicToOpenAI({
+      model: 'claude-x',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any);
+    assert.strictEqual(request?.max_thinking_tokens, undefined);
+  });
+
+  it('thinking.type=disabled maps to reasoning_effort=none', () => {
+    const { request } = anthropicToOpenAI({
+      model: 'claude-x',
+      max_tokens: 100,
+      thinking: { type: 'disabled' },
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any);
+    assert.strictEqual(request?.reasoning_effort, 'none');
+  });
+
+  it('thinking.type=adaptive leaves both max_thinking_tokens and reasoning_effort unset', () => {
+    const { request } = anthropicToOpenAI({
+      model: 'claude-x',
+      max_tokens: 100,
+      thinking: { type: 'adaptive' },
+      messages: [{ role: 'user', content: 'hi' }],
+    } as any);
+    assert.strictEqual(request?.max_thinking_tokens, undefined);
+    assert.strictEqual(request?.reasoning_effort, undefined);
+  });
 });
 
 describe('Anthropic inbound wire: response conversion with tools', () => {

@@ -222,3 +222,219 @@ describe('Responses upstream wire: tools mapping', () => {
     assert.strictEqual(resp.usage.total_tokens, 7, 'total falls back to input+output when absent');
   });
 });
+
+describe('Reasoning-token surfacing in upstream responses', () => {
+  it('Anthropic: surfaces output_tokens_details.thinking_tokens as reasoning_tokens', () => {
+    const resp = anthropicToChatCompletion(
+      {
+        id: 'msg_1',
+        content: [{ type: 'text', text: '42' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 5,
+          output_tokens: 10,
+          output_tokens_details: { thinking_tokens: 7 },
+        },
+      } as any,
+      model
+    );
+    assert.strictEqual(resp.usage?.completion_tokens_details?.reasoning_tokens, 7);
+  });
+
+  it('Anthropic: omits reasoning breakdown when thinking_tokens is absent', () => {
+    const resp = anthropicToChatCompletion(
+      {
+        id: 'msg_2',
+        content: [{ type: 'text', text: 'plain' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 10 },
+      } as any,
+      model
+    );
+    assert.strictEqual(resp.usage?.completion_tokens_details, undefined);
+  });
+
+  it('Google: surfaces usageMetadata.thoughtsTokenCount as reasoning_tokens', () => {
+    const resp = googleToChatCompletion(
+      {
+        candidates: [
+          {
+            content: { parts: [{ text: '42' }] },
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 10, totalTokenCount: 15, thoughtsTokenCount: 8 },
+      } as any,
+      model
+    );
+    assert.strictEqual(resp.usage?.completion_tokens_details?.reasoning_tokens, 8);
+  });
+
+  it('Google: omits reasoning breakdown when thoughtsTokenCount is absent', () => {
+    const resp = googleToChatCompletion(
+      {
+        candidates: [
+          { content: { parts: [{ text: 'plain' }] }, finishReason: 'STOP' },
+        ],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 10, totalTokenCount: 15 },
+      } as any,
+      model
+    );
+    assert.strictEqual(resp.usage?.completion_tokens_details, undefined);
+  });
+
+  it('Responses: surfaces output_tokens_details.reasoning_tokens', () => {
+    const resp = responsesToChatCompletion(
+      {
+        id: 'resp_1',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: '42' }] }],
+        usage: {
+          input_tokens: 5,
+          output_tokens: 10,
+          total_tokens: 15,
+          output_tokens_details: { reasoning_tokens: 6 },
+        },
+      } as any,
+      model
+    );
+    assert.strictEqual(resp.usage?.completion_tokens_details?.reasoning_tokens, 6);
+  });
+});
+
+describe('Thinking controls across upstreams', () => {
+  it('Anthropic: maps reasoning_effort ladder to thinking.budget_tokens and bumps max_tokens', () => {
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'high' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.thinking, { type: 'enabled', budget_tokens: 16384 });
+    // max_tokens must leave headroom over the budget so Anthropic accepts the request.
+    assert.ok(p.max_tokens > 16384, `max_tokens (${p.max_tokens}) must exceed thinking budget`);
+  });
+
+  it('Anthropic: explicit max_thinking_tokens wins over effort ladder', () => {
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'low', max_thinking_tokens: 8000 } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.thinking, { type: 'enabled', budget_tokens: 8000 });
+  });
+
+  it('Anthropic: leaves thinking unset when neither effort nor budget is given', () => {
+    const p = buildAnthropicPayload(chatRequest, model) as any;
+    assert.strictEqual(p.thinking, undefined);
+  });
+
+  it('Google: maps reasoning_effort ladder to thinkingConfig.thinkingBudget', () => {
+    const p = buildGooglePayload(
+      { ...chatRequest, reasoning_effort: 'medium' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.generationConfig.thinkingConfig, {
+      thinkingBudget: 4096,
+      includeThoughts: true,
+    });
+  });
+
+  it('Google: explicit max_thinking_tokens wins over effort ladder', () => {
+    const p = buildGooglePayload(
+      { ...chatRequest, reasoning_effort: 'low', max_thinking_tokens: 2000 } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.generationConfig.thinkingConfig, {
+      thinkingBudget: 2000,
+      includeThoughts: true,
+    });
+  });
+
+  it('Google: omits thinkingConfig when neither effort nor budget is set', () => {
+    const p = buildGooglePayload(chatRequest, model) as any;
+    assert.strictEqual(p.generationConfig?.thinkingConfig, undefined);
+  });
+
+  it('Responses: maps reasoning_effort + max_thinking_tokens into the reasoning object', () => {
+    const p = buildResponsesPayload(
+      { ...chatRequest, reasoning_effort: 'high', max_thinking_tokens: 9000 } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.reasoning, { effort: 'high', max_tokens: 9000 });
+  });
+
+  it('Responses: emits reasoning.max_tokens alone when only budget is given', () => {
+    const p = buildResponsesPayload(
+      { ...chatRequest, max_thinking_tokens: 1500 } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.reasoning, { max_tokens: 1500 });
+  });
+
+  it('Anthropic: reasoning_effort=none leaves thinking unset (upstream default)', () => {
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'none' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.strictEqual(p.thinking, undefined);
+  });
+
+  it('Anthropic: reasoning_effort=xhigh maps to budget_tokens=32768', () => {
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'xhigh' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.thinking, { type: 'enabled', budget_tokens: 32768 });
+    assert.ok(p.max_tokens > 32768);
+  });
+
+  it('Google: reasoning_effort=none leaves thinkingConfig unset', () => {
+    const p = buildGooglePayload(
+      { ...chatRequest, reasoning_effort: 'none' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.strictEqual(p.generationConfig?.thinkingConfig, undefined);
+  });
+
+  it('Google: reasoning_effort=xhigh maps to thinkingBudget=32768', () => {
+    const p = buildGooglePayload(
+      { ...chatRequest, reasoning_effort: 'xhigh' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.generationConfig.thinkingConfig, {
+      thinkingBudget: 32768,
+      includeThoughts: true,
+    });
+  });
+
+  it('Responses: reasoning_effort=none passes through verbatim (OpenAI Responses treats it as "no reasoning")', () => {
+    const p = buildResponsesPayload(
+      { ...chatRequest, reasoning_effort: 'none' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.reasoning, { effort: 'none' });
+  });
+
+  it('Responses: reasoning_effort=xhigh passes through verbatim', () => {
+    const p = buildResponsesPayload(
+      { ...chatRequest, reasoning_effort: 'xhigh' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.reasoning, { effort: 'xhigh' });
+  });
+
+  it('reasoning_effort=none with explicit max_thinking_tokens → budget wins (explicit value beats "no effort")', () => {
+    // Operator sanity test: "none" means "I want no effort control" but
+    // an explicit budget number IS a budget directive. Documented ordering.
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'none', max_thinking_tokens: 8000 } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.deepStrictEqual(p.thinking, { type: 'enabled', budget_tokens: 8000 });
+  });
+
+  it('reasoning_effort=none alone → no thinking block on Anthropic', () => {
+    const p = buildAnthropicPayload(
+      { ...chatRequest, reasoning_effort: 'none' } as ChatCompletionRequest,
+      model
+    ) as any;
+    assert.strictEqual(p.thinking, undefined, 'none must not construct thinking block');
+  });
+});

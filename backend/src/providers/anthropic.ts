@@ -104,6 +104,38 @@ export function buildAnthropicPayload(request: ChatCompletionRequest, model: Mod
     system: systemPrompt,
     temperature: request.temperature,
   };
+  // Extended thinking: Anthropic requires `thinking.type=enabled` plus a positive
+  // `budget_tokens`; budget is the upper bound on thinking tokens consumed
+  // before the final answer (must be < max_tokens). Map the gateway's 5-level
+  // effort vocabulary → token budgets when an exact budget isn't given.
+  // `none` (or omitted) means "do not construct a thinking block" — the
+  // upstream decides on its own (Opus 5.5+ defaults to adaptive thinking;
+  // older models default off). Reference: Anthropic Messages API
+  // "Extended thinking" + the new `output_config.effort` parameter.
+  const EFFORT_TO_BUDGET: Record<'low' | 'medium' | 'high' | 'xhigh', number> = {
+    low: 1024,
+    medium: 4096,
+    high: 16384,
+    xhigh: 32768,
+  };
+  // `none` (or no field at all) → leave `thinking` unset; every other level
+  // explicitly turns thinking on with a budget. `xhigh` is only honored by
+  // Opus 5.5 / Sonnet 5.5 / Fable 5.1 — on older models the budget is
+  // accepted but the model spends less than it would at the corresponding
+  // native effort level.
+  const wantsThinking = request.reasoning_effort && request.reasoning_effort !== 'none';
+  if (wantsThinking || request.max_thinking_tokens != null) {
+    const budget =
+      request.max_thinking_tokens != null && request.max_thinking_tokens > 0
+        ? request.max_thinking_tokens
+        : EFFORT_TO_BUDGET[request.reasoning_effort as 'low' | 'medium' | 'high' | 'xhigh'];
+    // Anthropic requires budget_tokens < max_tokens; bump max_tokens to leave headroom.
+    if (typeof budget === 'number' && budget > 0) {
+      const headroom = Math.max(payload.max_tokens, budget + 1024);
+      if (headroom > payload.max_tokens) payload.max_tokens = headroom;
+      payload.thinking = { type: 'enabled', budget_tokens: budget };
+    }
+  }
   if (request.tools?.length) {
     payload.tools = request.tools.map((t) => ({
       name: t.function.name,
@@ -142,6 +174,10 @@ export function anthropicToChatCompletion(data: any, model: ModelRegistration): 
   const cachedTokens = data.usage?.cache_read_input_tokens || 0;
   const uncachedInput = data.usage?.input_tokens || 0;
   const outputTokens = data.usage?.output_tokens || 0;
+  // Anthropic extended-thinking tokens ride in `usage.output_tokens_details.thinking_tokens`
+  // (Anthropic Messages API reference). Surface them as OpenAI's
+  // `completion_tokens_details.reasoning_tokens` so downstream cost math + clients see them.
+  const thinkingTokens = data.usage?.output_tokens_details?.thinking_tokens || 0;
   const finishReason =
     data.stop_reason === 'tool_use' ? 'tool_calls' : data.stop_reason === 'max_tokens' ? 'length' : 'stop';
 
@@ -168,6 +204,15 @@ export function anthropicToChatCompletion(data: any, model: ModelRegistration): 
       prompt_tokens_details: {
         cached_tokens: cachedTokens,
       },
+      // Only attach the thinking breakdown when there are actual thinking
+      // tokens — keeps the response shape tight for non-thinking calls.
+      ...(thinkingTokens > 0
+        ? {
+            completion_tokens_details: {
+              reasoning_tokens: thinkingTokens,
+            },
+          }
+        : {}),
     },
   };
 }

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { ExecutionResult, ModelPricing, RoutingDecision, TierLevel } from '../types/router.js';
+import { ExecutionResult, ModelPricing, ReasoningEffort, REASONING_EFFORT_RANK, RoutingDecision, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
@@ -17,6 +17,7 @@ import { CaptureRecorder } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
 import { emitClientRequest, setClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveTraceId } from '../observability/trace-id.js';
+import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 
 export interface ProcessContext {
@@ -106,7 +107,7 @@ export class PipelineOrchestrator {
     this.captureRecorder = new CaptureRecorder(config.capture);
 
     // Lookup baseline pricing for FinOps dollar calculation
-    const baselineModel = this.registry.getModel(config.baselineModel) || this.registry.getModelForTier('flagship');
+    const baselineModel = this.registry.getModel(config.baselineModel) || this.registry.getModelForTier('plus');
     this.baselinePricing = baselineModel.pricing;
 
     if (config.circuitBreaker?.activeProbing?.enabled) {
@@ -256,12 +257,14 @@ export class PipelineOrchestrator {
     };
 
     let explicitModel: ModelRegistration | undefined;
-    if (request.model === 'auto-fast') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'fast' };
-    } else if (request.model === 'auto-flagship') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'flagship' };
-    } else if (request.model === 'auto-reasoning') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'reasoning' };
+    if (request.model === 'auto-lite') {
+      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'lite' };
+    } else if (request.model === 'auto-plus') {
+      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'plus' };
+    } else if (request.model === 'auto-pro') {
+      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'pro' };
+    } else if (request.model === 'auto-ultra') {
+      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'ultra' };
     } else if (request.model && request.model !== 'auto') {
       const specific = this.registry.getModel(request.model);
       if (specific) {
@@ -340,7 +343,7 @@ export class PipelineOrchestrator {
     // executed member's real tier overwrites it after the pool run.
     const initialDecision: RoutingDecision = comboId
       ? {
-          targetTier: 'flagship',
+          targetTier: 'plus',
           confidence: 1.0,
           reason: `Custom combo '${comboId}' — explicit candidate list, classifier bypassed`,
           layerUsed: 'layer0',
@@ -430,6 +433,51 @@ export class PipelineOrchestrator {
 
     let finalResponse: ChatCompletionResponse;
     let actualModel: ModelRegistration = preferredModel || this.registry.getModelForTier(actualTier, true);
+    // Reasoning-effort matching. When the client requested a specific effort
+    // level, registry picks the closest model and may downgrade to whatever
+    // that model can serve. The actual served level is written back onto the
+    // request so the upstream payload builder sees the truth (no client-side
+    // hints contradict what's actually sent). `reasoningDegraded` is surfaced
+    // to the client via `X-OCR-Thinking-Actual` / `X-OCR-Thinking-Degraded`
+    // response headers (see server.ts).
+    const requestedEffort: ReasoningEffort = normalizedRequest.reasoning_effort ?? 'none';
+    let actualEffort: ReasoningEffort = 'none';
+    let reasoningDegraded = false;
+    const effortPick = (() => {
+      if (requestedEffort === 'none') return null;
+      // Skip effort-based pick when the request is an explicit model choice
+      // OR a combo — both are pinned by the caller and must not be re-routed.
+      if (preferredModel || comboId) return null;
+      return this.registry.pickModelForEffort(actualTier, requestedEffort, true);
+    })();
+    if (effortPick) {
+      actualModel = effortPick.model;
+      actualEffort = effortPick.actualEffort;
+      reasoningDegraded = effortPick.degraded;
+      // Write the resolved effort back so provider builders construct the
+      // correct upstream payload (Anthropic budget_tokens, Gemini
+      // thinkingBudget, Responses thinkingEffort, etc.).
+      if (actualEffort !== requestedEffort) {
+        normalizedRequest.reasoning_effort = actualEffort;
+      }
+    } else if (preferredModel && requestedEffort !== 'none') {
+      // Explicit model choice (or pinned combo): the caller pinned the
+      // model, but the effort match must STILL downgrade to whatever that
+      // model can serve — same honesty contract. We never re-route, but we
+      // do write back the lower effort so the upstream sees the truth.
+      const supported = preferredModel.supportedReasoningEfforts
+        ?? (preferredModel.supportsReasoningEffort
+          ? ['low', 'medium', 'high', 'xhigh']
+          : []);
+      const recomputed = downgradeReasoning(requestedEffort, supported);
+      actualEffort = recomputed;
+      reasoningDegraded = recomputed !== requestedEffort;
+      if (recomputed !== requestedEffort) {
+        normalizedRequest.reasoning_effort = recomputed;
+      }
+    } else {
+      actualEffort = requestedEffort;
+    }
     let fallbackOccurred = false;
     let fallbackReason: string | undefined = undefined;
     let failoverOccurred = false;
@@ -438,7 +486,7 @@ export class PipelineOrchestrator {
     let inplaceRetries = 0;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
-    // (fast-lead cascade is skipped for explicit model choices and combos —
+    // (lite-lead cascade is skipped for explicit model choices and combos —
     // the client named exactly what to run and must not be silently rerouted)
     const retryConfig = this.config.retry;
     const failoverEnabled = retryConfig?.enabled !== false && retryConfig?.failover?.enabled !== false;
@@ -446,52 +494,64 @@ export class PipelineOrchestrator {
     const tierCrossPolicy = retryConfig?.failover?.tierCrossPolicy ?? 'allow_escalate';
 
     if (decision.needsSchemaValidation && this.config.fallback.enabled && !request.router_options?.disable_fallback && !explicitModel && !comboId) {
-      // 5A: Fast Tier lead - Deploy Fast Tier first with resilience
-      const fastPool = this.registry.getCandidateModelsForTier('fast', true);
-      const fastResult = await this.executeCandidatePool(
+      // 5A: Lite Tier lead - Deploy Lite Tier first with resilience
+      const litePool = this.registry.getCandidateModelsForTier('lite', true);
+      const liteResult = await this.executeCandidatePool(
         normalizedRequest,
         {
-          chain: fastPool.length > 0 ? fastPool : this.registry.getCandidateModelsForTier('fast', false),
-          tier: 'fast',
+          chain: litePool.length > 0 ? litePool : this.registry.getCandidateModelsForTier('lite', false),
+          tier: 'lite',
           allowEscalate: tierCrossPolicy === 'allow_escalate',
           attemptCap: maxFailoverCandidates,
         },
         upstreamEventContext
       );
 
-      let fastRes: ChatCompletionResponse | null = null;
+      let liteRes: ChatCompletionResponse | null = null;
       let assertionPassed = false;
       let assertionError = '';
 
-      if (fastResult.success && fastResult.response) {
-        fastRes = fastResult.response;
-        const content = fastRes.choices[0]?.message?.content || '';
+      if (liteResult.success && liteResult.response) {
+        liteRes = liteResult.response;
+        const content = liteRes.choices[0]?.message?.content || '';
 
         // Local static AST / Schema assertion (Zero extra LLM cost!)
         const validation = SchemaAssertion.validate(content, normalizedRequest.response_format);
         if (validation.valid) {
           assertionPassed = true;
-          finalResponse = fastRes;
-          actualTier = 'fast';
-          actualModel = fastResult.modelUsed!;
-          failoverOccurred = fastResult.failoverOccurred;
-          failoverAttempts = fastResult.failoverAttempts;
-          failoverPath = fastResult.failoverPath;
-          inplaceRetries += fastResult.inplaceRetries;
+          finalResponse = liteRes;
+          actualTier = 'lite';
+          actualModel = liteResult.modelUsed!;
+          // Same post-execution recompute as the direct path — lite failover
+          // may have served a model whose supported set differs from the
+          // tier-pick prediction.
+          if (requestedEffort !== 'none') {
+            const servedSupported = actualModel.supportedReasoningEfforts
+              ?? (actualModel.supportsReasoningEffort
+                ? ['low', 'medium', 'high', 'xhigh']
+                : []);
+            const recomputed = downgradeReasoning(requestedEffort, servedSupported);
+            actualEffort = recomputed;
+            reasoningDegraded = recomputed !== requestedEffort;
+          }
+          failoverOccurred = liteResult.failoverOccurred;
+          failoverAttempts = liteResult.failoverAttempts;
+          failoverPath = liteResult.failoverPath;
+          inplaceRetries += liteResult.inplaceRetries;
         } else {
           assertionError = validation.error || 'Schema validation assertion failed';
         }
       } else {
-        assertionError = `Fast Tier Execution Error: ${fastResult.lastError?.message}`;
+        assertionError = `Lite Tier Execution Error: ${liteResult.lastError?.message}`;
       }
 
-      // 5B: Flagship fallback - If Fast Tier failed assertion or execution, silent escalation
+      // 5B: Plus fallback - If Lite Tier failed assertion or execution, silent escalation
       if (!assertionPassed) {
         fallbackOccurred = true;
         fallbackReason = assertionError;
-        const escalateTier = this.config.fallback.escalateTier || 'flagship';
+        const escalateTier = this.config.fallback.escalateTier || 'plus';
 
-        const failedContent = fastRes?.choices[0]?.message?.content || '';
+        const failedContent = liteRes?.choices[0]?.message?.content || '';
         const fallbackReq = FallbackContextBuilder.buildEscalationRequest(
           normalizedRequest,
           failedContent,
@@ -499,7 +559,7 @@ export class PipelineOrchestrator {
           escalateTier
         );
 
-        const flagshipResult = await this.executeCandidatePool(
+        const plusResult = await this.executeCandidatePool(
           fallbackReq,
           {
             chain: this.registry.getCandidateModelsForTier(escalateTier, true),
@@ -510,17 +570,28 @@ export class PipelineOrchestrator {
           upstreamEventContext
         );
 
-        if (!flagshipResult.success || !flagshipResult.response) {
-          throw flagshipResult.lastError || new Error(`Flagship escalation failed for tier '${escalateTier}'`);
+        if (!plusResult.success || !plusResult.response) {
+          throw plusResult.lastError || new Error(`Plus escalation failed for tier '${escalateTier}'`);
         }
 
-        finalResponse = flagshipResult.response;
+        finalResponse = plusResult.response;
         actualTier = escalateTier;
-        actualModel = flagshipResult.modelUsed!;
-        failoverOccurred = flagshipResult.failoverOccurred;
-        failoverAttempts = flagshipResult.failoverAttempts;
-        failoverPath = flagshipResult.failoverPath;
-        inplaceRetries += flagshipResult.inplaceRetries;
+        actualModel = plusResult.modelUsed!;
+        // Recompute effort against the actually-served model (same contract
+        // as the direct path).
+        if (requestedEffort !== 'none') {
+          const servedSupported = actualModel.supportedReasoningEfforts
+            ?? (actualModel.supportsReasoningEffort
+              ? ['low', 'medium', 'high', 'xhigh']
+              : []);
+          const recomputed = downgradeReasoning(requestedEffort, servedSupported);
+          actualEffort = recomputed;
+          reasoningDegraded = recomputed !== requestedEffort;
+        }
+        failoverOccurred = plusResult.failoverOccurred;
+        failoverAttempts = plusResult.failoverAttempts;
+        failoverPath = plusResult.failoverPath;
+        inplaceRetries += plusResult.inplaceRetries;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -557,7 +628,7 @@ export class PipelineOrchestrator {
         // auto routing only). Cross-tier escalation is an auto-routing
         // policy — an explicit model fails over within its tier by contract.
         attemptCap = explicitModel ? Math.max(1, chain.length) : maxFailoverCandidates;
-        allowEscalate = !explicitModel && tierCrossPolicy === 'allow_escalate' && actualTier === 'fast';
+        allowEscalate = !explicitModel && tierCrossPolicy === 'allow_escalate' && actualTier === 'lite';
       }
 
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
@@ -574,6 +645,19 @@ export class PipelineOrchestrator {
       finalResponse = execResult.response;
       actualModel = execResult.modelUsed!;
       actualTier = execResult.tierUsed!;
+      // Recompute `actualEffort` against the model that ACTUALLY served the
+      // request — failover may have shifted to a different model than the
+      // one `pickModelForEffort` originally picked, with a different effort
+      // ceiling. The header / ExecutionResult must reflect reality.
+      if (requestedEffort !== 'none') {
+        const servedSupported = actualModel.supportedReasoningEfforts
+          ?? (actualModel.supportsReasoningEffort
+            ? ['low', 'medium', 'high', 'xhigh']
+            : []);
+        const recomputed = downgradeReasoning(requestedEffort, servedSupported);
+        actualEffort = recomputed;
+        reasoningDegraded = recomputed !== requestedEffort;
+      }
       failoverOccurred = execResult.failoverOccurred;
       failoverAttempts = execResult.failoverAttempts;
       failoverPath = execResult.failoverPath;
@@ -609,11 +693,50 @@ export class PipelineOrchestrator {
     // 7. FinOps Tracking & Economics Calculation
     const latencyMs = Date.now() - startTime;
     const actualCost = BudgetManager.calculateCost(finalResponse!.usage, actualModel.pricing);
-    const baselineCost = BudgetManager.calculateBaselineCost(
-      finalResponse!.usage,
-      this.baselinePricing
-    );
+    const baselineCost = BudgetManager.calculateBaselineCost(finalResponse!.usage, this.baselinePricing);
     const savedCostUsd = Math.max(0, baselineCost - actualCost);
+
+    // Thinking-level observability. Two cases that warrant a warn:
+    //   1. Client asked for thinking but the actually-served model can't do
+    //      thinking at all — payload builder silently dropped the fields.
+    //   2. Client asked for `requested` effort but the served model can only
+    //      reach `actualEffort` (downgraded). This is by design (per
+    //      operator policy 2026-10), but a separate warn + response header
+    //      keeps the client honest about what they got.
+    const wantsThinking = Boolean(
+      normalizedRequest.reasoning_effort ||
+        (typeof normalizedRequest.max_thinking_tokens === 'number' && normalizedRequest.max_thinking_tokens > 0)
+    );
+    const modelEfforts = actualModel.supportedReasoningEfforts
+      ?? (actualModel.supportsReasoningEffort ? ['low', 'medium', 'high', 'xhigh'] : []);
+    const supportsAnyThinking = modelEfforts.length > 0;
+    // Both warn paths go through the dedup + rate-limit warn throttle: at
+    // QPS a misconfigured pool would otherwise print one warn per request.
+    // Key = (condition, model, requested-effort) so operators can pin the
+    // exact (model × asked-effort) tuple from a single line, and repeat
+    // counts fold into the first line so persistent misconfig is visible
+    // without becoming noise.
+    const throttle = getWarnThrottle();
+    if (wantsThinking && !supportsAnyThinking) {
+      const key = `no-capability|${actualModel.id}|${actualModel.wire ?? 'openai'}`;
+      throttle.warn(
+        key,
+        `[ocr] thinking-level request served by '${actualModel.id}' (${actualModel.wire ?? 'openai'} wire) — ` +
+          `model has no thinking-effort capability, thinking controls were silently dropped.`
+      );
+    }
+    if (reasoningDegraded && requestedEffort !== actualEffort) {
+      const requestedRank = REASONING_EFFORT_RANK[requestedEffort];
+      const actualRank = REASONING_EFFORT_RANK[actualEffort];
+      const gap = requestedRank - actualRank;
+      const key = `downgrade|${actualModel.id}|${requestedEffort}->${actualEffort}`;
+      throttle.warn(
+        key,
+        `[ocr] thinking effort downgraded: client requested '${requestedEffort}', ` +
+          `served '${actualEffort}' on model '${actualModel.id}' (gap=${gap} levels, ` +
+          `model supports [${modelEfforts.join(', ') || 'none'}])`
+      );
+    }
 
     const cachedTokens = PromptOptimizer.extractCachedTokens(finalResponse!.usage);
     this.tracker.record({
@@ -717,6 +840,12 @@ export class PipelineOrchestrator {
       baselineCostUsd: baselineCost,
       savedCostUsd,
       latencyMs,
+      // Reasoning-effort observability — server.ts reads these to set
+      // X-OCR-Thinking-{Requested,Actual,Degraded} headers so the client
+      // can see whether they got the level they asked for.
+      requestedEffort,
+      actualEffort,
+      reasoningDegraded,
     };
   }
 
@@ -728,9 +857,9 @@ export class PipelineOrchestrator {
    *
    * Chain contract: chain[0] is the leader (pinned model / explicit model /
    * combo leader), the rest follow failover order. When `allowEscalate` is
-   * set (auto fast-tier only), healthy flagship models are appended as a
-   * cross-tier escalation tail — Strict Anti-Downgrade: flagship chains never
-   * get fast models appended.
+   * set (auto lite-tier only), healthy plus-tier models are appended as a
+   * cross-tier escalation tail — Strict Anti-Downgrade: plus chains never
+   * get lite models appended.
    *
    * Two-Tier Cost-Aware Resilience Architecture:
    * 1. In-Place Retry (Preserve Upstream KV Prompt Cache, Prevent 10x Cost Invalidation):
@@ -783,7 +912,7 @@ export class PipelineOrchestrator {
     // 1. Candidate list = resolved chain (+ cross-tier escalation tail when allowed)
     const candidateList = [...opts.chain];
     if (allowEscalate) {
-      for (const m of this.registry.getCandidateModelsForTier('flagship', true)) {
+      for (const m of this.registry.getCandidateModelsForTier('plus', true)) {
         if (!candidateList.some(c => c.id === m.id)) candidateList.push(m);
       }
     }

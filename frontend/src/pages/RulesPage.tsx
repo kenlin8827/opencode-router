@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Zap, Scale, Brain, Save, RefreshCw, Plus, X, RotateCcw, Eye, Search } from 'lucide-react';
+import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, RotateCcw, Eye, Search } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
 import { DEFAULT_TIER_MATCH } from '../lib/tierMatch';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 
-type Tier = 'fast' | 'flagship' | 'reasoning';
+type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
 
 interface WeightRow {
   pattern: string;
@@ -28,10 +28,11 @@ interface TierPolicyForm {
   weights: WeightRow[];
 }
 
-const TIERS: { key: Tier; labelKey: string; icon: typeof Zap; color: string }[] = [
-  { key: 'fast', labelKey: 'tierPolicy.tierFast', icon: Zap, color: 'var(--accent-emerald)' },
-  { key: 'flagship', labelKey: 'tierPolicy.tierFlagship', icon: Scale, color: 'var(--accent)' },
-  { key: 'reasoning', labelKey: 'tierPolicy.tierReasoning', icon: Brain, color: 'var(--accent-violet)' },
+const TIERS: { key: Tier; labelKey: string; descKey: string; icon: typeof Zap; color: string }[] = [
+  { key: 'lite', labelKey: 'tierPolicy.tierLite', descKey: 'tierPolicy.tierDescLite', icon: Zap, color: 'var(--accent-emerald)' },
+  { key: 'plus', labelKey: 'tierPolicy.tierPlus', descKey: 'tierPolicy.tierDescPlus', icon: Scale, color: 'var(--accent)' },
+  { key: 'pro', labelKey: 'tierPolicy.tierPro', descKey: 'tierPolicy.tierDescPro', icon: Brain, color: 'var(--accent-violet)' },
+  { key: 'ultra', labelKey: 'tierPolicy.tierUltra', descKey: 'tierPolicy.tierDescUltra', icon: Sparkles, color: 'var(--accent-amber, var(--accent))' },
 ];
 
 const splitPatterns = (s: string): string[] =>
@@ -86,7 +87,7 @@ const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
     matchPatternsTouched: p?.match?.patterns != null,
     excludePatternsTouched: p?.match?.exclude != null,
     matchExcludeTiers: (Array.isArray(p?.match?.excludeTiers) ? p.match.excludeTiers : []).filter(
-      (x: unknown): x is Tier => x === 'fast' || x === 'flagship' || x === 'reasoning',
+      (x: unknown): x is Tier => x === 'lite' || x === 'plus' || x === 'pro' || x === 'ultra',
     ),
     selection: p?.selection ?? (p?.weights?.length ? 'weighted' : 'priority'),
     weights: (p?.weights || []).map((w: any) => ({ pattern: String(w.pattern ?? ''), weight: String(w.weight ?? 1) })),
@@ -171,9 +172,10 @@ export const RulesPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const [forms, setForms] = useState<Record<Tier, TierPolicyForm>>({
-    fast: defaultFormFor('fast'),
-    flagship: defaultFormFor('flagship'),
-    reasoning: defaultFormFor('reasoning'),
+    lite: defaultFormFor('lite'),
+    plus: defaultFormFor('plus'),
+    pro: defaultFormFor('pro'),
+    ultra: defaultFormFor('ultra'),
   });
   // tiers.exclude (GLOBAL denylist) has no card on this page — it is edited on
   // the raw-YAML page. It is still round-tripped here because the backend
@@ -267,9 +269,10 @@ export const RulesPage: React.FC = () => {
         const cfg = await api.getConfig();
         const tiers = cfg?.tiers || {};
         setForms({
-          fast: formFromPolicy('fast', tiers.fast),
-          flagship: formFromPolicy('flagship', tiers.flagship),
-          reasoning: formFromPolicy('reasoning', tiers.reasoning),
+          lite: formFromPolicy('lite', tiers.lite),
+          plus: formFromPolicy('plus', tiers.plus),
+          pro: formFromPolicy('pro', tiers.pro),
+          ultra: formFromPolicy('ultra', tiers.ultra),
         });
         setGlobalExclude((tiers.exclude || []).join('\n'));
         await loadPools();
@@ -397,7 +400,7 @@ export const RulesPage: React.FC = () => {
 
       {/* One policy card per tier */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '16px' }}>
-        {TIERS.map(({ key: tier, labelKey, icon: Icon, color }) => {
+        {TIERS.map(({ key: tier, labelKey, descKey, icon: Icon, color }) => {
           const f = forms[tier];
           // Card footer = EPHEMERAL preview from the current form (debounced
           // 500ms via loadPools). Updates as the user edits, so the count
@@ -433,6 +436,8 @@ export const RulesPage: React.FC = () => {
                   <span>{t('tierPolicy.resetBtn')}</span>
                 </button>
               </div>
+
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5, marginTop: '-6px' }}>{t(descKey)}</div>
 
               {/* Smart match — classification rules that put models INTO this
                   tier at boot (blank fields = built-in baseline, shown as
@@ -477,7 +482,7 @@ export const RulesPage: React.FC = () => {
                   onChange={(e) => updateForm(tier, { excludePatterns: e.target.value, excludePatternsTouched: true })}
                 />
                 <label style={{ ...labelStyle, marginTop: '8px' }}>{t('tierPolicy.excludeTiersLabel')}</label>
-                <div style={{ display: 'flex', gap: '6px' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                   {TIERS.filter((x) => x.key !== tier).map(({ key: other, labelKey }) => {
                     const on = f.matchExcludeTiers.includes(other);
                     return (
@@ -485,7 +490,7 @@ export const RulesPage: React.FC = () => {
                         key={other}
                         type="button"
                         className={on ? 'btn btn-primary' : 'btn'}
-                        style={{ fontSize: '11px', padding: '3px 9px' }}
+                        style={{ fontSize: '12px', padding: '5px 12px', whiteSpace: 'nowrap' }}
                         title={t('tierPolicy.excludeTiersHint')}
                         onClick={() =>
                           updateForm(tier, {
@@ -495,7 +500,7 @@ export const RulesPage: React.FC = () => {
                           })
                         }
                       >
-                        {on ? <X size={10} /> : <Plus size={10} />}
+                        {on ? <X size={12} /> : <Plus size={12} />}
                         <span>{t(labelKey)}</span>
                       </button>
                     );

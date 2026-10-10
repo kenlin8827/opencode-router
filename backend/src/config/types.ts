@@ -1,4 +1,4 @@
-import { ModelPricing, TierLevel } from '../types/router.js';
+import { ModelPricing, ReasoningEffort, TierLevel } from '../types/router.js';
 
 import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
@@ -22,6 +22,14 @@ export interface ModelRegistration {
   wire?: 'openai' | 'anthropic' | 'google' | 'responses';
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
+  /**
+   * Subset of `ReasoningEffort` this model can natively serve. Empty / missing
+   * means "model-default only". Used by the routing layer to filter + downgrade
+   * the candidate pool when the client requests a specific effort level.
+   */
+  supportedReasoningEfforts?: ReasoningEffort[];
+  /** Legacy boolean; if true and `supportedReasoningEfforts` is unset, the model
+   *  is treated as supporting all 4 non-default levels (low/medium/high/xhigh). */
   supportsReasoningEffort?: boolean;
   supportsPromptCaching?: boolean;
   /**
@@ -37,7 +45,7 @@ export interface ModelRegistration {
    * ADR-0012 fourth state: the model matched no tier's positive conditions
    * (no residual fallback any more). It joins NO candidate pool. Kept as a
    * flag rather than widening `tier` so TIER_RANK / failover chains / session
-   * ratchet keep operating on the strict three-state TierLevel.
+   * ratchet keep operating on the strict four-state TierLevel.
    */
   unclassified?: boolean;
 }
@@ -70,14 +78,14 @@ export interface ComboConfig {
 export interface FallbackConfig {
   enabled: boolean;
   maxRetries: number;
-  escalateTier: 'flagship' | 'reasoning';
+  escalateTier: 'plus' | 'pro' | 'ultra';
   injectErrorContext: boolean;
 }
 
 /**
  * Per-tier composition policy. Pool membership has exactly ONE basis: the
  * `match` decision function (providers/tier-match.ts) — patterns claim,
- * price bands bound, exclude vetoes. Since ADR-0012 all three tiers are
+ * price bands bound, exclude vetoes. Since ADR-0012 all four tiers are
  * FULLY SYMMETRIC (no residual tier): a model matching nothing ends up
  * `unclassified` and joins no pool. Selection strategy and weights shape
  * HOW the pool is used, never WHO is in it.
@@ -92,12 +100,12 @@ export interface TierWeightRule {
 export interface TierPolicy {
   match?: {
     patterns?: string[]; // wildcard patterns over model id (all tiers claim)
-    minInputPerM?: number; // price-band floor — configured for EVERY tier incl. flagship
+    minInputPerM?: number; // price-band floor — configured for EVERY tier incl. plus
     maxInputPerM?: number; // price-band ceiling; a band with no ceiling is a WEAK condition (consulted last)
     exclude?: string[]; // vetoes this tier's auto-claim (explicit pins bypass it)
     /**
      * ADR-0012 anchor-exclude: a model matching ANY condition (patterns / price
-     * band / reasoning flag) of one of these tiers may not be AUTO-claimed by
+     * band / thinking-effort flag) of one of these tiers may not be AUTO-claimed by
      * THIS tier. Runtime filter derived from the other tiers' own conditions.
      */
     excludeTiers?: TierLevel[];
@@ -116,15 +124,16 @@ export interface TiersConfig {
    * backend merges `tiers` by whole-object replacement).
    */
   exclude?: string[];
-  fast?: TierPolicy;
-  flagship?: TierPolicy;
-  reasoning?: TierPolicy;
+  lite?: TierPolicy;
+  plus?: TierPolicy;
+  pro?: TierPolicy;
+  ultra?: TierPolicy;
 }
 
 export type RoutingMode = 'smart' | 'cost' | 'quality';
 
 export interface RoutingConfig {
-  mode: RoutingMode; // smart = Layer1/Layer2 cascade (default); cost = always fast; quality = always reasoning
+  mode: RoutingMode; // smart = Layer1/Layer2 cascade (default); cost = always lite; quality = always pro
 }
 
 export interface OpenCodeConfig {
@@ -371,7 +380,7 @@ export interface RouterConfig {
   providers?: ProviderConfig[];
   models?: ModelRegistration[];
   combos?: ComboConfig[];
-  baselineModel: string; // Default flagship model id for calculating FinOps cost savings
+  baselineModel: string; // Default plus-tier model id for calculating FinOps cost savings
 }
 
 export type { CircuitBreakerConfig, RetryConfig };

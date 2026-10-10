@@ -60,13 +60,21 @@ export interface ChatCompletionRequest {
   tools?: Tool[];
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 
-  // Extended reasoning controls
-  reasoning_effort?: 'low' | 'medium' | 'high';
+  // Extended thinking-effort controls. 5 levels aligned with Anthropic's effort
+  // vocabulary (low / medium / high / xhigh + the implicit "none" default).
+  // `none` is the implicit value when this field is omitted — the gateway
+  // does NOT construct any thinking block on the upstream wire, so the model
+  // falls back to its built-in default (Anthropic Opus 5.5+ defaults to
+  // adaptive thinking on; older Claude and most non-thinking models default
+  // off). `xhigh` exists for Claude Opus 5.5 / Sonnet 5.5+ and is mapped to
+  // a larger thinking budget for older Anthropic models that don't speak
+  // effort natively.
+  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
   max_thinking_tokens?: number;
 
   // Custom router bypass or debug
   router_options?: {
-    force_tier?: 'fast' | 'flagship' | 'reasoning';
+    force_tier?: 'lite' | 'plus' | 'pro' | 'ultra';
     disable_fallback?: boolean;
     session_id?: string;
   };

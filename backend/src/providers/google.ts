@@ -106,6 +106,28 @@ export function buildGooglePayload(request: ChatCompletionRequest, model: ModelR
   if (request.temperature != null) generationConfig.temperature = request.temperature;
   if (request.top_p != null) generationConfig.topP = request.top_p;
   if (request.stop?.length) generationConfig.stopSequences = request.stop;
+  // Gemini extended thinking: map the gateway's 5-level effort vocabulary (or
+  // explicit max_thinking_tokens) to thinkingConfig.thinkingBudget. `none`
+  // (or no field at all) means "do not construct thinkingConfig" — the
+  // upstream model decides on its own. Reference: Gemini API "Thinking" docs.
+  const EFFORT_TO_BUDGET: Record<'low' | 'medium' | 'high' | 'xhigh', number> = {
+    low: 1024,
+    medium: 4096,
+    high: 16384,
+    xhigh: 32768,
+  };
+  const wantsThinking = request.reasoning_effort && request.reasoning_effort !== 'none';
+  if (request.max_thinking_tokens != null && request.max_thinking_tokens >= 0) {
+    generationConfig.thinkingConfig = {
+      thinkingBudget: request.max_thinking_tokens,
+      includeThoughts: true,
+    };
+  } else if (wantsThinking) {
+    generationConfig.thinkingConfig = {
+      thinkingBudget: EFFORT_TO_BUDGET[request.reasoning_effort as 'low' | 'medium' | 'high' | 'xhigh'],
+      includeThoughts: true,
+    };
+  }
 
   const payload: Record<string, any> = { contents, ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}) };
   if (Object.keys(generationConfig).length) payload.generationConfig = generationConfig;
@@ -173,6 +195,16 @@ export function googleToChatCompletion(data: any, model: ModelRegistration): Cha
       prompt_tokens: data.usageMetadata?.promptTokenCount ?? 0,
       completion_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
       total_tokens: data.usageMetadata?.totalTokenCount ?? 0,
+      // Gemini surfaces thinking tokens as `thoughtsTokenCount` (separate from
+      // `candidatesTokenCount` which counts only the visible answer). Surface
+      // them as OpenAI's `completion_tokens_details.reasoning_tokens`.
+      ...(data.usageMetadata?.thoughtsTokenCount
+        ? {
+            completion_tokens_details: {
+              reasoning_tokens: data.usageMetadata.thoughtsTokenCount,
+            },
+          }
+        : {}),
     },
   };
 }

@@ -13,7 +13,7 @@
    - 传统网关要么完全不重试，要么对所有错误盲目重试。对于欠费（HTTP 402 `insufficient_quota`）或密钥失效（HTTP 401），原地重试毫无成功可能，徒增数百毫秒请求延迟；对于客户端语法错误（HTTP 400），重试更是毫无意义。
 3. **模型故障转移的“跨级”边界模糊**：
    - 当主模型故障且原地重试失败时，能否跨 Tier 切换？
-   - 若任意切换，可能导致开发原本需要旗舰（Flagship）模型的代码重构任务在故障时被悄然“降级”至廉价小型模型（Fast），产生严重的智力断崖（Intellectual Cliff）与幻觉污染；反之，若 Fast 模型全量故障时完全不提升，又会导致用户界面直接报错瘫痪。
+   - 若任意切换，可能导致开发原本需要旗舰（Plus）模型的代码重构任务在故障时被悄然“降级”至廉价小型模型（Lite），产生严重的智力断崖（Intellectual Cliff）与幻觉污染；反之，若 Lite 模型全量故障时完全不提升，又会导致用户界面直接报错瘫痪。
 
 ## 决策 (Decision)
 全面确立**经济性感知的高弹性两层重试（In-Place & Failover）与层级防降级（Anti-Downgrade）故障转移架构**：
@@ -82,9 +82,9 @@
 确立明确的越级规则边界，提供两档策略：
 
 * **`allow_escalate`（默认推荐：同级耗尽 -> 向上升档保活，绝不向下跳水）**：
-  1. **同级优先原则 (Same-Tier Exhaustion First)**：若路由裁决目标为 Fast Tier，必须优先遍历所有健康的 Fast 模型（`fast-primary` $\to$ `fast-backup`）；
-  2. **向上升档保活 (Upward Escalation)**：仅当当前 Tier 的全部健康候选模型均不可用或请求失败后，允许透明升级至更高阶的 Flagship Tier 候选模型，杜绝业务端直接中断；
-  3. **严格防降级铁律 (Strict Anti-Downgrade)**：**若请求本身判定或强制为 Flagship Tier，当 Flagship 全部不可用时，系统严禁向下降级至 Fast 模型！**
+  1. **同级优先原则 (Same-Tier Exhaustion First)**：若路由裁决目标为 Lite Tier，必须优先遍历所有健康的 Lite 模型（`lite-primary` → `lite-backup`）；
+  2. **向上升档保活 (Upward Escalation)**：仅当当前 Tier 的全部健康候选模型均不可用或请求失败后，允许透明升级至更高阶的 Plus/Pro/Ultra Tier 候选模型，杜绝业务端直接中断；
+  3. **严格防降级铁律 (Strict Anti-Downgrade)**：**若请求本身判定或强制为 Plus/Pro/Ultra Tier，当该 Tier 全部不可用时，系统严禁向下降级至 Lite 模型！**
      * *动因*：在复杂系统架构、代码生成与数理逻辑场景下，向下降级导致的低质输出与隐蔽 Bug 危害，远大于明确返回 503 错误。
 * **`same_tier_only`（严格同级封锁）**：
   * 故障转移严格限制在当前 Tier 的注册模型池内，绝不跨越任何 Tier 边界；

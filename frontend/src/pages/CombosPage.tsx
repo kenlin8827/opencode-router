@@ -12,7 +12,7 @@ import { Pagination } from '../components/Pagination';
 type Selection = 'priority' | 'weighted' | 'round_robin';
 
 /** Virtual model ids routing owns — a combo must never shadow them. */
-const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
+const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
 const COMBOS_PAGE_SIZE = 12;
 const COMBOS_PAGE_SIZES = [12, 24, 48];
 /** Combo cards show at most this many member chips; longer chains collapse into a "+N more" row. */

@@ -2,9 +2,10 @@
 
 ## 状态
 已接受 (Accepted) - 2026-09-29
+2026-10-10 更新：Lite tier 与 Pro tier 命名（之前为 fast/reasoning）
 
 ## 上下文 (Context)
-在早期的快速路由（FastRules）与分类器（Classifier）中，充斥着大量的中文与英文关键词列表（如“你好”、“hi”、“证明”、“秒杀”、“架构”等）。
+在早期的快速路由（LiteRules）与分类器（Classifier）中，充斥着大量的中文与英文关键词列表（如"你好"、"hi"、"证明"、"秒杀"、"架构"等）。
 这种基于自然语言关键词词表的规则存在以下严重局限：
 1. **多语言脆弱性**：当用户输入法语、日语、俄语、西班牙语或中英混杂语句时，静态词表立即失效。
 2. **语义泛化能力差**：即使是同一种语言，同义词、近义词与口语表达数不胜数，基于静态关键词维护成本极高，容易挂一漏万。
@@ -12,10 +13,10 @@
 
 ## 决策 (Decision)
 1. **源码中全面剔除自然语言词典**：
-   - 彻底删除 src/router/fast-rules.ts 与 src/router/classifier.ts 中的全部硬编码中英文自然语言词表。
+   - 彻底删除 src/router/lite-rules.ts（曾用名 fast-rules.ts）与 src/router/classifier.ts 中的全部硬编码中英文自然语言词表。
 2. **转向跨语言通用的结构、标点、数学与形式逻辑特征**：
-   - **超短提示短路 (<0.02ms)**：仅以纯字符长度（`length <= 15` 且不含代码/数学公式）判定极速问候，无论是“hi”、“你好”、“bonjour”、“hola”还是“ok”，均语言无关地直通 fast tier。
-   - **LaTeX 与形式数学标准**：基于国际通用的 LaTeX 形式语言（`$$...$$`、`\int_`、`\sum_`、`\prod_`、`\begin{matrix}` 等），跨语言识别复杂的推导证明任务直通 reasoning tier。
+   - **超短提示短路 (<0.02ms)**：仅以纯字符长度（`length <= 15` 且不含代码/数学公式）判定极速问候，无论是"hi"、"你好"、"bonjour"、"hola"还是"ok"，均语言无关地直通 Lite tier。
+   - **LaTeX 与形式数学标准**：基于国际通用的 LaTeX 形式语言（`$$...$$`、`\int_`、`\sum_`、`\prod_`、`\begin{matrix}` 等），跨语言识别复杂的推导证明任务直通 Pro tier。
    - **代码语法结构**：基于 Markdown 代码围栏（` ``` `）、通用编程标点符号密度（`{};=>:[]` 等）以及跨编程语言保留字（`class`, `def`, `func`, `SELECT` 等）。
    - **国际标准技术术语**：仅识别在所有语言中均保持原样的架构名词与标准（如 `2PC`, `Saga`, `Raft`, `Kafka`, `Redis`, `Kubernetes`, `JWT` 等）。
    - **协议级结构化约束**：检测请求参数中的 `response_format: json_object`、`tools` 声明等，自动标记为结构化任务并开启静态 Schema 校验。

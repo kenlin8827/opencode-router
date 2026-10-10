@@ -24,11 +24,11 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
   const baseConfig: RouterConfig = {
     port: 3000,
     host: '127.0.0.1',
-    baselineModel: 'primary-flagship',
+    baselineModel: 'primary-plus',
     fallback: {
       enabled: false,
       maxRetries: 1,
-      escalateTier: 'flagship',
+      escalateTier: 'plus',
       injectErrorContext: true,
     },
     circuitBreaker: {
@@ -51,36 +51,36 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     },
     models: [
       {
-        id: 'primary-flagship',
+        id: 'primary-plus',
         provider: 'mock',
-        upstreamModel: 'primary-flagship',
-        tier: 'flagship',
+        upstreamModel: 'primary-plus',
+        tier: 'plus',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
       },
       {
-        id: 'secondary-flagship',
+        id: 'secondary-plus',
         provider: 'mock',
-        upstreamModel: 'secondary-flagship',
-        tier: 'flagship',
+        upstreamModel: 'secondary-plus',
+        tier: 'plus',
         priority: 2,
         pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
       },
       {
-        id: 'mock-fast-1',
+        id: 'mock-lite-1',
         provider: 'mock',
-        upstreamModel: 'mock-fast-1',
-        tier: 'fast',
+        upstreamModel: 'mock-lite-1',
+        tier: 'lite',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
       },
       {
-        id: 'mock-fast-2',
+        id: 'mock-lite-2',
         provider: 'mock',
-        upstreamModel: 'mock-fast-2',
-        tier: 'fast',
+        upstreamModel: 'mock-lite-2',
+        tier: 'lite',
         priority: 2,
         pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
       },
@@ -92,11 +92,11 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
 
-    // Primary flagship fails once with 503, then succeeds on in-place retry
+    // Primary plus fails once with 503, then succeeds on in-place retry
     const req: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Explain distributed consensus algorithms' }],
-      __simulate_error_model__: 'primary-flagship',
+      __simulate_error_model__: 'primary-plus',
       __simulate_status__: 503,
       __simulate_message__: 'Temporary upstream 503 gateway blip',
       __simulate_fail_times__: 1,
@@ -104,15 +104,15 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
 
     const result = await orchestrator.process(req);
 
-    // Verified: Request succeeded on primary-flagship!
+    // Verified: Request succeeded on primary-plus!
     assert.ok(result.response);
-    assert.equal(result.modelUsed, 'primary-flagship');
+    assert.equal(result.modelUsed, 'primary-plus');
     assert.equal(result.failoverOccurred, false);
     assert.equal(result.failoverAttempts, 1);
     assert.equal(result.inplaceRetries, 1);
 
     // Circuit breaker must still be CLOSED because the in-place retry recovered
-    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-flagship');
+    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
     assert.equal(breaker?.getState(), 'CLOSED');
   });
 
@@ -133,17 +133,17 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     const orchestrator = new PipelineOrchestrator(noInplaceConfig, registry, tracker);
 
     const req: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Explain Paxos' }],
-      __simulate_error_model__: 'primary-flagship',
+      __simulate_error_model__: 'primary-plus',
       __simulate_status__: 503,
       __simulate_fail_times__: 1,
     };
 
     const result = await orchestrator.process(req);
 
-    // Because inplace is disabled, it immediately fails over to secondary-flagship
-    assert.equal(result.modelUsed, 'secondary-flagship');
+    // Because inplace is disabled, it immediately fails over to secondary-plus
+    assert.equal(result.modelUsed, 'secondary-plus');
     assert.equal(result.failoverOccurred, true);
     assert.equal(result.failoverAttempts, 2);
     assert.equal(result.inplaceRetries, 0);
@@ -155,9 +155,9 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
 
     const req: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Explain Raft' }],
-      __simulate_error_model__: 'primary-flagship',
+      __simulate_error_model__: 'primary-plus',
       __simulate_status__: 402,
       __simulate_message__: 'insufficient_quota: account balance is 0',
     };
@@ -165,13 +165,13 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     const result = await orchestrator.process(req);
 
     // Verified: Bypassed in-place retry, switched immediately to backup
-    assert.equal(result.modelUsed, 'secondary-flagship');
+    assert.equal(result.modelUsed, 'secondary-plus');
     assert.equal(result.failoverOccurred, true);
     assert.equal(result.failoverAttempts, 2);
     assert.equal(result.inplaceRetries, 0);
 
     // Primary breaker must be hard-tripped into OPEN
-    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-flagship');
+    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
     assert.equal(breaker?.getState(), 'OPEN');
     assert.equal(breaker?.getSnapshot().category, 'QUOTA_EXHAUSTED');
   });
@@ -182,9 +182,9 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
 
     const req: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Super massive prompt' }],
-      __simulate_error_model__: 'primary-flagship',
+      __simulate_error_model__: 'primary-plus',
       __simulate_status__: 400,
       __simulate_message__: 'context_length_exceeded: prompt exceeds max 128k',
     };
@@ -197,7 +197,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
     });
 
     // Primary breaker must NOT be tripped on client input error
-    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-flagship');
+    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
     assert.equal(breaker?.getState(), 'CLOSED');
   });
 });
@@ -206,11 +206,11 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)'
   const crossTierConfig: RouterConfig = {
     port: 3000,
     host: '127.0.0.1',
-    baselineModel: 'flagship-1',
+    baselineModel: 'plus-1',
     fallback: {
       enabled: false,
       maxRetries: 1,
-      escalateTier: 'flagship',
+      escalateTier: 'plus',
       injectErrorContext: false,
     },
     circuitBreaker: {
@@ -233,27 +233,27 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)'
     },
     models: [
       {
-        id: 'fast-1',
+        id: 'lite-1',
         provider: 'mock',
-        upstreamModel: 'fast-1',
-        tier: 'fast',
+        upstreamModel: 'lite-1',
+        tier: 'lite',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
       },
       {
-        id: 'fast-2',
+        id: 'lite-2',
         provider: 'mock',
-        upstreamModel: 'fast-2',
-        tier: 'fast',
+        upstreamModel: 'lite-2',
+        tier: 'lite',
         priority: 2,
         pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
       },
       {
-        id: 'flagship-1',
+        id: 'plus-1',
         provider: 'mock',
-        upstreamModel: 'flagship-1',
-        tier: 'flagship',
+        upstreamModel: 'plus-1',
+        tier: 'plus',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
@@ -261,25 +261,25 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)'
     ],
   };
 
-  it('should escalate from fast to flagship when all fast candidates fail under allow_escalate policy', async () => {
+  it('should escalate from lite to plus when all lite candidates fail under allow_escalate policy', async () => {
     const registry = new ProviderRegistry(crossTierConfig, true);
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
 
-    // Trip both fast-1 and fast-2 to simulate total outage in Fast Tier
-    registry.getCircuitBreakerManager().getBreaker('fast-1')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
-    registry.getCircuitBreakerManager().getBreaker('fast-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+    // Trip both lite-1 and lite-2 to simulate total outage in Lite Tier
+    registry.getCircuitBreakerManager().getBreaker('lite-1')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
 
     const req: any = {
-      model: 'auto-fast',
+      model: 'auto-lite',
       messages: [{ role: 'user', content: 'Quick greeting' }],
     };
 
     const result = await orchestrator.process(req);
 
-    // Under allow_escalate, should escalate up to flagship-1 to preserve user uptime!
-    assert.equal(result.tierUsed, 'flagship');
-    assert.equal(result.modelUsed, 'flagship-1');
+    // Under allow_escalate, should escalate up to plus-1 to preserve user uptime!
+    assert.equal(result.tierUsed, 'plus');
+    assert.equal(result.modelUsed, 'plus-1');
   });
 
   it('should refuse to cross tiers and fail cleanly when tierCrossPolicy is same_tier_only', async () => {
@@ -299,9 +299,9 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)'
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(strictConfig, registry, tracker);
 
-    // Both fast models fail
+    // Both lite models fail
     const req: any = {
-      model: 'auto-fast',
+      model: 'auto-lite',
       messages: [{ role: 'user', content: 'Batch task' }],
       __simulate_error_all__: true,
       __simulate_status__: 503,
@@ -310,27 +310,27 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)'
     await assert.rejects(async () => {
       await orchestrator.process(req);
     }, (err: any) => {
-      assert.ok(err.message.includes('fast') || err.message.includes('503'));
+      assert.ok(err.message.includes('503'));
       return true;
     });
   });
 
-  it('should enforce Strict Anti-Downgrade: Flagship requests must NEVER downgrade to fast tier', async () => {
+  it('should enforce Strict Anti-Downgrade: Plus requests must NEVER downgrade to lite tier', async () => {
     const registry = new ProviderRegistry(crossTierConfig, true);
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
 
-    // Trip flagship-1
-    registry.getCircuitBreakerManager().getBreaker('flagship-1')?.trip('Flagship down', 'SERVICE_UNAVAILABLE', 3600000);
+    // Trip plus-1
+    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Plus down', 'SERVICE_UNAVAILABLE', 3600000);
 
     const req: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Critical architecture design' }],
-      __simulate_error_model__: 'flagship-1',
+      __simulate_error_model__: 'plus-1',
       __simulate_status__: 503,
     };
 
-    // Must NOT downgrade to fast-1; should fail instead of degrading code intelligence
+    // Must NOT downgrade to lite-1; should fail instead of degrading code intelligence
     await assert.rejects(async () => {
       await orchestrator.process(req);
     });
@@ -345,7 +345,7 @@ describe('Resilience: End-to-End HTTP Headers & Observability', () => {
     fallback: {
       enabled: false,
       maxRetries: 1,
-      escalateTier: 'flagship',
+      escalateTier: 'plus',
       injectErrorContext: false,
     },
     circuitBreaker: {
@@ -371,7 +371,7 @@ describe('Resilience: End-to-End HTTP Headers & Observability', () => {
         id: 'primary-model',
         provider: 'mock',
         upstreamModel: 'primary-model',
-        tier: 'flagship',
+        tier: 'plus',
         priority: 1,
         isDefaultInTier: true,
         pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
@@ -464,7 +464,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering (AD
       port: 3000,
       host: '127.0.0.1',
       baselineModel: 'model-a',
-      fallback: { enabled: false, maxRetries: 1, escalateTier: 'flagship', injectErrorContext: false },
+      fallback: { enabled: false, maxRetries: 1, escalateTier: 'plus', injectErrorContext: false },
       circuitBreaker: { enabled: true, failureThreshold: 2 },
       retry: {
         enabled: true,
@@ -486,7 +486,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering (AD
           id: 'model-a',
           provider: 'mock',
           upstreamModel: 'model-a',
-          tier: 'flagship',
+          tier: 'plus',
           priority: 1,
           isDefaultInTier: true,
           pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
@@ -495,7 +495,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering (AD
           id: 'model-b',
           provider: 'mock',
           upstreamModel: 'model-b',
-          tier: 'flagship',
+          tier: 'plus',
           priority: 2,
           pricing: { input: 3.0, cacheRead: 0.3, output: 15.0 },
         },
@@ -509,7 +509,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering (AD
     // 503 is GATEWAY_ERROR. Since retryOnCauses only contains 'network_timeout',
     // it must NOT in-place retry on model-a and should immediately failover to model-b!
     const req: any = {
-      model: 'auto-flagship',
+      model: 'auto-plus',
       messages: [{ role: 'user', content: 'Test custom cause filtering' }],
       __simulate_error_model__: 'model-a',
       __simulate_status__: 503,

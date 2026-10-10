@@ -410,7 +410,7 @@ export const ModelEditDialog: React.FC<{
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {form.variants.map((v, i) => (
                     <div key={i} style={{ display: 'flex', gap: 6 }}>
-                      <input className="input" style={{ fontSize: 11.5, flex: 1, fontFamily: 'JetBrains Mono, monospace' }} placeholder="fast" value={v.id} onChange={(e) => { const variants = [...form.variants]; variants[i] = { ...v, id: e.target.value }; setForm({ ...form, variants }); }} />
+                      <input className="input" style={{ fontSize: 11.5, flex: 1, fontFamily: 'JetBrains Mono, monospace' }} placeholder="variant-id" value={v.id} onChange={(e) => { const variants = [...form.variants]; variants[i] = { ...v, id: e.target.value }; setForm({ ...form, variants }); }} />
                       <Combobox
                         style={{ fontSize: 11.5, width: 110, cursor: 'pointer' }}
                         value={v.effort}
@@ -435,8 +435,8 @@ export const ModelEditDialog: React.FC<{
 
               <div>
                 <label style={fieldLabelStyle}>{t('op.pmReasoningField')}</label>
-                <input className="input" style={{ fontSize: 12, width: '100%', fontFamily: 'JetBrains Mono, monospace' }} placeholder="reasoning_content" list="ocr-reasoning-fields-m" value={form.reasoningField} onChange={(e) => setForm({ ...form, reasoningField: e.target.value })} />
-                <datalist id="ocr-reasoning-fields-m">
+                <input className="input" style={{ fontSize: 12, width: '100%', fontFamily: 'JetBrains Mono, monospace' }} placeholder="reasoning_content" list="ocr-thinking-fields-m" value={form.reasoningField} onChange={(e) => setForm({ ...form, reasoningField: e.target.value })} />
+                <datalist id="ocr-thinking-fields-m">
                   <option value="reasoning" />
                   <option value="reasoning_content" />
                   <option value="reasoning_text" />

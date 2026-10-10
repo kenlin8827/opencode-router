@@ -467,7 +467,7 @@ export function registerConsoleRoutes(
         healthy: cb.isAvailable(model.id),
         weight,
       }));
-    for (const tier of ['fast', 'flagship', 'reasoning'] as const) {
+    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as const) {
       const { pool, excluded } = registry.resolveTierPool(tier, policies, { match, overrides });
       pools[tier] = { pool: shape(pool), excluded };
     }
@@ -480,7 +480,7 @@ export function registerConsoleRoutes(
   const warnOnEmptyTierPools = () => {
     const tiers = loadConfig().tiers;
     const match = resolveTierMatch(tiers);
-    for (const tier of ['fast', 'flagship', 'reasoning'] as const) {
+    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as const) {
       const { pool } = registry.resolveTierPool(tier, tiers, { match });
       if (pool.length === 0) {
         console.warn(
@@ -515,7 +515,7 @@ export function registerConsoleRoutes(
     const policies = registry.getTierPolicies();
     const pools: Record<string, unknown> = {};
     const cb = registry.getCircuitBreakerManager();
-    for (const tier of ['fast', 'flagship', 'reasoning'] as const) {
+    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as const) {
       const { pool, excluded } = registry.resolveTierPool(tier, policies);
       pools[tier] = {
         pool: pool.map(({ model, weight }) => ({
@@ -723,8 +723,8 @@ export function registerConsoleRoutes(
     if (!body?.providerId || !body?.modelId || typeof body.entry !== 'object') {
       return reply.status(400).send({ success: false, error: 'providerId, modelId and entry are required' });
     }
-    if ('tier' in body.entry && body.entry.tier !== null && !['fast', 'flagship', 'reasoning'].includes(body.entry.tier)) {
-      return reply.status(400).send({ success: false, error: 'entry.tier must be fast | flagship | reasoning or null' });
+    if ('tier' in body.entry && body.entry.tier !== null && !['lite', 'plus', 'pro', 'ultra'].includes(body.entry.tier)) {
+      return reply.status(400).send({ success: false, error: 'entry.tier must be lite | plus | pro | ultra or null' });
     }
     const { upsertOverride } = await import('../opencode/catalog/overrides-store.js');
     const result = upsertOverride(String(body.providerId), String(body.modelId), body.entry);

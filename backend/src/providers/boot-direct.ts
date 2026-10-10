@@ -105,12 +105,12 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       const cacheRead = catModel?.cost?.cache_read ?? inputCost * 0.25;
 
       // Explicit tier (catalog override / jsonc model def) wins; otherwise the
-      // configurable smart match classifies (patterns → price band → reasoning
-      // flag). Free models (input = 0) can hit the fast band; models without
+      // configurable smart match classifies (patterns → price band → thinking-effort
+      // flag). Free models (input = 0) can hit the lite band; models without
       // catalog pricing simply skip bands and, since ADR-0012, end up
       // UNCLASSIFIED (no residual tier) unless something claims them.
       const explicitTier = (v: unknown): TierLevel | undefined =>
-        v === 'fast' || v === 'flagship' || v === 'reasoning' ? (v as TierLevel) : undefined;
+        v === 'lite' || v === 'plus' || v === 'pro' || v === 'ultra' ? (v as TierLevel) : undefined;
       const rawInputPerM = catModel?.cost?.input;
       const configTier = explicitTier(d?.tier);
       const membership: PoolMembership =
@@ -118,7 +118,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         configTier ??
         classifyTier({ modelId: mid, inputPerM: rawInputPerM, reasoningFlag: isReasoning }, tierMatch);
       const unclassified = membership === 'unclassified';
-      const tier: TierLevel = unclassified ? 'flagship' : membership;
+      const tier: TierLevel = unclassified ? 'plus' : membership;
 
       models.push({
         id: `${rec.id}/${mid}`,
@@ -126,6 +126,12 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         upstreamModel: (d && typeof d === 'object' && d.modelID ? String(d.modelID) : mid),
         tier,
         isDefaultInTier: false,
+        // See opencode/sync.ts for the same convention: catalog only declares
+        // a boolean thinking-effort capability flag (catalog key historically
+        // named 'reasoning' for compatibility with upstream catalogs), so we
+        // map that to all 4 non-default levels. Operators refine via
+        // supportedReasoningEfforts in opencode.jsonc overrides.
+        supportedReasoningEfforts: isReasoning ? ['low', 'medium', 'high', 'xhigh'] : undefined,
         supportsReasoningEffort: isReasoning || undefined,
         supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
         wire,
@@ -164,16 +170,18 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   // ADR-0002 §3 price-pyramid tier defaults (kept; the daemon is gone, the math stays).
   const external = models.filter((m) => m.provider !== 'opencode');
   const pool = external.length > 0 ? external : models;
-  const tFast = pool.filter((m) => m.tier === 'fast').sort((a, b) => (a.pricing.input ?? 0) - (b.pricing.input ?? 0));
-  if (tFast.length > 0) tFast[0].isDefaultInTier = true;
-  let tFlagship = pool.filter((m) => m.tier === 'flagship').sort((a, b) => (a.pricing.input ?? 0) - (b.pricing.input ?? 0));
-  if (tFlagship.length === 0) tFlagship = pool.filter((m) => m.tier !== 'reasoning');
-  if (tFlagship.length > 0) tFlagship[Math.floor(tFlagship.length / 2)].isDefaultInTier = true;
-  const tReasoning = pool.filter((m) => m.tier === 'reasoning');
-  if (tReasoning.length > 0) {
-    const top = tReasoning.find((m) => m.supportsReasoningEffort) || tReasoning[0];
+  const tLite = pool.filter((m) => m.tier === 'lite').sort((a, b) => (a.pricing.input ?? 0) - (b.pricing.input ?? 0));
+  if (tLite.length > 0) tLite[0].isDefaultInTier = true;
+  let tPlus = pool.filter((m) => m.tier === 'plus').sort((a, b) => (a.pricing.input ?? 0) - (b.pricing.input ?? 0));
+  if (tPlus.length === 0) tPlus = pool.filter((m) => m.tier !== 'pro' && m.tier !== 'ultra');
+  if (tPlus.length > 0) tPlus[Math.floor(tPlus.length / 2)].isDefaultInTier = true;
+  const tPro = pool.filter((m) => m.tier === 'pro');
+  if (tPro.length > 0) {
+    const top = tPro.find((m) => m.supportsReasoningEffort) || tPro[0];
     top.isDefaultInTier = true;
   }
+  const tUltra = pool.filter((m) => m.tier === 'ultra').sort((a, b) => (b.pricing.input ?? 0) - (a.pricing.input ?? 0));
+  if (tUltra.length > 0) tUltra[0].isDefaultInTier = true;
 
   return { instances, models, excluded };
 }

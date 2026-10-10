@@ -20,7 +20,7 @@ const EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high'];
 /**
  * Reasoning-effort level encoded in the user-entered model id, if any
  * ('my-relay/gemini-3.8-flash-high' → 'high'). Only suffixes that are valid
- * dropdown levels map; others (xhigh/fast/thinking) are match-only.
+ * dropdown levels map; others (xhigh/flash/lite/thinking) are match-only.
  */
 export function detectEffortLevel(keys: (string | undefined)[]): string | undefined {
   for (const raw of keys) {
@@ -125,7 +125,7 @@ function mergeModel(a: OpenCodeModelView, b: OpenCodeModelView): OpenCodeModelVi
 /**
  * Find the best catalog match for a model among the given candidate ids
  * (later keys act as fallbacks, e.g. [modelID, modelKey]). Handles vendor
- * prefixes, trailing reasoning-effort suffixes and dash-style variants via
+ * prefixes, trailing thinking-effort suffixes and dash-style variants via
  * candidateKeys() + scoreCandidate().
  *
  * The provider's OWN entries are excluded — they are the values being filled

@@ -37,6 +37,31 @@ opencode:
 #   excludes:                         # matches force direct (checked before includes)
 #     - "deepseek/*"
 
+# Tier smart-match baseline (Optional) — how a model is auto-claimed into a
+# candidate pool. Classification is fully PRICE-DRIVEN by default: each tier
+# is a price band over the raw catalog $/M input price; a model matching NO
+# band (or with no price) is 'unclassified' (joins no pool; still callable by
+# id / combo). Vendor tier words ("flash"/"pro"/"air") mean very different
+# prices across vendors, so NO name patterns are preset — add `patterns` per
+# tier only if a name genuinely correlates in YOUR catalog.
+# Shown below as the BUILT-IN defaults — uncomment + edit to override, or just
+# edit on the console /tiers page (takes effect on save, no restart).
+# tiers:
+#   lite:
+#     match:
+#       maxInputPerM: 0.8
+#   plus:
+#     match:
+#       minInputPerM: 0.8
+#       maxInputPerM: 3
+#   pro:
+#     match:
+#       minInputPerM: 3
+#       maxInputPerM: 8
+#   ultra:
+#     match:
+#       minInputPerM: 8
+
 # Token Saver compression (Optional) — three independent engines (rtk /
 # headroom / caveman), all fail-open (on any error the original request
 # flows upstream unchanged). Restart required.
@@ -63,23 +88,23 @@ opencode:
 rules:
   - name: "formal_proof"
     pattern: "(proof|theorem|np-hard|np-complete|induction|contradiction)"
-    tier: "reasoning"                 # Options: 'fast' | 'flagship' | 'reasoning'
+    tier: "pro"                      # Options: 'lite' | 'plus' | 'pro' | 'ultra'
     reason: "Formal theorem or mathematical proof query"
   - name: "system_architecture"
     pattern: "(architecture|microservice|distributed|concurrency|scalability)"
-    tier: "flagship"                  # Options: 'fast' | 'flagship' | 'reasoning'
+    tier: "plus"                      # Options: 'lite' | 'plus' | 'pro' | 'ultra'
     reason: "System architecture or distributed software engineering query"
 
 # Routing mode (Optional)
 routing:
-  mode: "smart"                     # smart = classifier cascade (default) | cost = always fast | quality = always reasoning
+  mode: "smart"                     # smart = classifier cascade (default) | cost = always lite | quality = always pro
 
 # Cascading fallback and static schema assertion
 fallback:
   enabled: true
-  maxRetries: 1                     # Fast tier model attempts first; silent escalation if assertion fails
-  escalateTier: "flagship"          # Target tier upon validation failure ('flagship' or 'reasoning')
-  injectErrorContext: true          # Injects parsing error context to guide flagship model to fix in one shot
+  maxRetries: 1                     # Lite tier model attempts first; silent escalation if assertion fails
+  escalateTier: "plus"              # Target tier upon validation failure ('plus' | 'pro' | 'ultra')
+  injectErrorContext: true          # Injects parsing error context to guide plus-tier model to fix in one shot
 
 # ==============================================================================
 # Multi-Layer Classification & Data Flywheel (ADR-0004 & ADR-0005)
@@ -172,7 +197,7 @@ retry:
     enabled: true                   # Enable failover to secondary backup models
     maxAttempts: 2                  # Max candidate models to attempt across failovers
     tierCrossPolicy: "allow_escalate" # Options:
-                                    # 'allow_escalate': exhaust same tier first, allow fast -> flagship escalation, strictly forbid downgrade
+                                    # 'allow_escalate': exhaust same tier first, allow lite -> plus/pro/ultra escalation, strictly forbid downgrade
                                     # 'same_tier_only': strictly restrict failover to models within the same tier (prevents runaway costs)
 
 

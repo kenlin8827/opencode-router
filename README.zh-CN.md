@@ -172,9 +172,10 @@ OpenCode Router (OCR) 在暴露上游全部原生模型的同时，提供了开�
 | 模型名称 | 定位与适用场景 | 计费成本区间 |
 | :--- | :--- | :--- |
 | **`auto`** <br>*(强烈推荐默认)* | **全自动智能级联路由**：自动识别任务复杂度、语法规范及多轮对话历史，动态分派最合适且最具性价比的模型。 | 节省 70% ~ 90% |
-| **`auto-fast`** | **强制指定极速低成本层**：针对大批量浅层信息抽取、日常问候、简单翻译。 | 约 $0.10 ~ $0.50 / M Tokens |
-| **`auto-flagship`** | **强制指定中坚全能旗舰层**：针对常规系统架构设计、长代码生成与严谨业务分析。 | 约 $2.00 ~ $10.00 / M Tokens |
-| **`auto-reasoning`** | **强制指定高阶推理专家层**：针对高难度形式化逻辑证明、深思考难题与高复杂度数学演算。 | 约 $5.00 ~ $60.00 / M Tokens |
+| **`auto-lite`** | **强制指定极速低成本层**：针对大批量浅层信息抽取、日常问候、简单翻译。 | 约 $0.10 ~ $0.50 / M Tokens |
+| **`auto-plus`** | **强制指定中坚全能主力层**：针对常规系统架构设计、长代码生成与严谨业务分析。 | 约 $2.00 ~ $3.00 / M Tokens |
+| **`auto-pro`** | **强制指定高阶推理专家层**：针对高难度形式化逻辑证明、深思考难题与长时程 agent 任务。 | 约 $3.00 ~ $8.00 / M Tokens |
+| **`auto-ultra`** | **强制指定旗舰之上顶级档**：小时级自治 agent 任务、旗舰推理极限挑战。 | ≥ $8.00 / M Tokens |
 | *上游物理模型名* | 直接透传调用上游的具体物理模型（如 `kimi-k2.7-code`, `deepseek-chat`）。 | 按上游标准定价实报实销 |
 | *自定义模型组合* | **用户自由编排的虚拟模型**（`config.combos`）：直接以 combo id 作为 model 调用，网关按主选策略（priority / weighted / round_robin）选首选，故障转移严格限制在配置成员内。每个成员独立享有熔断/重试语义；不参与会话棘轮，绝不跨组合扩员。 | 成员定价加总 |
 
@@ -196,11 +197,11 @@ combos:
 
 ### 1. 响应诊断头（Response Headers）
 每次 API 调用均会在 HTTP 响应头中注入详细的 FinOps 性能与成本诊断信息：
-* `X-OCR-Tier`：本次实际承接调用的模型层级（`fast`, `flagship`, `reasoning`）。
+* `X-OCR-Tier`：本次实际承接调用的模型层级（`lite`, `plus`, `pro`, `ultra`）。
 * `X-OCR-Model`：实际承接推理的上游模型 ID（例如 `volcengine/kimi-k2.7-code`）。
 * `X-OCR-Failover`：是否触发了同 Tier 上游故障自动转移（`true` / `false`）。
 * `X-OCR-Failover-Attempts`：本次请求尝试调用的模型候选数量（如 `1` 为首次直接成功，`2` 为主模型故障后备用模型成功接管）。
-* `X-OCR-Failover-Path`：故障转移的完整模型调用链路（例如 `primary-flagship -> secondary-flagship`）。
+* `X-OCR-Failover-Path`：故障转移的完整模型调用链路（例如 `primary-plus -> secondary-plus`）。
 * `X-OCR-Breaker-State`：承接模型当前的熔断器健康状态（`CLOSED`, `HALF_OPEN`）。
 * `X-OCR-Session-ID`：自动计算出的会话唯一哈希指纹。
 * `X-OCR-Session-Ratchet`：是否触发了多轮只升不降棘轮锁死（`true` / `false`）。
@@ -258,9 +259,9 @@ curl http://127.0.0.1:3000/v1/metrics
   "cacheHitRatePct": 32.8,
   "fallbackCount": 18,
   "tierDistribution": {
-    "fast": { "count": 960, "pct": 75.0 },
-    "flagship": { "count": 270, "pct": 21.09 },
-    "reasoning": { "count": 50, "pct": 3.91 }
+    "lite": { "count": 960, "pct": 75.0 },
+    "plus": { "count": 270, "pct": 21.09 },
+    "pro": { "count": 50, "pct": 3.91 }
   },
   "economics": {
     "actualCostUsd": 0.512,
@@ -309,7 +310,7 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 **不需要**。OpenCode Router (OCR) 原生直连您本地已经配置并运行良好的 OpenCode v2 实例。OpenCode 中已配置好的所有可用模型和配额，OpenCode Router 会自动同步并直接代理。
 
 ### Q2: 为什么多轮对话中途不会变笨？
-传统基于单条请求的无状态路由器，在面对超长上下文中的简短追问（如“好的谢谢”、“改下第3行”）时，常因字数极短而错误分发给 fast 轻量小模型，导致小模型面对超万 Token 严重幻觉。OpenCode Router (OCR) 采用**单调递增棘轮状态机（Monotonic Session Ratchet）**，一旦会话进入深度旗舰状态，后续轮次被单向锁死、只升不降，且物理固定同一模型实例，保障智力持续高水平并锁定上游 KV Cache。
+传统基于单条请求的无状态路由器，在面对超长上下文中的简短追问（如“好的谢谢”、“改下第3行”）时，常因字数极短而错误分发给 Lite 轻量小模型，导致小模型面对超万 Token 严重幻觉。OpenCode Router (OCR) 采用**单调递增棘轮状态机（Monotonic Session Ratchet）**，一旦会话进入深度旗舰状态，后续轮次被单向锁死、只升不降，且物理固定同一模型实例，保障智力持续高水平并锁定上游 KV Cache。
 
 ### Q3: 本地分类小模型冷启动时会误判吗？
 **绝不会**。系统默认附带的未训练微张量底座经过严密数学设计（$W=\mathbf{0}, b=\mathbf{0}$），Softmax 理论概率均匀分布为 $\approx 0.334$，必然小于 $0.85$ 门控阈值。在积累足够生产飞轮数据并执行蒸馏微调前，100% 确定性优雅穿透至 Layer 2 专职裁决模型。

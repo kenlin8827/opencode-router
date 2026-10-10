@@ -57,14 +57,14 @@ OpenCode Router (OCR) replaces simplistic character length rules (e.g., `prompt.
                     [Step 4: Execution & Cascading Schema Assertion (Fallback)]
                      ├── Fast Lead ─────► [Local AST / JSON Schema Static Assertion]
                      │                      ├── Passed ────► Direct return (90% cost savings)
-                     │                      └── Failed ────► Inject error context & escalate to flagship
-                     └── Flagship / Reasoning ────────► Enforce reasoning token budgets & return
+                     │                      └── Failed ────► Inject error context & escalate to plus
+                     └── Plus / Pro / Ultra ────────► Enforce thinking-token budgets & return
 ```
 
 ### Hierarchical Decision Logic
 1. **Layer 0 (Protocol Constraints)**:
    - Detects structural requirements (e.g. `response_format: { type: 'json_object' }` or `tools`).
-   - Dispatches deterministically to fast tier models as lead runners, backed by local AST assertion with silent escalation.
+   - Dispatches deterministically to lite tier models as lead runners, backed by local AST assertion with silent escalation.
 2. **Layer 1 (CPU Micro-Tensor Classifier)**:
    - Extracts an 8-dimensional language-agnostic feature vector and evaluates linear logits with Softmax on CPU (`<0.1ms`).
    - When confidence $\ge \theta$ (default $0.85$), routes immediately on CPU. When below threshold, falls through to Layer 2.
@@ -82,14 +82,14 @@ $$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf
 
 **Forward Propagation Proof**:
 For any input feature vector $x \in \mathbb{R}^8$:
-$$z = W^T x + b = \mathbf{0}^T x + \mathbf{0} = \begin{bmatrix} 0 \\ 0 \\ 0 \end{bmatrix}$$
+$$z = W^T x + b = \mathbf{0}^T x + \mathbf{0} = \begin{bmatrix} 0 \\ 0 \\ 0 \\ 0 \end{bmatrix}$$
 
-Evaluating Softmax across the three tiers (fast, flagship, reasoning):
-$$P(\text{tier}_i) = \frac{e^{z_i}}{\sum_{j=1}^3 e^{z_j}} = \frac{e^0}{e^0 + e^0 + e^0} = \frac{1}{3} \approx 0.3333$$
+Evaluating Softmax across the four tiers (lite, plus, pro, ultra):
+$$P(\text{tier}_i) = \frac{e^{z_i}}{\sum_{j=1}^4 e^{z_j}} = \frac{e^0}{e^0 + e^0 + e^0 + e^0} = \frac{1}{4} = 0.25$$
 
 **Deterministic Fallthrough Lemma**:
 Given the system confidence threshold $\theta = 0.85$:
-$$\max_{i} P(\text{tier}_i) = 0.3333 < 0.85$$
+$$\max_{i} P(\text{tier}_i) = 0.25 < 0.85$$
 Therefore, under untrained conditions, `isConfident` evaluates to **strictly `false` with mathematical certainty**.  
 This guarantees zero premature short-circuits on cold start, gracefully cascading 100% of initial requests to Layer 2.
 
@@ -135,8 +135,8 @@ opencode-router/
 │   ├── validator/                 # Schema assertion & fallback extraction
 │   │   ├── schema-assertion.ts    # Local AST & JSON Schema static assertion
 │   │   └── parser.ts              # Error context extractor for silent retry
-│   ├── budget/                    # Token budget & reasoning effort
-│   │   └── budget-manager.ts      # Token consumption ceilings and reasoning effort control
+│   ├── budget/                    # Token budget & thinking-effort clamping
+│   │   └── budget-manager.ts      # Token consumption ceilings and thinking-effort control
 │   ├── trace/                     # Execution trajectory & turn telemetry
 │   │   └── tracker.ts             # Ring-buffered turn trajectory tracking, session indexing & query API
 │   ├── providers/                 # Upstream model execution adapters
@@ -212,9 +212,9 @@ bun test
 * **tests/flywheel.test.ts** (5 tests): Base model auto-initialization, uniform probability cascade, in-place training, negative sample corrections.
 * **tests/session.test.ts** (4 tests): Prefix-chain fingerprinting, monotonic ratchet escalate-only rules, model pinning.
 * **tests/trace.test.ts** (7 tests): Request trajectory recording, per-session trace indexing, global trace pagination, session inspection & deletion.
-* **tests/router.test.ts** (4 tests): Client forced tiers, dynamic regex rules from YAML, default flagship quality defense.
+* **tests/router.test.ts** (4 tests): Client forced tiers, dynamic regex rules from YAML, default plus quality defense.
 * **tests/validator.test.ts** (4 tests): Markdown code fence parsing, JSON SyntaxError interception, JSON schema assertions.
-* **tests/opencode.test.ts** (3 tests): Daemon auto-discovery, live model synchronization, adaptive 3-tier price pyramid.
+* **tests/opencode.test.ts** (3 tests): Daemon auto-discovery, live model synchronization, adaptive 4-tier price pyramid.
 * **tests/pipeline.test.ts** (4 tests): End-to-end execution, schema fallback retries, FinOps economics tracking.
 * **tests/server.test.ts** (6 tests): Fastify HTTP server, `/v1/chat/completions`, SSE streaming, `/v1/metrics`.
 

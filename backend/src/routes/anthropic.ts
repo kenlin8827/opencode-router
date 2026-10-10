@@ -79,6 +79,13 @@ interface AnthropicMessagesRequest {
   stream?: boolean;
   tools?: AnthropicToolDef[];
   metadata?: { user_id?: string };
+  // Extended thinking — Anthropic-native shape. The provider-build layer maps
+  //   enabled   → reasoning.max_thinking_tokens (Anthropic thinking block)
+  //   adaptive  → no router-side override; upstream picks the model default
+  //   disabled  → reasoning.effort='none' (no thinking block constructed)
+  // Opus 5.5+ reject `disabled` with 400; the gateway doesn't second-guess
+  // the client — it forwards faithfully and lets the upstream answer.
+  thinking?: { type?: 'enabled' | 'adaptive' | 'disabled'; budget_tokens?: number };
 }
 
 /** Anthropic requires max_tokens; mirror the SDK default when omitted. */
@@ -182,6 +189,18 @@ export function anthropicToOpenAI(body: AnthropicMessagesRequest): {
       stream: body.stream,
       stop: body.stop_sequences,
       user: body.metadata?.user_id,
+      // Anthropic-native thinking → gateway's reasoning fields. The provider
+      // payload builders turn `max_thinking_tokens` into the upstream-native
+      // shape (Anthropic thinking block, Responses reasoning.max_tokens,
+      // Gemini thinkingConfig.thinkingBudget). `type:'adaptive'` lets the
+      // upstream pick the model default (Anthropic Opus 5.5+); we just
+      // skip the type marker. `type:'disabled'` maps to `reasoning_effort=
+      // 'none'` so the providers skip thinking-block construction entirely.
+      max_thinking_tokens: body.thinking?.type === 'enabled' ? body.thinking?.budget_tokens : undefined,
+      reasoning_effort:
+        body.thinking?.type === 'disabled'
+          ? 'none'
+          : undefined,
       ...(body.tools?.length
         ? {
             tools: body.tools.map((t) => ({
@@ -318,7 +337,7 @@ export function chatToAnthropicStreamEvents(
 
 /**
  * Register the Anthropic-protocol endpoint on the gateway.
- * Model routing (auto / auto-fast / auto-flagship / auto-reasoning /
+ * Model routing (auto / auto-lite / auto-plus / auto-pro / auto-ultra /
  * concrete model ids) is resolved inside orchestrator.process, exactly
  * like the OpenAI /v1/chat/completions path.
  */
@@ -366,6 +385,13 @@ export function registerAnthropicRoutes(
         'X-OCR-Saved-USD': result.savedCostUsd.toFixed(6),
         'X-OCR-Latency-MS': result.latencyMs.toString(),
       };
+      // Reasoning-effort observability — only set when the client asked for
+      // thinking. See server.ts for full description.
+      if (result.requestedEffort && result.requestedEffort !== 'none') {
+        reply.header('X-OCR-Thinking-Requested', result.requestedEffort);
+        reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
+        reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
+      }
       for (const [k, v] of Object.entries(ocrHeaders)) {
         reply.header(k, v);
       }

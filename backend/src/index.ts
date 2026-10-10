@@ -13,6 +13,7 @@ import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { getOcrHomeDir } from './cli/paths.js';
+import { getWarnThrottle } from './observability/warn-throttle.js';
 
 async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
@@ -56,8 +57,8 @@ async function main() {
   try {
     const boot = await buildDirectPool();
     config.models = boot.models;
-    const defaultFlagship = boot.models.find((m) => m.tier === 'flagship' && m.isDefaultInTier) || boot.models[0];
-    config.baselineModel = defaultFlagship?.id || 'auto';
+    const defaultPlus = boot.models.find((m) => m.tier === 'plus' && m.isDefaultInTier) || boot.models[0];
+    config.baselineModel = defaultPlus?.id || 'auto';
 
     registry = new ProviderRegistry(config, boot.models.length === 0);
     for (const inst of boot.instances) {
@@ -87,7 +88,7 @@ async function main() {
     console.log('\n============================================================');
     console.log(`🚀 OCR Gateway (OpenCode Router) is ready! (OpenAI API Compatible)`);
     console.log(`👉 API Base URL     : http://127.0.0.1:${config.port}/v1`);
-    console.log(`👉 Default Model    : auto (Virtual models: auto, auto-fast, auto-flagship, auto-reasoning)`);
+    console.log(`👉 Default Model    : auto (Virtual models: auto, auto-lite, auto-plus, auto-pro, auto-ultra)`);
     console.log(`👉 Chat Completions : http://127.0.0.1:${config.port}/v1/chat/completions`);
     console.log(`👉 Anthropic Msgs   : http://127.0.0.1:${config.port}/v1/messages`);
     console.log(`👉 Models List      : http://127.0.0.1:${config.port}/v1/models`);
@@ -98,6 +99,17 @@ async function main() {
     app.log.error(err);
     process.exit(1);
   }
+
+  // Graceful-shutdown observability: print a one-line summary for every
+  // deduped warn key when the process is asked to exit. Operators get a
+  // final view of "what was failing during this lifetime" without the
+  // noise of every single suppressed repeat during the run.
+  const shutdown = () => {
+    getWarnThrottle().summary();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 main();

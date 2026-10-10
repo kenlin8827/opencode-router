@@ -11,9 +11,10 @@ export interface Layer1Prediction {
   confidence: number;
   needsSchemaValidation: boolean;
   probabilities: {
-    fast: number;
-    flagship: number;
-    reasoning: number;
+    lite: number;
+    plus: number;
+    pro: number;
+    ultra: number;
   };
   reason: string;
   isBaseModel?: boolean;
@@ -49,12 +50,12 @@ export interface ExtractedFeatures {
 /**
  * Standard Empty Local Model Base (Untrained Base Scaffold)
  * 8 Language-Agnostic Structural & Statistical Features
- * Weights initialized to 0.0 -> Uniform probability 0.333 -> Guaranteed low confidence -> Cascades to Layer 2
+ * Weights initialized to 0.0 -> Uniform probability 0.25 -> Guaranteed low confidence -> Cascades to Layer 2
  */
 export const DEFAULT_BASE_MODEL: Layer1ModelWeights = {
-  version: '1.0.0',
+  version: '1.1.0',
   modelType: 'linear_softmax_classifier',
-  description: 'Language-agnostic micro CPU classifier scaffold for OCR (OpenCode Router) Layer 1',
+  description: 'Language-agnostic micro CPU classifier scaffold for OCR (OpenCode Router) Layer 1 (4-tier: lite/plus/pro/ultra)',
   isBaseModel: true,
   sampleCount: 0,
   lastTrainedAt: null,
@@ -69,18 +70,18 @@ export const DEFAULT_BASE_MODEL: Layer1ModelWeights = {
     'character_entropy',
     'punctuation_density',
   ],
-  classes: ['fast', 'flagship', 'reasoning'],
+  classes: ['lite', 'plus', 'pro', 'ultra'],
   weights: [
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
   ],
-  biases: [0.0, 0.0, 0.0],
+  biases: [0.0, 0.0, 0.0, 0.0],
 };
 
 /**
@@ -284,16 +285,16 @@ export class Layer1Classifier {
     const features = this.extractFeatures(request);
     const needsSchemaValidation = features.metrics.hasToolsOrSchema;
 
-    // 1. Protocol-level structured task: deploy Fast with schema assertion & fallback
+    // 1. Protocol-level structured task: deploy Lite with schema assertion & fallback
     if (needsSchemaValidation) {
       const conf = 0.92;
       return {
         isConfident: conf >= threshold,
-        targetTier: 'fast',
+        targetTier: 'lite',
         confidence: conf,
         needsSchemaValidation: true,
-        probabilities: { fast: conf, flagship: 0.06, reasoning: 0.02 },
-        reason: 'Structured schema protocol requirement detected; deploying fast tier with cascading fallback assertion',
+        probabilities: { lite: conf, plus: 0.05, pro: 0.02, ultra: 0.01 },
+        reason: 'Structured schema protocol requirement detected; deploying lite tier with cascading fallback assertion',
         isBaseModel: this.isBaseModel(),
       };
     }
@@ -303,10 +304,10 @@ export class Layer1Classifier {
       try {
         return {
           isConfident: true,
-          targetTier: 'flagship',
+          targetTier: 'plus',
           confidence: 0.90,
           needsSchemaValidation,
-          probabilities: { fast: 0.05, flagship: 0.90, reasoning: 0.05 },
+          probabilities: { lite: 0.04, plus: 0.88, pro: 0.06, ultra: 0.02 },
           reason: 'Local ONNX model evaluated decision on CPU',
           isBaseModel: false,
         };
@@ -320,9 +321,10 @@ export class Layer1Classifier {
     const biases = this.loadedModel.biases;
     const x = features.vector;
 
-    // Compute raw logits for 3 classes: [fast, flagship, reasoning]
-    const logits = [biases[0] || 0, biases[1] || 0, biases[2] || 0];
-    for (let c = 0; c < 3; c++) {
+    // Compute raw logits for 4 classes: [lite, plus, pro, ultra]
+    const numClasses = 4;
+    const logits = [biases[0] || 0, biases[1] || 0, biases[2] || 0, biases[3] || 0];
+    for (let c = 0; c < numClasses; c++) {
       for (let f = 0; f < x.length; f++) {
         const w = (weights[f] && weights[f][c]) ? weights[f][c] : 0;
         logits[c] += x[f] * w;
@@ -331,28 +333,28 @@ export class Layer1Classifier {
 
     // Numerically stable Softmax
     const maxLogit = Math.max(...logits);
-    const exp0 = Math.exp(logits[0] - maxLogit);
-    const exp1 = Math.exp(logits[1] - maxLogit);
-    const exp2 = Math.exp(logits[2] - maxLogit);
-    const expSum = exp0 + exp1 + exp2;
-
-    const pFast = Number((exp0 / expSum).toFixed(4));
-    const pFlagship = Number((exp1 / expSum).toFixed(4));
-    const pReasoning = Number((exp2 / expSum).toFixed(4));
+    const exps = logits.map((l) => Math.exp(l - maxLogit));
+    const expSum = exps.reduce((acc, v) => acc + v, 0);
+    const probs = exps.map((e) => Number((e / expSum).toFixed(4)));
+    const [pLite, pPlus, pPro, pUltra] = probs;
 
     const isBase = this.isBaseModel();
-    let bestTier: TierLevel = 'flagship'; // Safe quality baseline default
-    let maxProb = pFlagship;
+    let bestTier: TierLevel = 'plus'; // Safe quality baseline default
+    let maxProb = pPlus;
 
-    // For trained models, pick the argmax tier; for untrained base model, default safely to Flagship
+    // For trained models, pick the argmax tier; for untrained base model, default safely to Plus
     if (!isBase) {
-      if (pFast > maxProb) {
-        bestTier = 'fast';
-        maxProb = pFast;
+      if (pLite > maxProb) {
+        bestTier = 'lite';
+        maxProb = pLite;
       }
-      if (pReasoning > maxProb) {
-        bestTier = 'reasoning';
-        maxProb = pReasoning;
+      if (pPro > maxProb) {
+        bestTier = 'pro';
+        maxProb = pPro;
+      }
+      if (pUltra > maxProb) {
+        bestTier = 'ultra';
+        maxProb = pUltra;
       }
     }
 
@@ -374,9 +376,10 @@ export class Layer1Classifier {
       confidence: maxProb,
       needsSchemaValidation,
       probabilities: {
-        fast: pFast,
-        flagship: pFlagship,
-        reasoning: pReasoning,
+        lite: pLite,
+        plus: pPlus,
+        pro: pPro,
+        ultra: pUltra,
       },
       reason,
       isBaseModel: isBase,
@@ -426,26 +429,26 @@ export class Layer1Classifier {
     const l2 = options.l2 || 0.005;
 
     const numFeatures = DEFAULT_BASE_MODEL.featureDimensions;
-    const numClasses = 3; // fast: 0, flagship: 1, reasoning: 2
-    const tierMap: Record<TierLevel, number> = { fast: 0, flagship: 1, reasoning: 2 };
+    const numClasses = 4; // lite: 0, plus: 1, pro: 2, ultra: 3
+    const tierMap: Record<TierLevel, number> = { lite: 0, plus: 1, pro: 2, ultra: 3 };
 
     // Initialize weights and biases
     let W: number[][] = Array.from({ length: numFeatures }, () => Array(numClasses).fill(0.0));
-    let b: number[] = [0.0, 0.0, 0.0];
+    let b: number[] = [0.0, 0.0, 0.0, 0.0];
 
     // Training loop
     let finalLoss = 0;
     for (let epoch = 0; epoch < epochs; epoch++) {
       let epochLoss = 0;
       const gradW: number[][] = Array.from({ length: numFeatures }, () => Array(numClasses).fill(0.0));
-      const gradB: number[] = [0.0, 0.0, 0.0];
+      const gradB: number[] = [0.0, 0.0, 0.0, 0.0];
 
       for (const sample of samples) {
         const x = sample.features;
         const targetClass = tierMap[sample.targetTier];
 
         // Forward pass
-        const logits = [b[0], b[1], b[2]];
+        const logits = [b[0], b[1], b[2], b[3]];
         for (let c = 0; c < numClasses; c++) {
           for (let f = 0; f < numFeatures; f++) {
             logits[c] += (x[f] || 0) * W[f][c];
@@ -494,7 +497,7 @@ export class Layer1Classifier {
     for (const sample of samples) {
       const x = sample.features;
       const targetClass = tierMap[sample.targetTier];
-      const logits = [b[0], b[1], b[2]];
+      const logits = [b[0], b[1], b[2], b[3]];
       for (let c = 0; c < numClasses; c++) {
         for (let f = 0; f < numFeatures; f++) {
           logits[c] += (x[f] || 0) * W[f][c];

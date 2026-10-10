@@ -54,7 +54,7 @@ describe('CaptureRecorder', () => {
       model: 'auto',
       request: { model: 'auto', messages: [{ role: 'user', content: 'hello' }] },
       response: { id: 'chatcmpl-1', choices: [{ message: { content: 'hi' } }] },
-      routing: { tierUsed: 'fast', modelUsed: 'm1', provider: 'p1' },
+      routing: { tierUsed: 'lite', modelUsed: 'm1', provider: 'p1' },
       usage: { prompt_tokens: 3, completion_tokens: 2 },
       latencyMs: 42,
     });
@@ -523,8 +523,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
   it('writes exactly 4 events per inference turn (inbound-req/res + outbound-req/res)', async () => {
     const sessionIdA = 'sess_events_aaa';
     const sessionIdB = 'sess_events_bbb';
-    await emitOneTurn('corr_aaa', sessionIdA, 'auto-fast');
-    await emitOneTurn('corr_bbb', sessionIdB, 'auto-flagship');
+    await emitOneTurn('corr_aaa', sessionIdA, 'auto-lite');
+    await emitOneTurn('corr_bbb', sessionIdB, 'auto-plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const contentA = fs.readFileSync(path.join(tmp, dateDir, `${sessionIdA}.jsonl`), 'utf8');
     const linesA = contentA.split('\n').filter(l => l.trim());
@@ -613,8 +613,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
   it('readEvents groups by correlationId and computes per-direction latency', async () => {
     const sessionId = 'sess_read_events';
     // Two turns, sequential — same sessionId so both land in one JSONL.
-    await emitOneTurn('corr_read_1', sessionId, 'auto-fast');
-    await emitOneTurn('corr_read_2', sessionId, 'auto-flagship');
+    await emitOneTurn('corr_read_1', sessionId, 'auto-lite');
+    await emitOneTurn('corr_read_2', sessionId, 'auto-plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = recorder.readEvents(dateDir, file, 100);

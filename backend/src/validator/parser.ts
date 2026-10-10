@@ -2,7 +2,7 @@ import { ChatCompletionRequest, ChatMessage } from '../types/openai.js';
 
 export class FallbackContextBuilder {
   /**
-   * Packages error feedback and original context for silent escalation to flagship/reasoning
+   * Packages error feedback and original context for silent escalation to plus/pro/ultra
    */
   public static buildEscalationRequest(
     originalRequest: ChatCompletionRequest,

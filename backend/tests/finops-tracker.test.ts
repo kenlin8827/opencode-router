@@ -7,7 +7,7 @@ import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { openFinOpsStore } from '../src/trace/persist.js';
 
 const recordArgs = (over: Partial<Parameters<FinOpsTracker['record']>[0]> = {}) => ({
-  tier: 'fast' as const,
+  tier: 'lite' as const,
   fallbackOccurred: false,
   promptTokens: 100,
   cachedPromptTokens: 25,
@@ -58,9 +58,9 @@ describe('FinOpsTracker cumulative persistence (only totalRequests + fallbackCou
 
       const tracker = new FinOpsTracker(store);
       tracker.hydrate();
-      tracker.record(recordArgs({ tier: 'fast' }));
-      tracker.record(recordArgs({ tier: 'flagship', fallbackOccurred: true }));
-      tracker.record(recordArgs({ tier: 'reasoning' }));
+      tracker.record(recordArgs({ tier: 'lite' }));
+      tracker.record(recordArgs({ tier: 'plus', fallbackOccurred: true }));
+      tracker.record(recordArgs({ tier: 'pro' }));
 
       // Read the raw row set out-of-band. We expect EXACTLY two rows in
       // finops_totals: totalRequests=3, fallbackCount=1. The other
@@ -100,9 +100,9 @@ describe('FinOpsTracker cumulative persistence (only totalRequests + fallbackCou
       stores.push(store1);
       const t1 = new FinOpsTracker(store1);
       t1.hydrate();
-      t1.record(recordArgs({ tier: 'fast', latencyMs: 50, promptTokens: 10 }));
-      t1.record(recordArgs({ tier: 'flagship', latencyMs: 150, promptTokens: 20, fallbackOccurred: true }));
-      t1.record(recordArgs({ tier: 'reasoning', promptTokens: 30 }));
+      t1.record(recordArgs({ tier: 'lite', latencyMs: 50, promptTokens: 10 }));
+      t1.record(recordArgs({ tier: 'plus', latencyMs: 150, promptTokens: 20, fallbackOccurred: true }));
+      t1.record(recordArgs({ tier: 'pro', promptTokens: 30 }));
       const beforeStats = t1.getStats();
       assert.equal(beforeStats.totalRequests, 3);
       assert.equal(beforeStats.fallbackCount, 1);
@@ -134,16 +134,17 @@ describe('FinOpsTracker cumulative persistence (only totalRequests + fallbackCou
       assert.equal(afterStats.tokens.totalCachedPromptTokens, 0);
       assert.equal(afterStats.economics.actualCostUsd, 0, 'process-local cost reset');
       assert.equal(afterStats.economics.baselineCostUsd, 0);
-      assert.equal(afterStats.tierDistribution.fast.count, 0);
-      assert.equal(afterStats.tierDistribution.flagship.count, 0);
-      assert.equal(afterStats.tierDistribution.reasoning.count, 0);
+      assert.equal(afterStats.tierDistribution.lite.count, 0);
+      assert.equal(afterStats.tierDistribution.plus.count, 0);
+      assert.equal(afterStats.tierDistribution.pro.count, 0);
+      assert.equal(afterStats.tierDistribution.ultra.count, 0);
       assert.equal(afterStats.latency.avgMs, 0);
-      assert.equal(afterStats.latency.fastAvgMs, 0);
+      assert.equal(afterStats.latency.liteAvgMs, 0);
 
       // A new record after hydration must ADD to the restored counters
       // (not overwrite them) and also start accumulating process-local
       // fields from zero — this is the contract.
-      t2.record(recordArgs({ tier: 'fast', latencyMs: 25, promptTokens: 5 }));
+      t2.record(recordArgs({ tier: 'lite', latencyMs: 25, promptTokens: 5 }));
       assert.equal(t2.getStats().totalRequests, 4, 'cumulative counter advances after restart');
       assert.equal(t2.getStats().fallbackCount, 1, 'fallbackCount unchanged for non-fallback record');
       assert.equal(t2.getStats().tokens.totalPromptTokens, 5, 'process-local starts fresh');

@@ -23,11 +23,12 @@ export interface Layer2JudgeResult {
 export class Layer2Judge {
   private static readonly DECISION_QUESTION =
     'Classify the computational task difficulty tier (ATTENTION: NEVER judge difficulty by character length! Short prompts like "P=NP?" or "Prove Fermat\'s Last Theorem" are high-difficulty): ' +
-    'fast (trivial QA, simple calculation, basic translation, shallow extraction, casual greetings), ' +
-    'flagship (system architecture, complex software engineering, refactoring, creative generation, nuanced reasoning), ' +
-    'reasoning (deep mathematical proof, formal symbolic logic, NP-hard algorithmic complexity, quantum physics).';
+    'lite (trivial QA, simple calculation, basic translation, shallow extraction, casual greetings), ' +
+    'plus (system architecture, complex software engineering, refactoring, creative generation, nuanced thinking — the default workhorse), ' +
+    'pro (deep mathematical proof, formal symbolic logic, NP-hard algorithmic complexity, hard research), ' +
+    'ultra (frontier-tier, hour-long autonomous agent tasks, hardest open-ended thinking).';
 
-  private static readonly CHOICES = ['fast', 'flagship', 'reasoning'];
+  private static readonly CHOICES = ['lite', 'plus', 'pro', 'ultra'];
 
   // ADR-0010: routing decision cache (LRU+TTL over judge results)
   private static decisionCache: RoutingDecisionCache | null = null;
@@ -120,8 +121,8 @@ export class Layer2Judge {
         if (!res.ok) return null;
 
         const data = (await res.json()) as any;
-        const choice = (data.choice || data.decision || 'flagship').toLowerCase();
-        const tier: TierLevel = (choice === 'fast' || choice === 'reasoning') ? choice : 'flagship';
+        const choice = (data.choice || data.decision || 'plus').toLowerCase();
+        const tier: TierLevel = (choice === 'lite' || choice === 'pro' || choice === 'ultra') ? choice : 'plus';
         const confidence = typeof data.confidence === 'number' ? data.confidence : 0.92;
         const reason = `TypeSafe Jev specialized decision model classified as ${tier} (confidence: ${(confidence * 100).toFixed(1)}%)`;
 
@@ -152,11 +153,12 @@ export class Layer2Judge {
               {
                 role: 'system',
                 content:
-                  'You are a strict task complexity classifier. Analyze the user request and output JSON: {"tier": "fast" | "flagship" | "reasoning", "confidence": number}.\n' +
-                  'CRITICAL RULE: DO NOT JUDGE BY TEXT LENGTH. Short prompts can be highly complex (e.g. "P=NP?", "Prove Riemann Hypothesis" are reasoning; "Red-Black Tree implementation" is flagship).\n' +
-                  '- fast: trivial arithmetic, basic translation, casual greeting, shallow lookup.\n' +
-                  '- flagship: system architecture, coding/refactoring, engineering design, creative writing.\n' +
-                  '- reasoning: mathematical proofs, NP-hard theoretical problems, formal symbolic logic.',
+                  'You are a strict task complexity classifier. Analyze the user request and output JSON: {"tier": "lite" | "plus" | "pro" | "ultra", "confidence": number}.\n' +
+                  'CRITICAL RULE: DO NOT JUDGE BY TEXT LENGTH. Short prompts can be highly complex (e.g. "P=NP?", "Prove Riemann Hypothesis" are pro; "Red-Black Tree implementation" is plus).\n' +
+                  '- lite: trivial arithmetic, basic translation, casual greeting, shallow lookup.\n' +
+                  '- plus: system architecture, coding/refactoring, engineering design, creative writing.\n' +
+                  '- pro: mathematical proofs, NP-hard theoretical problems, formal symbolic logic, hard research.\n' +
+                  '- ultra: frontier thinking, hour-long autonomous agent tasks.',
               },
               { role: 'user', content: userText.slice(0, 3000) },
             ],
@@ -173,7 +175,7 @@ export class Layer2Judge {
         const data = (await res.json()) as any;
         const content = data.choices?.[0]?.message?.content || '{}';
         const parsed = JSON.parse(content);
-        const tier: TierLevel = (parsed.tier === 'fast' || parsed.tier === 'reasoning') ? parsed.tier : 'flagship';
+        const tier: TierLevel = (parsed.tier === 'lite' || parsed.tier === 'pro' || parsed.tier === 'ultra') ? parsed.tier : 'plus';
         const reason = `Specialized Layer 2 (${provider}) classified as ${tier}`;
 
         decisionCache.set(cacheKey, { targetTier: tier, confidence: parsed.confidence || 0.90, reason });

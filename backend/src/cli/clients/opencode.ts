@@ -54,9 +54,10 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
   const modelEntry = (label: string) => ({ name: label });
   const models: Record<string, { name: string }> = {
     auto: modelEntry('Auto (intelligent multi-tier routing)'),
-    'auto-fast': modelEntry('Force Fast tier'),
-    'auto-flagship': modelEntry('Force Flagship tier'),
-    'auto-reasoning': modelEntry('Force Reasoning tier'),
+    'auto-lite': modelEntry('Force Lite tier'),
+    'auto-plus': modelEntry('Force Plus tier'),
+    'auto-pro': modelEntry('Force Pro tier'),
+    'auto-ultra': modelEntry('Force Ultra tier'),
   };
   // Pin a concrete registered model: expose it in the client's model picker.
   if (model && model !== 'auto' && !model.startsWith('auto-')) {
@@ -126,7 +127,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     // Extra concrete models exposed in the provider's switcher (non-virtual entries)
     const mainId = stripPrefix(hookedData?.model);
-    const AUTO_MODEL_KEYS = new Set(['auto', 'auto-fast', 'auto-flagship', 'auto-reasoning']);
+    const AUTO_MODEL_KEYS = new Set(['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
     const providerModels = hookedData?.provider?.[ROUTER_PROVIDER_ID]?.models;
     const extraModels =
       providerModels && typeof providerModels === 'object'
@@ -143,7 +144,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       details,
       modelSlots: [
         { key: 'main', value: mainId, default: 'auto' },
-        { key: 'subagent', value: stripPrefix(hookedData?.agent?.general?.model), default: 'auto-fast' },
+        { key: 'subagent', value: stripPrefix(hookedData?.agent?.general?.model), default: 'auto-lite' },
       ],
       extraModels,
     };

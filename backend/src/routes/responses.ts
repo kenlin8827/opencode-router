@@ -29,7 +29,9 @@ import {
  *   (never silently opens a new session).
  *
  * `reasoning` input items are intentionally skipped: chat-completions
- * upstreams cannot consume them. Unknown item types fail with 400 rather
+ * upstreams cannot consume them (note: `reasoning` is the OpenAI Responses API
+ * item type name, kept verbatim — not the internal tier name). Unknown item
+ * types fail with 400 rather
  * than being silently dropped (fail-visible over silent data loss).
  *
  * Streaming (`stream: true`) synthesizes the Responses SSE event sequence
@@ -97,7 +99,9 @@ export interface ResponsesRequest {
   top_p?: number;
   max_output_tokens?: number;
   tools?: Tool[];
-  reasoning?: { effort?: 'low' | 'medium' | 'high' };
+  // 5-level effort vocabulary; OpenAI Responses rejects unsupported values
+// per-model (e.g. GPT-6.1 Sol rejects `none` and `minimal` with 400).
+reasoning?: { effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh'; max_tokens?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +335,10 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
     if (body.max_output_tokens !== undefined) request.max_tokens = body.max_output_tokens;
     if (body.tools?.length) request.tools = body.tools;
     if (body.reasoning?.effort) request.reasoning_effort = body.reasoning.effort;
+    // Responses-native reasoning.max_tokens maps to router's max_thinking_tokens,
+    // which provider payload builders translate per-upstream (see anthropic.ts,
+    // google.ts, responses.ts buildResponsesPayload).
+    if (body.reasoning?.max_tokens != null) request.max_thinking_tokens = body.reasoning.max_tokens;
     if (body.user) request.user = body.user;
     // Exact session binding for stateful turns: the parent node remembers the
     // routing session; router_options.session_id resolves via the explicit
@@ -352,6 +360,12 @@ export function registerResponsesRoutes(app: FastifyInstance, orchestrator: Pipe
       reply.header('X-OCR-Session-Lookup', result.sessionLookupType || '');
       reply.header('X-OCR-Session-Ratchet', result.sessionRatchetApplied ? 'true' : 'false');
       reply.header('X-OCR-Trace-ID', result.traceId || '');
+      // Reasoning-effort observability — see server.ts for full description.
+      if (result.requestedEffort && result.requestedEffort !== 'none') {
+        reply.header('X-OCR-Thinking-Requested', result.requestedEffort);
+        reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
+        reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
+      }
 
       const respId = newResponseId();
       const assistant = result.response.choices[0]?.message;

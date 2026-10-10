@@ -17,7 +17,7 @@ export function routingModeForceTier(
   if (!mode || mode === 'smart') return undefined;
   if (routerOptions?.force_tier) return undefined;
   if (model && model !== 'auto' && model !== 'default') return undefined;
-  return mode === 'cost' ? 'fast' : 'reasoning';
+  return mode === 'cost' ? 'lite' : 'pro';
 }
 
 export class RouterEngine {
@@ -68,14 +68,14 @@ export class RouterEngine {
         hasMathOrProof: metrics.symbolEntropy > 0.7,
         hasMultiTurn: metrics.turnCount > 3,
         hasToolsOrSchema: needsSchemaValidation,
-        complexityScore: prediction.targetTier === 'reasoning' ? 8.0 : prediction.targetTier === 'flagship' ? 5.0 : 2.0,
+        complexityScore: prediction.targetTier === 'ultra' ? 9.0 : prediction.targetTier === 'pro' ? 7.0 : prediction.targetTier === 'plus' ? 4.0 : 1.0,
       },
     };
   }
 
   /**
    * Asynchronous Hierarchical Routing
-   * Layer 1 (Local Model Base / Experience) -> Layer 2 (Jev / OpenCode Proxy) -> Safe Quality Baseline (flagship)
+   * Layer 1 (Local Model Base / Experience) -> Layer 2 (Jev / OpenCode Proxy) -> Safe Quality Baseline (plus tier)
    */
   public static async routeAsync(
     request: ChatCompletionRequest,
@@ -108,7 +108,7 @@ export class RouterEngine {
           hasMathOrProof: metrics.symbolEntropy > 0.7,
           hasMultiTurn: metrics.turnCount > 3,
           hasToolsOrSchema: needsSchemaValidation,
-          complexityScore: prediction.targetTier === 'reasoning' ? 8.0 : prediction.targetTier === 'flagship' ? 5.0 : 2.0,
+          complexityScore: prediction.targetTier === 'ultra' ? 9.0 : prediction.targetTier === 'pro' ? 7.0 : prediction.targetTier === 'plus' ? 4.0 : 1.0,
         },
       };
     }
@@ -129,7 +129,7 @@ export class RouterEngine {
             hasMathOrProof: metrics.symbolEntropy > 0.7,
             hasMultiTurn: metrics.turnCount > 3,
             hasToolsOrSchema: needsSchemaValidation,
-            complexityScore: decisionResult.targetTier === 'reasoning' ? 8.0 : decisionResult.targetTier === 'flagship' ? 5.0 : 2.0,
+            complexityScore: decisionResult.targetTier === 'ultra' ? 9.0 : decisionResult.targetTier === 'pro' ? 7.0 : decisionResult.targetTier === 'plus' ? 4.0 : 1.0,
           },
         };
       }
@@ -148,7 +148,7 @@ export class RouterEngine {
         hasMathOrProof: metrics.symbolEntropy > 0.7,
         hasMultiTurn: metrics.turnCount > 3,
         hasToolsOrSchema: needsSchemaValidation,
-        complexityScore: prediction.targetTier === 'reasoning' ? 8.0 : prediction.targetTier === 'flagship' ? 5.0 : 2.0,
+        complexityScore: prediction.targetTier === 'ultra' ? 9.0 : prediction.targetTier === 'pro' ? 7.0 : prediction.targetTier === 'plus' ? 4.0 : 1.0,
       },
     };
   }

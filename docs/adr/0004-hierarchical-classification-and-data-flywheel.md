@@ -5,7 +5,7 @@ Accepted & Implemented - 2026-09-29
 
 ## Context
 As traffic volume grows and query semantics diversify, relying solely on shallow structural rules encounters architectural ceilings:
-1. **Implicit Complex Semantics**: Queries lacking formal math formulas or code blocks may still demand high-tier reasoning (e.g., philosophical dilemmas, concurrency traps described in prose).
+1. **Implicit Complex Semantics**: Queries lacking formal math formulas or code blocks may still demand high-tier thinking (e.g., philosophical dilemmas, concurrency traps described in prose).
 2. **Latency vs. Accuracy Trade-offs**:
    - Structural rule matching takes `<0.05ms`, but exhibits coarse boundaries;
    - Autoregressive generative LLMs (e.g., GPT-4o-mini) as judges are slow (1000ms+), prone to schema hallucinations, and consume billable tokens;
@@ -25,8 +25,8 @@ Design and implement a **Hierarchical Decision Pipeline** paired with an **Activ
   - Invokes a non-autoregressive decision model equipped with recent dialogue history turns.
   - Generates type-safe tier decisions with calibrated confidence metrics, eliminating generation formatting errors.
 - **Layer 3: Runtime Execution & Cascading Assertion (Fallback Engine)**
-  - fast tier model attempts execution -> Local AST / JSON schema assertion.
-  - Upon assertion failure, silently escalates to flagship tier flagship and records a negative training sample.
+  - lite tier model attempts execution -> Local AST / JSON schema assertion.
+  - Upon assertion failure, silently escalates to plus tier and records a negative training sample.
 
 ### 2. Active Learning Data Flywheel
 ```mermaid
@@ -45,14 +45,14 @@ flowchart TD
 ```
 
 - **Ground Truth Signal Collection**:
-  - **Negative Samples**: When fast tier execution fails schema assertions triggering fallback, the query is marked as a definitive negative sample for fast tier.
+  - **Negative Samples**: When lite tier execution fails schema assertions triggering fallback, the query is marked as a definitive negative sample for lite tier.
   - **Teacher Labels**: Authoritative decisions from Layer 2 act as distillation labels.
-  - **Positive Samples**: Unprompted queries cleanly satisfied on fast tier.
+  - **Positive Samples**: Unprompted queries cleanly satisfied on lite tier.
 - **Continuous In-Place Evolution**:
   - The local micro-tensor base model is updated periodically via `bun run train:layer1`.
   - Goal: Absorb >90% of recurring traffic at Layer 1 (<0.1ms, $0 cost), reducing Layer 2 invocations to <10%.
 
 ## Consequences
 - **Positive**:
-  - Balanced trade-off between sub-millisecond local latency and flagship accuracy.
+  - Balanced trade-off between sub-millisecond local latency and plus-tier accuracy.
   - Creates a self-improving, proprietary optimization flywheel from production traffic.

@@ -8,12 +8,12 @@ describe('routingModeForceTier', () => {
   });
 
   test('cost/quality force tier for auto-ish requests only', () => {
-    expect(routingModeForceTier('auto', undefined, 'cost')).toBe('fast');
-    expect(routingModeForceTier('default', undefined, 'quality')).toBe('reasoning');
+    expect(routingModeForceTier('auto', undefined, 'cost')).toBe('lite');
+    expect(routingModeForceTier('default', undefined, 'quality')).toBe('pro');
     expect(routingModeForceTier('gpt-5', undefined, 'cost')).toBeUndefined();
   });
 
   test('existing force_tier wins over global mode', () => {
-    expect(routingModeForceTier('auto', { force_tier: 'flagship' }, 'cost')).toBeUndefined();
+    expect(routingModeForceTier('auto', { force_tier: 'plus' }, 'cost')).toBeUndefined();
   });
 });
