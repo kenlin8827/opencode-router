@@ -14,6 +14,8 @@ import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { getOcrHomeDir } from './cli/paths.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
+import { startForwardProxy } from './forward-proxy/index.js';
+import { setForwardProxyStatus } from './forward-proxy/status.js';
 
 async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
@@ -95,6 +97,27 @@ async function main() {
     console.log(`👉 FinOps Metrics   : http://127.0.0.1:${config.port}/v1/metrics`);
     console.log(`👉 Sessions Inspect : http://127.0.0.1:${config.port}/v1/sessions`);
     console.log('============================================================\n');
+
+    // Inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server) — opt-in.
+    // Fault-tolerance contract: started WITHOUT awaiting the boot path — a
+    // failing / slow proxy must never block or crash the gateway. Failures are
+    // logged here and surfaced on the Proxy Access page via /api/ui/status.
+    if (config.forwardProxy?.enabled) {
+      const fpCfg = config.forwardProxy;
+      const fpHost = fpCfg.host || '127.0.0.1';
+      void startForwardProxy(fpCfg, orchestrator)
+        .then((fp) => {
+          setForwardProxyStatus({ running: true, port: fp.port, host: fpHost, startedAt: Date.now() });
+          console.log(
+            `👉 Forward Proxy    : http://${fpHost}:${fp.port} (set HTTP_PROXY / HTTPS_PROXY on clients)`
+          );
+        })
+        .catch((fpErr: any) => {
+          const message = fpErr?.message || String(fpErr);
+          setForwardProxyStatus({ running: false, error: message });
+          console.warn(`[OCR] Forward proxy failed to start (gateway continues without it): ${message}`);
+        });
+    }
   } catch (err) {
     app.log.error(err);
     process.exit(1);

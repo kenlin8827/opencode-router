@@ -182,6 +182,38 @@ export interface ProxyConfig {
   excludes?: string[]; // matching models/providers force direct (evaluated before includes)
 }
 
+/**
+ * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
+ *
+ * FULL-CAPTURE by design: every proxied TLS connection is MITM'd with a
+ * locally generated CA; the decrypted request is inspected — LLM-protocol
+ * traffic enters the routing pipeline, anything else is forwarded
+ * transparently. Only loopback targets and `bypassHosts` matches are
+ * blind-tunneled (never decrypted). No `mode` switch: full capture IS the
+ * single behavior. The generated CA must be trusted by the clients that use
+ * this proxy (`<caDir>/ca.pem`).
+ */
+export interface ForwardProxyConfig {
+  enabled?: boolean; // master switch; default false (opt-in — full-capture MITM must be enabled consciously)
+  port?: number; // listen port; default 4555
+  host?: string; // listen address; default '127.0.0.1' (loopback-only)
+  /**
+   * Bypass list: bare glob strings = pure tunnel with DIRECT egress; object
+   * entries `{ host, viaProxy }` choose the egress per host (viaProxy →
+   * tunnel through the outbound proxy policy, e.g. clash). Loopback always
+   * bypasses (direct).
+   */
+  bypassHosts?: (string | { host: string; viaProxy?: boolean })[];
+  caDir?: string; // MITM CA dir; default ~/.opencode-router/forward-proxy
+  /**
+   * Route forward-proxy transit (bypass tunnels + non-intercepted forwards)
+   * through the outbound proxy policy (`proxy:` — url/includes/excludes).
+   * Default false = direct egress; recommended on when targets are
+   * network-blocked and a local proxy (clash etc.) is configured.
+   */
+  viaOutboundProxy?: boolean;
+}
+
 export interface Layer1ClassifierConfig {
   enabled: boolean;
   modelPath?: string;
@@ -384,6 +416,7 @@ export interface RouterConfig {
   apiKeys?: ApiKeyConfig[];
   opencode?: OpenCodeConfig;
   proxy?: ProxyConfig;
+  forwardProxy?: ForwardProxyConfig;
   compression?: CompressionConfig;
   capture?: CaptureConfig;
   tracePersist?: TracePersistConfig;

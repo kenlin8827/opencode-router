@@ -70,6 +70,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
       { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
+      { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
     ],
   },
   {
@@ -136,6 +137,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/proxy': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
+  '/proxy-access': { groupKey: 'nav.grpAccess', titleKey: 'nav.proxyAccess' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/cache': { groupKey: 'nav.grpObservability', titleKey: 'nav.cache' },
@@ -198,6 +200,12 @@ export const Layout: React.FC = () => {
     if (!ok) return;
     try {
       const res = await api.restartGateway();
+      if (res.status === 'failed') {
+        // Spawn failed — the gateway KEEPS RUNNING (console.ts never exits
+        // without a replacement). No reload: the console is still live.
+        toast.error(res.message || t('header.restartFailed'));
+        return;
+      }
       if (res.status === 'stopping') {
         toast.error(res.message || t('header.restartFailed'));
         setTimeout(() => window.location.reload(), 1500);

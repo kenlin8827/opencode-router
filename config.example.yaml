@@ -37,6 +37,24 @@ opencode:
 #   excludes:                         # matches force direct (checked before includes)
 #     - "deepseek/*"
 
+# Inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server) — FULL CAPTURE by design:
+# every proxied TLS connection is MITM'd via a locally generated CA; decrypted
+# LLM-protocol traffic (…/v1/chat/completions · …/v1/messages · …/v1/responses)
+# is routed through this gateway, everything else is forwarded transparently.
+# Only loopback targets and bypassHosts matches are blind-tunneled (never
+# decrypted). The generated CA (<caDir>/ca.pem) must be trusted by the clients
+# that use this proxy — export it from the console Proxy page. Restart required.
+# forwardProxy:
+#   enabled: false
+#   port: 4555                      # clients: HTTP_PROXY=http://127.0.0.1:4555
+#   host: "127.0.0.1"
+#   bypassHosts:                    # glob patterns → pure tunnel (never decrypted)
+#     - "*.internal"                #   bare string → tunnel DIRECT
+#     - host: "api.openai.com"      #   object form → per-host egress choice
+#       viaProxy: true              #   tunnel VIA the outbound proxy policy
+#   caDir: ""                       # default: ~/.opencode-router/forward-proxy
+#   viaOutboundProxy: false         # non-bypass forwards (non-intercepted GETs etc.) egress via config.proxy
+
 # Tier smart-match baseline (Optional) — how a model is auto-claimed into a
 # candidate pool. Classification is fully PRICE-DRIVEN by default: each tier
 # is a price band over the raw catalog $/M input price; a model matching NO

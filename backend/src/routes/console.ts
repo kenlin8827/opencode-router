@@ -8,6 +8,9 @@ import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig } from '../config/index.js';
 import { initProxyConfig } from '../utils/proxy.js';
+import { getOcrHomeDir } from '../cli/paths.js';
+import { ensureCa } from '../forward-proxy/ca.js';
+import { getForwardProxyStatus } from '../forward-proxy/status.js';
 import { RouterConfig } from '../config/types.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import {
@@ -93,6 +96,7 @@ export const SPA_ROUTES = [
   '/proxy',
   '/token-saver',
   '/clients',
+  '/proxy-access',
   '/guardrails',
   '/usage',
   '/traces',
@@ -343,6 +347,12 @@ export function registerConsoleRoutes(
       clients,
       providers: maskedProviders,
       registeredModelsCount: registry.getAllModels().length,
+      // Inbound forward-proxy runtime status (see forward-proxy/status.ts) —
+      // the Proxy Access page polls this to show running / failed / pending.
+      forwardProxy: {
+        enabled: Boolean(config.forwardProxy?.enabled),
+        ...getForwardProxyStatus(),
+      },
     };
   };
 
@@ -439,6 +449,24 @@ export function registerConsoleRoutes(
   };
   app.post('/api/ui/config/raw', handleSaveRawYaml);
   app.post('/api/console/config/raw', handleSaveRawYaml);
+
+  // 6a. Forward-proxy MITM CA export — clients using the inbound forward
+  // proxy must trust this CA. Generated on first request when absent (the
+  // same idempotent ensureCa the proxy itself uses).
+  const handleForwardProxyCa = async (_req: any, reply: any) => {
+    const cfg = loadConfig();
+    const caDir = cfg.forwardProxy?.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
+    try {
+      const ca = ensureCa(caDir);
+      reply.header('content-type', 'application/x-pem-file');
+      reply.header('content-disposition', 'attachment; filename="ocr-forward-proxy-ca.pem"');
+      return reply.send(ca.caCertPem);
+    } catch (err: any) {
+      return reply.status(500).send({ status: 'error', message: err?.message || 'Failed to load CA' });
+    }
+  };
+  app.get('/api/ui/proxy/ca', handleForwardProxyCa);
+  app.get('/api/console/proxy/ca', handleForwardProxyCa);
 
   // 6b. Tier composition policies — candidate pool snapshots (console preview).
   // PREVIEW is always a pure projection (resolveTierPool with a match arg never
@@ -1339,10 +1367,16 @@ export function registerConsoleRoutes(
     const addr = app.server.address();
     const port = typeof addr === 'object' && addr ? addr.port : cfg.port;
     const spawned = spawnDetachedRestartChild({ port, host: cfg.host });
+    if (!spawned) {
+      // Fault-tolerance: NEVER stop the gateway without a replacement — keep
+      // serving and surface the failure to the UI instead of exiting.
+      return {
+        status: 'failed',
+        message: 'Could not spawn a replacement process — gateway keeps running. Restart it manually when convenient.',
+      };
+    }
     setTimeout(() => process.exit(0), 500);
-    return spawned
-      ? { status: 'restarting', message: 'Gateway restart signal acknowledged — replacement process is booting' }
-      : { status: 'stopping', message: 'Could not spawn a replacement process; gateway will STOP. Start it again with `ocr start`.' };
+    return { status: 'restarting', message: 'Gateway restart signal acknowledged — replacement process is booting' };
   };
   app.post('/api/ui/restart', handleRestart);
   app.post('/api/console/restart', handleRestart);

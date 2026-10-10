@@ -93,6 +93,15 @@ export interface GatewayStatusResponse {
   clients: ClientStatus[];
   providers: MaskedProviderStatus[];
   registeredModelsCount: number;
+  /** Inbound forward-proxy runtime status (backend forward-proxy/status.ts). */
+  forwardProxy?: {
+    enabled: boolean;
+    running: boolean;
+    port?: number;
+    host?: string;
+    startedAt?: number;
+    error?: string;
+  };
 }
 
 // Mirrors backend ExecutionTrace (backend/src/trace/tracker.ts) returned by /v1/traces

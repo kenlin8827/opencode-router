@@ -42,6 +42,13 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: false, // opt-in: proxying only when explicitly enabled
     url: 'http://127.0.0.1:7890',
   },
+  forwardProxy: {
+    enabled: false, // opt-in: full-capture MITM proxy must be enabled consciously
+    port: 4555,
+    host: '127.0.0.1',
+    bypassHosts: [],
+    viaOutboundProxy: false, // opt-in: transit egress via the outbound proxy policy
+  },
   compression: {
     rtk: { enabled: false },
     headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000 },
@@ -134,6 +141,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         },
         flywheel: { ...DEFAULT_CONFIG.flywheel, ...parsed?.flywheel },
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
+        forwardProxy: { ...DEFAULT_CONFIG.forwardProxy, ...parsed?.forwardProxy },
         compression: {
           rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...parsed?.compression?.rtk },
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...parsed?.compression?.headroom },
@@ -271,6 +279,13 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'proxy.url': '全局代理 URL，http(s)://[user:pass@]host:port —— 需要鉴权时把用户名:密码嵌在 @ 前（自动转为 Proxy-Authorization，含 HTTPS CONNECT 隧道；特殊字符需 URL 编码）；留空 = 直连',
   'proxy.includes': '包含规则（glob）：非空时仅命中者走代理；pattern 匹配 provider/model 组合与模型 id —— anthropic/* 为 provider 级，*/claude-* 或 claude-* 为模型级',
   'proxy.excludes': '排除规则（glob）：命中者强制直连；与 includes 同设时先执行（excludes 命中 = 直连，其余再按 includes 过滤）',
+  forwardProxy: '入站前向代理（HTTP_PROXY/HTTPS_PROXY 服务端）：默认全量接管——解密后的 LLM 协议流量（chat/messages/responses）走路由管线，其余透明转发；loopback 与 bypassHosts 命中者纯隧道透传；需在被代理客户端信任导出的 CA（重启网关生效）',
+  'forwardProxy.enabled': '入站代理总开关（默认 false）',
+  'forwardProxy.port': '代理监听端口（默认 4555；客户端 HTTP_PROXY/HTTPS_PROXY 指向 http://127.0.0.1:4555）',
+  'forwardProxy.host': '代理监听地址（默认 127.0.0.1，仅本机）',
+  'forwardProxy.bypassHosts': '例外主机（glob）：纯字符串 = 直连隧道；{ host, viaProxy: true } = 经出站代理隧道（逐主机勾选）；loopback 永远绕过',
+  'forwardProxy.caDir': 'MITM CA 存放目录（默认 ~/.opencode-router/forward-proxy）',
+  'forwardProxy.viaOutboundProxy': '非例外主机的转发请求（未被拦截接管的 GET 等）是否经出站代理；例外主机的出站方式在 bypassHosts 逐行勾选',
   compression: 'Token 压缩（rtk 工具输出压缩 + headroom 上下文压缩 + caveman 输出风格注入；全部失败时放行原文，重启网关生效）',
   'compression.rtk.enabled': 'rtk 工具输出压缩：git/grep/ls/tree/日志/构建输出等工具结果文本压缩 60-90%（本地确定性压缩器，不破坏上游前缀缓存）',
   'compression.headroom.enabled': 'headroom 上下文压缩：转发前调用 headroom sidecar 的 /v1/compress（失败/超时自动放行原文；会话模式保上游前缀缓存）',
