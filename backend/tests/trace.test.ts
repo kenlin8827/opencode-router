@@ -243,4 +243,53 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const traceBody = JSON.parse(traceRes.body);
     assert.strictEqual(traceBody.total, 0);
   });
+
+  it('GET /v1/traces should support ?since=<epoch-ms> time-window filter', async () => {
+    // Inject one more turn under a fresh session so we have a known trace
+    // set that survives the DELETE above.
+    const sessId = 'sess_unit_test_since_filter';
+    await app.inject({
+      headers: { ...authHeaders(), 'x-session-id': sessId },
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: { model: 'auto', messages: [{ role: 'user', content: 'ping' }] },
+    });
+
+    const now = Date.now();
+
+    // (1) Future cutoff — must drop everything for this session.
+    const futureRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/v1/traces?session_id=${sessId}&since=${now + 60_000}`,
+    });
+    assert.strictEqual(futureRes.statusCode, 200);
+    const futureBody = JSON.parse(futureRes.body);
+    assert.strictEqual(futureBody.total, 0, 'since=future must filter out all traces');
+    assert.strictEqual(futureBody.data.length, 0);
+    assert.strictEqual(futureBody.since, now + 60_000, 'since should round-trip in the response');
+
+    // (2) Past cutoff — must include the trace we just recorded.
+    const pastRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/v1/traces?session_id=${sessId}&since=${now - 60_000}`,
+    });
+    assert.strictEqual(pastRes.statusCode, 200);
+    const pastBody = JSON.parse(pastRes.body);
+    assert.ok(pastBody.total >= 1, 'since=past must include the freshly recorded trace');
+    assert.ok(pastBody.data.every((t: any) => t.timestamp >= now - 60_000), 'every returned trace must respect since');
+
+    // (3) Garbage value — must NOT 4xx; must NOT echo `since`; must fall
+    // back to the no-window behavior (entire ring).
+    const garbageRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/v1/traces?since=not-a-number',
+    });
+    assert.strictEqual(garbageRes.statusCode, 200);
+    const garbageBody = JSON.parse(garbageRes.body);
+    assert.strictEqual(garbageBody.since, undefined, 'garbage since must be dropped silently');
+    assert.ok(garbageBody.total >= 1, 'no-window default must still return everything');
+  });
 });

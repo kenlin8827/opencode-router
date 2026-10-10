@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Database, RefreshCw, Zap, Coins, PiggyBank, Activity, GitBranch } from 'lucide-react';
 import { api, type CacheStatsResponse } from '../lib/api';
+import { Combobox } from '../components/Combobox';
 
 // Sticky column header inside the scrollable per-model table.
 const TH_STYLE: React.CSSProperties = {
@@ -14,21 +15,39 @@ import { useI18n } from '../i18n/I18nContext';
 
 const REFRESH_INTERVAL_MS = 10_000;
 
+// Time-range presets for the cache-page aggregates. `value` is the window
+// length in HOURS — `0` means "use the legacy 24-hour backend view" (the
+// default, keeps back-compat). All non-zero values translate to a `sinceTs`
+// of `now - value*HOUR_MS` on the backend, which clamps the hourly bucket
+// series to 24 buckets.
+const RANGE_OPTIONS: { value: string; labelKey: string; hours: number }[] = [
+  { value: '0', labelKey: 'cachePage.range.24h', hours: 0 }, // backend default
+  { value: '1', labelKey: 'cachePage.range.1h', hours: 1 },
+  { value: '24', labelKey: 'cachePage.range.24h', hours: 24 },
+  { value: '168', labelKey: 'cachePage.range.7d', hours: 168 },
+];
+
 export const CachePage: React.FC = () => {
   const { t } = useI18n();
   const [data, setData] = useState<CacheStatsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // Range in hours; 0 = backend default (24h buckets ending now).
+  const [rangeHours, setRangeHours] = useState<string>('0');
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await api.getCacheStats());
+      const hours = Number(rangeHours);
+      // hours === 0 → no `since` param → backend returns the 24h default
+      // window. Otherwise narrow to now - hours.
+      const sinceMs = hours > 0 ? Date.now() - hours * 3_600_000 : undefined;
+      setData(await api.getCacheStats(sinceMs));
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [rangeHours]);
 
   useEffect(() => {
     loadData();
@@ -52,6 +71,9 @@ export const CachePage: React.FC = () => {
   const routingCache = data?.routingCache;
 
   const maxHourlyTokens = Math.max(1, ...hourly.map(h => h.promptTokens));
+  // Span shown on the X axis of the hourly bar chart — either the user's
+  // picked range (1h / 24h / 7d) or the 24h default.
+  const bucketSpan = Number(rangeHours) === 0 || Number(rangeHours) === 24 ? 24 : Number(rangeHours);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
@@ -62,13 +84,24 @@ export const CachePage: React.FC = () => {
             <Database size={18} color="var(--accent)" />
             <span>{t('cachePage.title')}</span>
           </div>
-          <button className="btn btn-sm" onClick={loadData} disabled={loading}>
-            <RefreshCw size={12} />
-            <span>{t('cachePage.refresh')}</span>
-          </button>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <Combobox
+              value={rangeHours}
+              onChange={setRangeHours}
+              options={RANGE_OPTIONS.map(o => ({ value: o.value, label: t(o.labelKey) }))}
+              style={{ fontSize: '12px', padding: '5px 10px', width: '120px' }}
+            />
+            <button className="btn btn-sm" onClick={loadData} disabled={loading}>
+              <RefreshCw size={12} />
+              <span>{t('cachePage.refresh')}</span>
+            </button>
+          </div>
         </div>
         <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
           {t('cachePage.desc', { count: stats?.windowTraces || 0 })}
+        </p>
+        <p style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
+          {t('cachePage.rangeRetentionHint')}
         </p>
 
         {/* 4 stat cards */}
@@ -185,7 +218,7 @@ export const CachePage: React.FC = () => {
               })}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-dim)', padding: '6px 4px 0 4px' }}>
-              <span>{t('cachePage.hourlyAgo')}</span>
+              <span>{t('cachePage.hourlyAgo', { hours: bucketSpan })}</span>
               <span>{t('cachePage.hourlyNow')}</span>
             </div>
             <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>

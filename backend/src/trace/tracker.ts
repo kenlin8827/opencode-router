@@ -193,15 +193,22 @@ export class TraceTracker {
   }
 
   /**
-   * Query recent traces with optional session filtering and pagination
+   * Query recent traces with optional session filtering, time-window filter
+   * (inclusive lower bound `sinceTs` on `trace.timestamp`, epoch ms) and
+   * pagination. The time-window filter is applied AFTER the index-based
+   * candidate selection but BEFORE pagination so `total` reflects the
+   * window size and the page slice stays consistent. When `sinceTs` is
+   * undefined (the default) the whole in-memory ring is returned.
    */
   public getRecentTraces(options?: {
     sessionId?: string;
     limit?: number;
     offset?: number;
+    sinceTs?: number;
   }): { total: number; data: ExecutionTrace[] } {
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
+    const sinceTs = options?.sinceTs;
 
     let traceIds: string[];
     if (options?.sessionId) {
@@ -209,6 +216,15 @@ export class TraceTracker {
     } else {
       // Reverse order (most recent first)
       traceIds = [...this.traceOrder].reverse();
+    }
+
+    // Window filter: apply BEFORE pagination so `total` matches the
+    // filtered set. `t.timestamp` is set by the orchestrator at record time.
+    if (typeof sinceTs === 'number') {
+      traceIds = traceIds.filter(id => {
+        const t = this.traces.get(id);
+        return t ? t.timestamp >= sinceTs : false;
+      });
     }
 
     const total = traceIds.length;
@@ -222,14 +238,34 @@ export class TraceTracker {
 
   /**
    * Aggregate provider-native prompt-cache observability over the in-memory
-   * trace ring buffer: totals, per-model rows and a 24h hourly series.
+   * trace ring buffer: totals, per-model rows and an hourly series.
+   *
+   * `sinceTs` (epoch ms, inclusive lower bound on `trace.timestamp`) is
+   * optional:
+   *   - undefined (default) → 24-hour window (24 buckets ending at the
+   *     current hour). Back-compat: the legacy /api/ui/cache-stats payload
+   *     shape is preserved when the parameter is omitted.
+   *   - number             → hourly buckets cover `[sinceTs, now]` capped
+   *     at 24 buckets; totals / per-model rows / ratios are filtered to
+   *     the same window. The cap guards against an absurdly wide window
+   *     asking for hundreds of buckets (24 is already enough resolution
+   *     for the largest plausible UI range, e.g. 7d shown as daily bars).
+   *
    * A request counts as "cached" when finops.cachedPromptTokens > 0.
    */
-  public getCacheStats(): CacheStatsSummary {
+  public getCacheStats(options?: { sinceTs?: number }): CacheStatsSummary {
     const HOUR = 3_600_000;
-    const currentHour = Math.floor(Date.now() / HOUR);
+    const now = Date.now();
+    const currentHour = Math.floor(now / HOUR);
+    const sinceTs = typeof options?.sinceTs === 'number' ? options.sinceTs : undefined;
+    // Number of hourly buckets covering [sinceTs, now], clamped to [1, 24].
+    const bucketCount = sinceTs === undefined
+      ? 24
+      : Math.min(24, Math.max(1, Math.floor((now - sinceTs) / HOUR) + 1));
+    const startHour = currentHour - bucketCount + 1;
+
     const buckets = new Map<number, CacheStatsHourBucket>();
-    for (let h = currentHour - 23; h <= currentHour; h++) {
+    for (let h = startHour; h <= currentHour; h++) {
       buckets.set(h, { hourTs: h * HOUR, requests: 0, cachedRequests: 0, promptTokens: 0, cachedPromptTokens: 0 });
     }
 
@@ -242,6 +278,10 @@ export class TraceTracker {
     let savedCostUsd = 0;
 
     for (const t of this.traces.values()) {
+      // Window filter — applied first so all aggregates (totals, per-model
+      // rows, hourly buckets) are consistent.
+      if (sinceTs !== undefined && t.timestamp < sinceTs) continue;
+
       const f = t.finops;
       const cached = f.cachedPromptTokens > 0;
       totalRequests++;

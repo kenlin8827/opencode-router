@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
 import {
   TrendingDown,
@@ -9,27 +9,83 @@ import {
   Terminal,
   ArrowRight,
 } from 'lucide-react';
-import type { GatewayStatusResponse } from '../lib/api';
+import { api, type GatewayStatusResponse, type CacheStatsResponse } from '../lib/api';
 import { BrandIcon } from '../components/BrandIcons';
+import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
+
+const REFRESH_INTERVAL_MS = 10_000;
+
+// Time-range presets for the Overview's trace-windowed cards. Matches the
+// CachePage vocabulary; '0' = backend default 24-hour window. Card labels
+// reuse the same `cachePage.range.*` i18n keys so wording stays consistent.
+const RANGE_OPTIONS: { value: string; labelKey: string; hours: number }[] = [
+  { value: '1', labelKey: 'cachePage.range.1h', hours: 1 },
+  { value: '24', labelKey: 'cachePage.range.24h', hours: 24 },
+  { value: '168', labelKey: 'cachePage.range.7d', hours: 168 },
+];
 
 export const OverviewPage: React.FC = () => {
   const { status, statusError } = useOutletContext<{ status: GatewayStatusResponse | null; statusError: boolean }>();
   const { t } = useI18n();
   const metrics = status?.metrics;
 
+  // Two of the four Overview cards (cacheHit, tokensTotal) report
+  // TRACE-WINDOWED values from /api/ui/cache-stats. The other two
+  // (costSaved, avgLatency) keep their CUMULATIVE semantics from the
+  // FinOps tracker — "since install" — because turning those into
+  // windowed views would silently break the cumulative-savings
+  // dashboard contract.
+  const [rangeHours, setRangeHours] = useState<string>('24');
+  const [windowStats, setWindowStats] = useState<CacheStatsResponse | null>(null);
+
+  const loadWindow = useCallback(async () => {
+    const hours = Number(rangeHours);
+    const sinceMs = hours > 0 ? Date.now() - hours * 3_600_000 : undefined;
+    try {
+      setWindowStats(await api.getCacheStats(sinceMs));
+    } catch (err) {
+      console.error('[Overview] cache-stats refresh failed:', err);
+    }
+  }, [rangeHours]);
+
+  useEffect(() => {
+    loadWindow();
+  }, [loadWindow]);
+
+  useEffect(() => {
+    const timer = setInterval(loadWindow, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [loadWindow]);
+
   const costSaved = metrics?.economics.totalSavingsUsd || 0;
   const savingsPct = metrics?.economics.savingsPct || 0;
-  const totalPromptTokens = metrics?.tokens.totalPromptTokens || 0;
-  const cachedPromptTokens = metrics?.tokens.totalCachedPromptTokens || 0;
-  const cacheHitPct = totalPromptTokens > 0 ? ((cachedPromptTokens / totalPromptTokens) * 100).toFixed(1) : '0.0';
-  const totalTokens = (
-    totalPromptTokens +
-    (metrics?.tokens.totalCompletionTokens || 0) +
-    (metrics?.tokens.totalReasoningTokens || 0)
-  ).toLocaleString();
-  const savedTokens = cachedPromptTokens.toLocaleString();
+  // latency stays CUMULATIVE (FinOpsTracker) — see the comment above.
   const latency = Math.round(metrics?.latency.avgMs || 0);
+
+  // windowStats holds the trace-windowed aggregates; only present when the
+  // initial fetch (or a refresh) has succeeded. We fall back to the
+  // cumulative FinOps values during the very first paint so the cards
+  // never look empty while the cache-stats request is in flight.
+  const ws = windowStats?.stats;
+  // When windowStats is present we adopt its prompt/cached split. While
+  // the very first cache-stats request is in flight we still render the
+  // cumulative FinOps numbers so the cards never look empty.
+  const totalPromptTokens = ws?.promptTokens ?? metrics?.tokens.totalPromptTokens ?? 0;
+  const cachedPromptTokens = ws?.cachedPromptTokens ?? metrics?.tokens.totalCachedPromptTokens ?? 0;
+  const cacheHitPct = totalPromptTokens > 0 ? ((cachedPromptTokens / totalPromptTokens) * 100).toFixed(1) : '0.0';
+  // `getCacheStats` only exposes prompt/cached tokens — completion and
+  // reasoning aren't split out. In windowed mode the "total tokens" card
+  // shows prompt totals (which dominate the volume anyway); in fallback
+  // mode it falls back to the full prompt+completion+reasoning sum.
+  const totalTokens = ws
+    ? ws.promptTokens.toLocaleString()
+    : (
+        totalPromptTokens +
+        (metrics?.tokens.totalCompletionTokens || 0) +
+        (metrics?.tokens.totalReasoningTokens || 0)
+      ).toLocaleString();
+  const savedTokens = cachedPromptTokens.toLocaleString();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -50,6 +106,20 @@ export const OverviewPage: React.FC = () => {
       )}
 
       {/* 4 Core FinOps Metrics */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+          {t('overview.windowScope')}
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('cachePage.rangeLabel')}</span>
+          <Combobox
+            value={rangeHours}
+            onChange={setRangeHours}
+            options={RANGE_OPTIONS.map(o => ({ value: o.value, label: t(o.labelKey) }))}
+            style={{ fontSize: '12px', padding: '5px 10px', width: '120px' }}
+          />
+        </div>
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
